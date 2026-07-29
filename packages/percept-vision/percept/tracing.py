@@ -110,6 +110,14 @@ STAGE_SHADOW_FOLD = "shadow.fold"          # ADVISORY — the subject + EpisodeF
 #: it changes no firing, re-arms no edge, suppresses nothing. It exists so a client running the wheel
 #: on THEIR data can hand back a ``.ptrace`` (media OFF) that carries what the fold proposed, gradeable
 #: against their ground truth. A consumer that ignores it sees byte-for-byte today's behaviour.
+#:
+#: READ ``data["fold"]`` CAREFULLY. It is the SHADOW's fold, and the shadow path binds no continuation
+#: decision at all, so ``match`` reads ``"unbound"`` and ``episode_id`` reads ``None`` on EVERY tick of
+#: EVERY concern — including concerns whose real, GOVERNING fold bound an episode and suppressed a
+#: re-report. That field is not evidence about the governing fold and never was.
+#: ``data["fold_skip_reason"]`` is: ``None`` when a governing fold WAS built and threaded into the gate
+#: this tick, otherwise the ``percept.agent.EPISODE_FOLD_SKIP_REASONS`` entry naming the one guard that
+#: declined. Purely additive observability — nothing branches on it.
 STAGE_JUDGMENT_EVENT = "judgment.event"    # the frozen percept.contracts.JudgmentEvent for one decision,
 #: projected into the trace stream whenever a fire carried one: alongside ``gate.classified`` for a
 #: judged Watch, or alongside ``transition.decision`` for a fired live transition (marked

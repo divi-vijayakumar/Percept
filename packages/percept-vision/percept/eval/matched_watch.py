@@ -362,7 +362,17 @@ _TRACE_DATA_KEYS = {
         "freshness",
         "hold_s",
     },
-    "shadow.fold": {"subject", "fold"},
+    "shadow.fold": {
+        "subject",
+        "fold",
+        # The GOVERNING fold's own answer, which ``fold`` above (the shadow's, always ``unbound``)
+        # never carried. See percept.agent.FoldObservation.
+        "fold_identity_policy",
+        "fold_dispatch",
+        "fold_entered_scene",
+        "fold_skip_reason",
+        "fold_scene_key_turnovers",
+    },
     "incident.created": {
         "entity_id",
         "evidence_origin",
@@ -3904,6 +3914,14 @@ def _validate_v2_arm_reconstruction(
                 },
                 f"{arm.arm} ordinary gate trace does not reconstruct from oracle/state",
             )
+            # The shadow's own fold is a CONSTANT for an ordinary Watch: the shadow path binds no
+            # continuation decision, so it is ``unbound`` on every candidate regardless of what the
+            # run did. The governing-fold fields beside it are the ones that carry information, and
+            # they reconstruct from the arm's declared identity strategy: a matched-Watch arm profile
+            # declares the scene SCOPE (``identity_strategy="scene"``, see ``_profile``), which is
+            # neither a per-entity resolver nor ``content_key``, so the dispatch takes the arm that
+            # builds no fold at all and the scene fold is never entered.
+            identity_strategy = str(arm.source_profile["identity_strategy"])
             _require(
                 _thaw(shadow_by_t.get(candidate.t))
                 == {
@@ -3919,6 +3937,11 @@ def _validate_v2_arm_reconstruction(
                             "should_evaluate_gate": True,
                             "supersedes": None,
                         },
+                        "fold_identity_policy": identity_strategy,
+                        "fold_dispatch": "none",
+                        "fold_entered_scene": False,
+                        "fold_skip_reason": "document.identity_policy_not_content_key",
+                        "fold_scene_key_turnovers": 0,
                     },
                 },
                 f"{arm.arm} shadow-fold trace does not reconstruct from ordinary Watch state",

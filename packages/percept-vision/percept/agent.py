@@ -1000,6 +1000,113 @@ _BATCH_STALE = object()
 #: real gate key (the non-entity scope a concern gets when nothing is in focus).
 _NO_SCENE_KEY = object()
 
+#: Metric-name prefix for :data:`EPISODE_FOLD_SKIP_REASONS`. One counter per reason
+#: (``episode.fold.skipped.<reason>``), mirroring the existing ``episode.denied.<reason>`` shape —
+#: :class:`percept.observability.Metrics` is a flat counter registry with no label dimension, so a
+#: discriminator has to live in the name.
+_EPISODE_FOLD_SKIP_METRIC = "episode.fold.skipped"
+
+#: Every distinct guard in :meth:`Percept._document_episode_fold` and :meth:`Percept._scene_episode_fold`
+#: that answers "no fold" for one observation, one reason per guard.
+#:
+#: WHY THIS EXISTS. Both methods answer ``None`` for two completely different situations: "no episode
+#: applies to this kind of concern" (the ordinary, correct answer for most goals) and "an episode
+#: applies but this observation could not be folded into one". Before these reasons the two were
+#: indistinguishable from outside — a run could be read only as "no fold happened", which is not
+#: enough to tell a working watch from a broken one, and reading the code instead of the run has
+#: produced three wrong diagnoses. Every reason below names exactly one guard; none of them is shared
+#: between two, so a reader can go from the reason straight to the branch that produced it.
+#:
+#: OBSERVABILITY ONLY. Recording a reason changes no fold decision, no gate call, no threshold and no
+#: default — a consumer that ignores it sees byte-for-byte the previous behaviour.
+EPISODE_FOLD_SKIP_REASONS: tuple[str, ...] = (
+    # -- the content-key (document/screen) path -----------------------------------------------------
+    #: An event-chain Watch (``rearm="each_event"``) already owns occurrence identity; a second,
+    #: incompatible episode fold must not be added underneath it.
+    "document.event_chain_rearm",
+    #: The concern's RESOLVED identity policy is neither a per-entity (scene) one nor ``content_key``
+    #: — e.g. ``claim_slot``, or no policy at all on a profile-less core. This is the ordinary answer
+    #: for most concerns, not a fault; a claim-slot concern goes on to fold via ``_claim_episode_fold``.
+    "document.identity_policy_not_content_key",
+    #: A content-key concern whose verdict carried no subject at all. There is nothing to group by,
+    #: and this method refuses to fabricate a content key.
+    "document.no_content_subject",
+    #: A late (out-of-order) ``t`` for a content-key concern — behind the per-goal high-water mark.
+    #: Folding it would rewind the log's ``last_seen``, so the tick degrades to gate-only.
+    "document.out_of_order",
+    # -- the scene (camera) path --------------------------------------------------------------------
+    #: The concern does not run the default rising-edge re-arm (``never`` / ``interval`` /
+    #: ``deadline`` / ``each_event`` each own their own re-arm rule).
+    "scene.rearm_not_rising_edge",
+    #: The concern is not a judged frame-watch (a counting / rhythm / event / transition / process
+    #: goal owns ``Percept.episodes`` for its own subjects; a scene subject must not be written there).
+    "scene.route_not_frame_watch",
+    #: The classified truth for this observation is ``unknown`` — a refusal to guess is neither an
+    #: observation nor an occurrence boundary, so it opens, continues and closes nothing.
+    "scene.truth_unknown",
+    #: A late (out-of-order) ``t`` for a scene concern — the twin of ``document.out_of_order``.
+    "scene.out_of_order",
+    #: A confident-false ENDED the open occurrence (the same proven boundary the gate re-arms on).
+    #: The close happened; this tick is handed back to the gate so the next true is a new episode.
+    "scene.occurrence_closed",
+    #: The observation arrived on a DIFFERENT gate key than the one the scene occurrence has been
+    #: speaking for (focus turned over). Whether another entity's edge fires is the gate's question,
+    #: so the fold declines to govern this tick and hands the decision back untouched.
+    "scene.entity_turnover",
+)
+
+#: The three arms of the dispatch at the top of :meth:`Percept._document_episode_fold`: the concern's
+#: RESOLVED identity policy sends it to the scene fold, keeps it on the content-key path, or matches
+#: neither and ends the fold there. ``"none"`` is the arm that produces no fold of any kind, and it is
+#: reached by every policy outside the two named sets — including :data:`percept.identity_policy.
+#: SCENE_IDENTITY` itself, which names the scene scope but is not a per-entity resolver.
+EPISODE_FOLD_DISPATCH_ARMS: tuple[str, ...] = ("scene", "content_key", "none")
+
+
+@dataclass(frozen=True)
+class FoldObservation:
+    """What the GOVERNING episode fold did for ONE observation of one concern. ADVISORY.
+
+    This is the record that makes a fold answerable from a run instead of from reading the code.
+    Each field answers a question that a bare ``None`` return (or a ``shadow.fold`` record's always-
+    ``unbound`` fold) cannot:
+
+    * ``identity_policy`` — what :meth:`Percept._resolved_identity_policy` returned AT JUDGMENT TIME,
+      which is not necessarily what it returned when the Watch was armed: it is re-derived per call
+      from the per-Watch runtime binding's source profile, falling back to the core's own.
+    * ``dispatch`` — which arm of the dispatch was taken (:data:`EPISODE_FOLD_DISPATCH_ARMS`).
+    * ``entered_scene_fold`` — whether :meth:`Percept._scene_episode_fold` actually RAN. Recorded on
+      entry rather than inferred, so "entered and declined" is never confused with "never entered".
+    * ``skip_reason`` — the one guard that declined (:data:`EPISODE_FOLD_SKIP_REASONS`), or ``None``
+      when a fold was built.
+    * ``scene_key_turnovers`` — how many times this concern's governed gate key has changed. Focus
+      churn is what turns a scene occurrence into a stream of declined ticks.
+    """
+
+    identity_policy: "str | None"
+    dispatch: str
+    entered_scene_fold: bool
+    skip_reason: "str | None"
+    scene_key_turnovers: int
+
+    def to_advisory(self) -> dict[str, Any]:
+        """The JSON-safe fields added to a ``shadow.fold`` trace record's ``data``."""
+        return {
+            "fold_identity_policy": self.identity_policy,
+            "fold_dispatch": self.dispatch,
+            "fold_entered_scene": self.entered_scene_fold,
+            "fold_skip_reason": self.skip_reason,
+            "fold_scene_key_turnovers": self.scene_key_turnovers,
+        }
+
+
+#: What a ``shadow.fold`` record carries when the fold was never consulted for this goal on this tick.
+#: Distinct from every real answer: no policy, no arm, no guard.
+_FOLD_NOT_CONSULTED = FoldObservation(
+    identity_policy=None, dispatch="none", entered_scene_fold=False,
+    skip_reason=None, scene_key_turnovers=0,
+)
+
 
 def _scripted_seams(core: Any) -> list[str]:
     """The seams whose CONSTRUCTED backend is a scripted double, in a stable order."""
@@ -1096,6 +1203,17 @@ class Percept:
     # per-entity map: it exists so the fold can tell "the same key re-entering" (which the episode
     # owns) from "a different entity's key" (which the gate's per-entity edge owns, unchanged).
     _scene_episode_key: dict = field(default_factory=dict)  # goal_id -> gate key
+    # WHAT THE GOVERNING EPISODE FOLD DID for this goal's most recent observation — one
+    # :class:`FoldObservation` per goal, rewritten on every call to ``_document_episode_fold`` so it is
+    # never a stale answer from an earlier tick. Read back by ``_fold_skip_advisory`` for the
+    # ``shadow.fold`` trace record. One entry per goal (the same bound as ``_doc_episode_hwm``),
+    # session-only, and it governs nothing.
+    _fold_observation: dict = field(default_factory=dict)  # goal_id -> FoldObservation
+    # How many times the gate key a scene occurrence is GOVERNED UNDER has changed for this goal — the
+    # focus-turnover churn that makes the scene fold decline to govern a tick. A running COUNT, never a
+    # set of ids: measured scene entity ids churn in the tens of thousands per hour (p50 track lifetime
+    # 0.0s), so remembering them is the per-entity firehose ``_scene_episode_fold`` exists to refuse.
+    _scene_key_turnovers: dict = field(default_factory=dict)  # goal_id -> count
     # CLAIM MODE: the per-goal claim-slot twins of the document-mode fields above.
     # ``_claim_states`` holds the authoritative :class:`~percept.claims.ClaimState` (value + its own
     # revision ledger) per claim-slot goal; ``_claim_hwm`` is the same out-of-order high-water mark as
@@ -2373,6 +2491,57 @@ class Percept:
             "action_present": getattr(verdict, "action_present", None),
         }
 
+    def _note_fold(
+        self,
+        goal: Goal,
+        *,
+        identity_policy: "str | None",
+        dispatch: str,
+        entered_scene_fold: bool = False,
+        skip_reason: "str | None" = None,
+    ) -> None:
+        """Record WHAT the governing episode fold did for this observation, then return ``None`` so a
+        guard reads ``return self._note_fold(goal, ..., skip_reason="...")``.
+
+        Writes a :class:`FoldObservation` for ``goal`` and, when a guard declined, counts it as
+        ``episode.fold.skipped.<reason>``. ``skip_reason`` is one of
+        :data:`EPISODE_FOLD_SKIP_REASONS` — exactly one per guard, so both the counter and the trace
+        name the branch that fired rather than the outcome they share. The per-guard counters those
+        guards already bumped are left alone, so nothing that reads them moves.
+
+        ADVISORY. Nothing branches on what this writes: no fold decision, no gate call, no re-arm.
+        """
+        self._fold_observation[goal.id] = FoldObservation(
+            identity_policy=identity_policy,
+            dispatch=dispatch,
+            entered_scene_fold=entered_scene_fold,
+            skip_reason=skip_reason,
+            scene_key_turnovers=int(self._scene_key_turnovers.get(goal.id, 0)),
+        )
+        if skip_reason is not None:
+            self.metrics.incr(f"{_EPISODE_FOLD_SKIP_METRIC}.{skip_reason}")
+        return None
+
+    def _fold_skip_advisory(
+        self, goal: Goal, fold: "EpisodeFoldResult | None"
+    ) -> dict[str, Any]:
+        """The governing-fold fields of a ``shadow.fold`` trace record.
+
+        That record's ``fold`` dict is the SHADOW advisory, which binds no continuation decision and
+        therefore reads ``match="unbound"`` on every tick of every concern, by construction (see
+        :meth:`_shadow_observe` and :meth:`~percept.behavior.BehaviorExecutor.shadow_observe`). It says
+        nothing about whether the GOVERNING fold bound — which is the question a reader of that record
+        actually has. These fields answer it; see :class:`FoldObservation` for what each one settles.
+
+        ``fold`` is the fold actually threaded into ``_fire_concern`` for this tick (document, scene
+        OR claim), so a claim-slot concern — which passes THROUGH the content-key guard on its way to
+        :meth:`_claim_episode_fold` — is not reported as skipped when it did in fact fold.
+        """
+        observed = self._fold_observation.get(goal.id, _FOLD_NOT_CONSULTED)
+        if fold is not None:
+            observed = replace(observed, skip_reason=None)
+        return observed.to_advisory()
+
     def _document_episode_fold(
         self,
         goal: Goal,
@@ -2428,25 +2597,59 @@ class Percept:
           a LATER, in-order observation. A late arrival instead degrades this one tick to the gate-only
           path (``None``) — the same safe answer an undeclared concern always gets — and is counted
           (``episode.document.out_of_order_skipped``), never silently swallowed.
+
+        **Every ``None`` below says which guard produced it, and the dispatch says which arm it was
+        on.** ``None`` is the answer to two different questions — "no episode applies to this concern"
+        and "an episode applies but this observation could not be folded" — and from outside they used
+        to be the same silence. A :class:`FoldObservation` is now recorded for every call: the identity
+        policy as resolved AT JUDGMENT TIME, the dispatch arm taken below
+        (:data:`EPISODE_FOLD_DISPATCH_ARMS`), whether :meth:`_scene_episode_fold` was ENTERED, and the
+        one guard that declined (:data:`EPISODE_FOLD_SKIP_REASONS`, counted as
+        ``episode.fold.skipped.<reason>``). It rides the ``shadow.fold`` trace record. Purely additive:
+        no decision, threshold or default moves, and the pre-existing per-guard counters keep their
+        names.
         """
+        # A fresh answer for THIS observation: never let an earlier tick's answer be read back. The
+        # policy is re-resolved here rather than reused from arm time precisely because whether it
+        # still resolves the same way mid-run is the question this record exists to settle.
+        self._fold_observation.pop(goal.id, None)
+        resolved_policy = self._resolved_identity_policy(goal)
         # An event-chain Watch owns occurrence identity. A source-profile default such as
         # screen_document/content_key must not silently add a second, incompatible episode fold.
         # Explicit content_key + each_event is rejected at arm time in add_goal().
         if goal.state.get("rearm") == "each_event":
-            return None
-        resolved_policy = self._resolved_identity_policy(goal)
+            return self._note_fold(
+                goal, identity_policy=resolved_policy, dispatch="none",
+                skip_reason="document.event_chain_rearm",
+            )
         if resolved_policy in PER_ENTITY_IDENTITY_POLICIES:
-            return self._scene_episode_fold(goal, verdict, t, truth=truth, key=key)
+            return self._scene_episode_fold(
+                goal, verdict, t, truth=truth, key=key, identity_policy=resolved_policy
+            )
         if resolved_policy != "content_key":
-            return None
+            # The arm that builds NO fold of any kind. Reached by every policy outside the two named
+            # sets -- including the literal SCENE_IDENTITY scope, which names the scene but is not a
+            # per-entity resolver and so never reaches the scene fold below it.
+            return self._note_fold(
+                goal, identity_policy=resolved_policy, dispatch="none",
+                skip_reason="document.identity_policy_not_content_key",
+            )
         subject = getattr(verdict, "subject", None)
         if subject is None:
-            return None  # nothing to group — gate-only, exactly like an undeclared concern
+            # nothing to group — gate-only, exactly like an undeclared concern
+            return self._note_fold(
+                goal, identity_policy=resolved_policy, dispatch="content_key",
+                skip_reason="document.no_content_subject",
+            )
         hwm = self._doc_episode_hwm.get(goal.id)
         if hwm is not None and t < hwm:
             self.metrics.incr("episode.document.out_of_order_skipped")
-            return None
+            return self._note_fold(
+                goal, identity_policy=resolved_policy, dispatch="content_key",
+                skip_reason="document.out_of_order",
+            )
         self._doc_episode_hwm[goal.id] = t
+        self._note_fold(goal, identity_policy=resolved_policy, dispatch="content_key")
         log = self.episodes.get(goal.id)
         if log is None:
             goal_settings = self._settings_for_goal(goal)
@@ -2476,6 +2679,7 @@ class Percept:
         *,
         truth: "str | None" = None,
         key: "tuple | None" = None,
+        identity_policy: "str | None" = None,
     ) -> "EpisodeFoldResult | None":
         """SCENE MODE — the camera twin of :meth:`_document_episode_fold`'s content-key path.
 
@@ -2532,22 +2736,37 @@ class Percept:
 
         The out-of-order high-water mark is the same one the content-key path keeps (a goal is only ever
         one of the two), counted separately as ``episode.scene.out_of_order_skipped``.
+
+        Each of those guards names itself on the way out — see :meth:`_document_episode_fold` and
+        :data:`EPISODE_FOLD_SKIP_REASONS`. Six distinct branches answer ``None`` here and they mean six
+        different things; "the camera watch built no fold" on its own does not distinguish a concern
+        that is correctly out of scope from one whose occurrence was never bound.
+
+        Reaching this method AT ALL is itself recorded (``entered_scene_fold`` on the
+        :class:`FoldObservation`, stamped on the line below before any guard runs), because "entered
+        and declined" and "never entered" are different failures with the same visible outcome — and
+        only the caller's dispatch decides which one happened. ``identity_policy`` is the policy the
+        caller resolved, carried in so the record names it without resolving a second time.
         """
+        entered = dict(
+            identity_policy=identity_policy, dispatch="scene", entered_scene_fold=True
+        )
         if goal.state.get("rearm", "on_false") != "on_false":
-            return None
+            return self._note_fold(goal, **entered, skip_reason="scene.rearm_not_rising_edge")
         if goal_behavior_route(goal) is not BehaviorRoute.FRAME_WATCH:
-            return None
+            return self._note_fold(goal, **entered, skip_reason="scene.route_not_frame_watch")
         if truth is None:
             # A direct caller that took no freshness reading: read the verdict as-if fresh, exactly
             # what the fused-evidence call site passes (freshness=1.0). Never a second gate call —
             # ``classify`` is the pure pre-edge mapping, not gate state.
             truth = classify(verdict, 1.0, self.gate.threshold, self.gate.fresh_min)
         if truth == "unknown":
-            return None  # a refusal to guess is not an occurrence boundary and not an observation
+            # a refusal to guess is not an occurrence boundary and not an observation
+            return self._note_fold(goal, **entered, skip_reason="scene.truth_unknown")
         hwm = self._doc_episode_hwm.get(goal.id)
         if hwm is not None and t < hwm:
             self.metrics.incr("episode.scene.out_of_order_skipped")
-            return None
+            return self._note_fold(goal, **entered, skip_reason="scene.out_of_order")
         self._doc_episode_hwm[goal.id] = t
         log = self.episodes.get(goal.id)
         if log is None:
@@ -2567,7 +2786,7 @@ class Percept:
             if episode_id is not None:
                 log.close(episode_id, t=t)
                 self.metrics.incr("episode.scene.closed")
-            return None
+            return self._note_fold(goal, **entered, skip_reason="scene.occurrence_closed")
         # A fixed subject_key (the scene scope): like a claim slot, this is ONE persistent thing rather
         # than many distinct subjects, so there is no identity to resolve and the "unknown subject"
         # branch is unreachable — an explicit subject_key always wins in observe_decision. Any
@@ -2583,7 +2802,13 @@ class Percept:
             # answer must not change, so hand it back untouched. The occurrence itself was still
             # advanced above — declining to govern a tick is not pretending it was unobserved.
             self.metrics.incr("episode.scene.entity_turnover_skipped")
-            return None
+            # Counted per concern as well as globally: one turnover is normal, a turnover on most
+            # ticks means the focus is churning and the occurrence is governing almost nothing.
+            self._scene_key_turnovers[goal.id] = (
+                int(self._scene_key_turnovers.get(goal.id, 0)) + 1
+            )
+            return self._note_fold(goal, **entered, skip_reason="scene.entity_turnover")
+        self._note_fold(goal, **entered)
         return self.executor.fold_episode(decision)
 
     def _claim_episode_fold(
@@ -4177,6 +4402,9 @@ class Percept:
             STAGE_SHADOW_FOLD,
             goal_id=goal.id,
             **self._shadow_observe(verdict).to_advisory(),
+            **self._fold_skip_advisory(
+                goal, doc_fold if doc_fold is not None else claim_fold
+            ),
         )
         self._log_fires(events, job.source_t)
         return events
@@ -4820,8 +5048,15 @@ class Percept:
                     # no firing) and lands in the ``shadow.fold`` stage so a client's media-OFF .ptrace
                     # carries something gradeable. Only built when a tracer is attached (default path does
                     # no shadow work at all).
+                    # ``fold`` above is the SHADOW's (always ``unbound`` — it binds no decision);
+                    # ``fold_skip_reason`` is what the GOVERNING fold did, which is the question a
+                    # reader of this record actually has. See ``_fold_skip_advisory``.
                     await self._emit_trace(trace_id, now, STAGE_SHADOW_FOLD, goal_id=goal.id,
-                                           **self._shadow_observe(verdict).to_advisory())
+                                           **self._shadow_observe(verdict).to_advisory(),
+                                           **self._fold_skip_advisory(
+                                               goal,
+                                               doc_fold if doc_fold is not None else claim_fold,
+                                           ))
         finally:
             # Whatever the apply pass did not consume — a mid-loop ``break`` on staleness, a raised
             # binding invariant, a cancelled frame — must not outlive this call holding a provider
@@ -5570,6 +5805,9 @@ class Percept:
                     {
                         "goal_id": goal.id,
                         **self._shadow_observe(verdict).to_advisory(),
+                        **self._fold_skip_advisory(
+                            goal, doc_fold if doc_fold is not None else claim_fold
+                        ),
                     },
                 )
             )

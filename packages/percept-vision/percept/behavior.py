@@ -888,6 +888,7 @@ class BehaviorExecutor:
         operation: "str | None" = None,
         ambiguous: bool = False,
         unknown: bool = False,
+        origin: str = "governing",
     ) -> EpisodeFoldResult:
         """Fold an observation's :class:`~percept.episodes.ContinuationDecision` against this
         executor's episode-owned emission ledger → the :class:`EpisodeFoldResult` to thread into
@@ -904,9 +905,21 @@ class BehaviorExecutor:
         with :func:`percept.episodes.subject_is_unknown` on the verdict. When ``True`` the fold degrades
         to gate-only and NEVER rearms (a visible abstention must not manufacture wrong suppression); it
         does not consult the emission ledger, so it is safe on the transient episode minted for an
-        unknown. Default ``False`` is byte-for-byte the path from before this flag existed."""
+        unknown. Default ``False`` is byte-for-byte the path from before this flag existed.
+
+        ``origin`` (OBSERVABILITY ONLY, governs nothing) says WHO is folding: ``"governing"`` (a real
+        fold whose answer will be threaded into the gate) or ``"shadow"`` (the advisory observer).
+        ``decision=None`` yields the ``unbound`` result either way, but it means two very different
+        things: the shadow supplies ``None`` UNCONDITIONALLY, by construction, on every tick of every
+        concern — it binds no continuation decision at all — while a governing ``None`` would be a
+        real "no subject could be bound". Reading an ``unbound`` fold without knowing which caller
+        produced it is how a structurally-guaranteed value gets mistaken for a finding, so the two are
+        counted apart: ``episode.fold.no_decision.shadow`` vs ``episode.fold.no_decision.governing``.
+        """
         if operation is not None:
             mutation = episode_mutation_of(operation)
+        if decision is None:
+            self.metrics.incr(f"episode.fold.no_decision.{origin}")
         emitted = self._incidents.emitted(decision.episode.id) if decision is not None else 0
         return episode_fold(
             decision, emitted=emitted, mutation=mutation, ambiguous=ambiguous, unknown=unknown
@@ -928,9 +941,16 @@ class BehaviorExecutor:
         :class:`EpisodeFoldResult`) by calling the SAME pure :meth:`fold_episode`. It reads the
         emission ledger but never records into it and never touches the gate, so it is safe to run in
         pure shadow beside the live path. The resulting advisory is what the shadow path writes into the
-        ``shadow.fold`` trace stage and attaches to an incident — governing nothing."""
+        ``shadow.fold`` trace stage and attaches to an incident — governing nothing.
+
+        NOTE FOR ANYONE READING A ``shadow.fold`` RECORD. The watch path's only caller
+        (``Percept._shadow_observe``) passes ``decision=None`` unconditionally, so the fold this
+        returns reads ``match="unbound"`` with ``episode_id=None`` on EVERY tick of EVERY concern —
+        including ticks where the concern's real, governing fold bound an episode and suppressed a
+        re-report. ``unbound`` here is a property of the shadow, not a finding about the run."""
         fold = self.fold_episode(
-            decision, mutation=mutation, operation=operation, ambiguous=ambiguous, unknown=unknown
+            decision, mutation=mutation, operation=operation, ambiguous=ambiguous, unknown=unknown,
+            origin="shadow",
         )
         return ShadowObservation(subject=subject, fold=fold)
 
