@@ -1,4 +1,4 @@
-"""Card A4: a missing/broken pose provider must fail ONE rhythm goal, never the whole watch.
+"""A missing or broken pose provider must fail ONE rhythm goal, never the whole watch.
 
 The defect: ``rhythm_drive.observe(t, judge_frame)`` (``percept/runtime/worker.py``, the frame loop)
 had no try/except. A missing pose provider raises ``RuntimeError`` (``percept/harness/pose.py:89-93``,
@@ -171,7 +171,7 @@ class MidRunContainmentTests(unittest.TestCase):
         self.assertEqual(drive.arm_failures, {})
 
         frame = _pixels()
-        # THE bug this card fixes: this call must not raise.
+        # THE defect being pinned: this call must not raise.
         fires = drive.observe(0.0, frame)
         self.assertEqual(fires, [])
         self.assertEqual(provider.detect_calls, 1)

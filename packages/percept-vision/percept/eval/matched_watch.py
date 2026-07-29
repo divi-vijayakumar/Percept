@@ -3640,7 +3640,7 @@ def _validate_v2_arm_reconstruction(
         # It is REPAIRED here rather than replaced: it now models what actually ships — an ordering
         # witness in the executor's context plus a gate-mediated edge, and the delivery merge that
         # decides whether a decided fire becomes a notification. That keeps the reconstruction
-        # honest today, but it does not fix the shape. See the A1 report: the durable fix is to make
+        # honest today, but it does not fix the shape. The durable fix is to make
         # this contract-shaped (assert the INVARIANTS a transition trace must satisfy — an edge is
         # never reported without a prior witness, a spent edge never re-fires without a re-arm, no
         # two notifications land closer than the delivery resolution) instead of recomputing the

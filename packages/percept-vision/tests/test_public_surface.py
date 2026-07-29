@@ -1,4 +1,4 @@
-"""Pins the SDK's public export surface — ``percept.__all__`` plus the two submodules this card
+"""Pins the SDK's public export surface — ``percept.__all__`` plus the two submodules this module
 de-exported dark seams from (``percept.sensorplan``, ``percept.domain_pack``) — so a name silently
 added or removed fails CI instead of shipping unreviewed.
 
@@ -57,12 +57,12 @@ EXPECTED_PERCEPT_ALL = frozenset({
 })
 
 # percept.sensorplan — de-exported attach_sensor_plan/coerce_authored_sensor_plan (zero callers
-# outside the module itself; see tests/test_sensorplan.py and this card's report).
+# outside the module itself; see tests/test_sensorplan.py).
 EXPECTED_SENSORPLAN_ALL = frozenset({
     "SensorPrimitive", "PRIMITIVES", "SensorPlan", "sensor_plan_for",
 })
 
-# percept.domain_pack — unchanged by this card at the __all__ level: DomainPack keeps real callers
+# percept.domain_pack — unchanged at the __all__ level: DomainPack keeps real callers
 # (resolver.py, packs_default.py, catalog.py, eval dataset loaders). Only its dead
 # ``direct_judge_routes`` FIELD was removed, which is not a name in this list.
 EXPECTED_DOMAIN_PACK_ALL = frozenset({
@@ -120,7 +120,7 @@ class TestDomainPackPublicSurface(unittest.TestCase):
         self.assertEqual(set(domain_pack.__all__), EXPECTED_DOMAIN_PACK_ALL)
 
     def test_direct_judge_routes_is_not_a_field_anymore(self) -> None:
-        """The dark seam this card removed: DomainPack used to carry a direct_judge_routes field
+        """A removed dark seam: DomainPack used to carry a direct_judge_routes field
         that was declared/validated/serialised but consumed by nothing on the routing path."""
         pack = domain_pack.DomainPack(id="p")
         self.assertFalse(hasattr(pack, "direct_judge_routes"))

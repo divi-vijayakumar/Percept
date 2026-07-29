@@ -1,4 +1,4 @@
-"""A1: the transition sense fires through the GATE, not around it.
+"""The transition sense fires through the GATE, not around it.
 
 The defect this pins
 --------------------
