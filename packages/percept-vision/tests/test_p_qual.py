@@ -54,8 +54,6 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from percept.adapters import Goal
 from percept.agent import Percept
 from percept.backends.fake_judge import ErrorInjectionConfig, FakeJudge, LatencyProfile
@@ -77,13 +75,17 @@ sys.path.insert(0, str(_VIABILITY_FIXTURES_DIR))
 # cleanly rather than error at collection. When the fixture IS present (e.g. locally, with the
 # viability harness checked out alongside the repo), the tests run for real and assert exactly
 # what they always did.
-pytest.importorskip(
-    "core_archetypes",
-    reason="eval/viability/fixtures/core_archetypes.py is git-untracked/gitignored (internal "
-    "viability harness, kept local-only) — not present on a clean checkout/CI",
-)
-
-from core_archetypes import build_core_archetype_fixtures  # noqa: E402
+# RUNNER-AGNOSTIC SKIP. `pytest.importorskip` raises pytest's own `Skipped`, which unittest's
+# loader does not recognise — under `make test` (unittest discovery) that surfaces as a COLLECTION
+# ERROR, not a skip, so the guard only ever worked under pytest. `unittest.SkipTest` raised at
+# module scope is understood by BOTH runners, so the module skips cleanly either way.
+try:
+    from core_archetypes import build_core_archetype_fixtures  # noqa: E402
+except ImportError as exc:  # pragma: no cover - clean-checkout/CI path
+    raise unittest.SkipTest(
+        "eval/viability/fixtures/core_archetypes.py is git-untracked (internal viability "
+        f"harness, kept local-only) — not present on a clean checkout/CI ({exc})"
+    ) from exc
 
 
 # ---------------------------------------------------------------------------

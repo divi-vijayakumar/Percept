@@ -92,9 +92,34 @@ make architecture-check  # the diagram matches the code
 make test                # the suite
 ```
 
-**The suite has exactly 2 known failures** — `test_conformance_seams` and `test_conformance_suite`,
-a unittest double-import artifact (`tests.X` vs `X`). They pass standalone. More than 2 means you
-broke something.
+### Always name the runner with the count
+
+The two runners disagree, and quoting a number without saying which one produced it has already
+misled a session into briefing agents against the wrong baseline.
+
+| runner | command | expected |
+|---|---|---|
+| **unittest** (this is what `make test` runs) | `PYTHONPATH=. PERCEPT_MODE=offline python3 -m unittest discover -s tests` | **2 known failures**, 0 errors |
+| **pytest** | `python3 -m pytest packages/percept-vision/tests -p no:randomly` | **0 failures** |
+
+They differ for two structural reasons, both expected:
+
+- **pytest counts more tests** — it expands parametrized cases and subtests individually, so its
+  total is far higher for the same code. Never compare the two totals.
+- **The 2 unittest failures do not exist under pytest.** `test_conformance_seams` and
+  `test_conformance_suite` hit a double-import collision (the module is loaded as both `tests.X` and
+  `X`, so `X.Routable is not tests.X.Routable`). It is a discovery artifact, not a product defect —
+  both files pass standalone. pytest's import mode never triggers it.
+
+**More than 2 failures under unittest, or any failures under pytest, means you broke something.**
+Totals also shift legitimately between branches — `validation/stage-harness` and `main` have
+diverged by hundreds of commits — so compare against *your own branch before your change*, never
+against a number quoted in a doc.
+
+A test that needs a git-ignored fixture must skip with **`unittest.SkipTest` raised at module
+scope**, which both runners honour. `pytest.importorskip` raises pytest's own `Skipped`, which
+unittest's loader turns into a **collection error** — that guard silently only ever worked under
+one runner.
 
 ## Things that will bite you
 
