@@ -850,6 +850,36 @@ class BehaviorExecutor:
     def ctx(self, concern_id: str) -> ConcernContext:
         return self._ctx.setdefault(concern_id, ConcernContext())
 
+    def forget_entity(self, entity_id: Hashable) -> None:
+        """Reclaim the per-entity state this executor holds for a DEAD entity, across every concern.
+
+        The transition sense splits one latch across two owners: the armed/spent edge is the gate's
+        (``(goal_id, latch_key)``, swept by :meth:`~percept.gate.Gate.reset_entity`), while the
+        ORDERING WITNESS ``seen_from`` lives here, because the gate has no vocabulary for "B only
+        counts after A". :meth:`transition_decide` writes the witness with a ``setdefault`` BEFORE
+        any truth test, so every entity id that ever reaches the transition path leaves an entry
+        behind. Sweeping only the gate half left the witness half growing for the life of the process
+        on any source whose track ids churn. This is the other half of that sweep, so both are
+        reclaimed together.
+
+        Call this ONLY for genuine entity death. It is deliberately NOT wired to re-arm, to a
+        confident-false, or to the goal-level gate resets: a transition is a point event with no
+        observable end, so this path keeps its witness (and its merge anchor) across re-arms on
+        purpose — reclaiming it there would re-open the edge that routing this latch through the gate
+        exists to hold shut.
+
+        The scene latch is exempt. Under the default/declared-scene identity policy the latch key is
+        the literal stable :data:`~percept.identity_policy.SCENE_IDENTITY` — a per-goal singleton
+        that entity churn cannot multiply, and never an entity id. It is skipped explicitly, so a
+        custom :class:`~percept.entity.EntityGraph` minting an id that collided with that sentinel
+        still could not drop a live scene-scoped witness.
+        """
+
+        if entity_id == SCENE_IDENTITY:
+            return  # the per-goal scene singleton is not an entity and is never reclaimed here
+        for ctx in self._ctx.values():
+            ctx.transitions.pop(entity_id, None)
+
     def fold_episode(
         self,
         decision: "ContinuationDecision | None",

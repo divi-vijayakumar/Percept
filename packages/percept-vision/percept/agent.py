@@ -6379,10 +6379,23 @@ class Percept:
         return target
 
     def _on_entity_evicted(self, entity_id: str) -> None:
-        """Eviction hook: an entity died (graph cap) -> drop its gate keys and its cached verdicts, so no
-        orphan state survives it. Ties ``FrameHashLayer.invalidate_entity`` to entity DEATH (it previously
-        fired only on assertion-override), closing the adjacent-audit gap."""
+        """Eviction hook: an entity died (graph cap) -> drop its gate keys, its executor-side latch
+        state and its cached verdicts, so no orphan state survives it. Ties
+        ``FrameHashLayer.invalidate_entity`` to entity DEATH (it previously fired only on
+        assertion-override), closing the adjacent-audit gap.
+
+        The transition sense holds its latch in TWO halves — the armed/spent edge in the gate, and the
+        ordering witness in the executor's isolated per-concern context (the gate cannot express "B
+        only counts after A"). Only the gate half used to be reclaimed here, so the witness half grew
+        without bound on a source whose track ids churn. Both halves are swept together now, at the
+        one site that means the entity is genuinely gone; every other reset path (a re-arm, a
+        confident-false, the correction path's ``reset_goal``) deliberately leaves the witness
+        standing."""
         self.gate.reset_entity(entity_id)
+        # Read the private slot, never the ``executor`` property: this hook must not CONSTRUCT an
+        # executor for a run that never had one. No executor means no witness to reclaim.
+        if self._executor is not None:
+            self._executor.forget_entity(entity_id)
         self.invalidate_cache_entity(entity_id)
 
     def invalidate_cache(self, goal_id: str | None = None) -> None:
