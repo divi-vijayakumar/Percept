@@ -73,7 +73,12 @@ from .identity_policy import (
     transition_latch_key,
     watch_reducer_entity_id,
 )
-from .judge_context import JUDGE_STATIC_CONTEXT_KEY, ReservedContextKeyError
+from .episode_memory import episode_judge_context, with_open_episode
+from .judge_context import (
+    JUDGE_OPEN_EPISODE_KEY,
+    JUDGE_STATIC_CONTEXT_KEY,
+    ReservedContextKeyError,
+)
 from .events import AudioUnit, AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, GateOutcome, classify
 from .goals import GoalOp, GoalRegistry
@@ -6202,6 +6207,21 @@ class Percept:
                 )
             context = dict(context) if context else {}
             context[JUDGE_STATIC_CONTEXT_KEY] = bound.static_context.decoded_text
+        # OPEN-EPISODE injection, at the same dispatch site and by the same rules as the static
+        # context above. Without this the judge re-answers "is the bag still there?" every tick with
+        # no memory of the episode it is continuing: the episode existed in ``self.episodes``, but
+        # nothing ever serialized it into the model call. ``episode_judge_context`` returns None for
+        # a goal with no episode log (every plain watch goal) and for a log with nothing open, so
+        # those calls are byte-for-byte unchanged. The text it returns is pixel-free and
+        # fixed-size — see ``percept.episode_memory``.
+        episode_context = episode_judge_context(self.episodes.get(goal.id))
+        if episode_context is not None:
+            if context is not None and JUDGE_OPEN_EPISODE_KEY in context:
+                raise ReservedContextKeyError(
+                    f"goal {goal.id!r} judge context already carries the reserved key "
+                    f"{JUDGE_OPEN_EPISODE_KEY!r}; the open episode cannot be injected over it"
+                )
+            context = with_open_episode(context, episode_context)
         process_mode = bool(
             context
             and (context.get("process_qa") or context.get("observe_step") or context.get(EXTRACTOR_CONTEXT_KEY))
@@ -6217,7 +6237,12 @@ class Percept:
         # grounding the backends already implement but the watch path never supplied. Stable per goal
         # (set in goal.state), so it rides the goal's cache scope; None (the default) is byte-for-byte.
         exemplar = goal.state.get("exemplar")
-        if frames or audio or process_mode or claim_mode or event_mode or force_context:
+        # An injected open episode forwards ``context`` and bypasses the single-frame cache for the
+        # SAME reason the extractor's per-call facts do: the verdict now depends on episode state
+        # that the frame-hashed cache key does not cover, so a slot filled under one episode state
+        # must never be re-served under another. A goal with nothing open never sets this.
+        episode_mode = episode_context is not None
+        if frames or audio or process_mode or claim_mode or event_mode or force_context or episode_mode:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
             # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
@@ -6232,7 +6257,9 @@ class Percept:
             # exactly the unbound rule (context only on process/claim).
             extra = {
                 "context": context
-            } if (process_mode or claim_mode or event_mode or force_context) else {}
+            } if (
+                process_mode or claim_mode or event_mode or force_context or episode_mode
+            ) else {}
             # The strip/audio/process-QA judge is on the live watch path (perceive_judged /
             # _observe_and_log) — a malformed/timeout/partial response here must degrade the tick,
             # never crash it, so this goes through the fail-closed boundary (may raise

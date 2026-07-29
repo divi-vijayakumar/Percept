@@ -14,12 +14,17 @@ import unittest
 
 from percept.adapters import Goal, Verdict
 from percept.episode_memory import (
+    EPISODE_CONTEXT_MAX_CHARS,
     JUDGE_MODE_EPISODE_MEMORY,
     EpisodeMemoryState,
     EpisodeMemoryStore,
+    episode_judge_context,
     episode_memory_enabled,
     judge_episode_memory,
+    with_open_episode,
 )
+from percept.episodes import JUDGE_CONTEXT_MAX_REVISIONS, EpisodeLog
+from percept.judge_context import JUDGE_OPEN_EPISODE_KEY, ReservedContextKeyError
 
 
 class _StepFake:
@@ -186,6 +191,126 @@ class TestVerdictReflectsIntegratedEvidence(unittest.TestCase):
 
         # "ok" repeated never carries enough substance (RESOLVE_MIN_CHARS) to integrate to satisfied
         self.assertTrue(all(not v.satisfied for v in verdicts))
+
+
+class OpenEpisodeSerializationTests(unittest.TestCase):
+    """The OTHER half of the memory: what the SYSTEM established, serialized for the judge.
+
+    The running answer above carries what the model said; these carry the concern's open episode, so
+    a persistent question ("is it still there?") is answered as a continuation instead of being
+    re-decided from one frame with no memory."""
+
+    @staticmethod
+    def _log_with_open_episode(*, confirmations: int = 0, value: str | None = None) -> EpisodeLog:
+        log = EpisodeLog("watch")
+        episode, _ = log.observe(10.0, "exemplar-payload", None, subject_key="backpack_a")
+        if value is not None:
+            log.annotate(episode, value=value)
+        for i in range(confirmations):
+            log.record_revision(episode, "confirmed", t=11.0 + i)
+        return log
+
+    def test_no_log_and_empty_log_produce_no_context(self):
+        self.assertIsNone(episode_judge_context(None))
+        self.assertIsNone(episode_judge_context(EpisodeLog("watch")))
+
+    def test_closed_episode_produces_no_context(self):
+        log = self._log_with_open_episode()
+        log.close(log.current_open().id, t=50.0)
+        self.assertIsNone(episode_judge_context(log))
+
+    def test_open_episode_is_serialized_with_its_identity_and_history(self):
+        log = self._log_with_open_episode(confirmations=3, value="an unattended black backpack")
+        text = episode_judge_context(log)
+
+        self.assertIsNotNone(text)
+        self.assertIn("backpack_a", text)                 # the subject it is about
+        self.assertIn("an unattended black backpack", text)  # what was already established
+        self.assertIn("t=10.000", text)                   # when it started
+        self.assertIn("open", text)                       # its lifecycle state
+
+    def test_serialized_episode_carries_no_payload(self):
+        """Pixel-free: the caller's opaque observation payload must never reach a prompt."""
+        log = self._log_with_open_episode(confirmations=2)
+        episode = log.current_open()
+        self.assertEqual(episode.exemplar, "exemplar-payload")  # it IS on the episode
+        self.assertNotIn("exemplar-payload", episode_judge_context(log))  # and NOT in the context
+
+        projected = episode.to_judge_dict()
+        self.assertNotIn("exemplar", projected)
+        self.assertNotIn("representative", projected)
+
+    def test_size_is_bounded_under_many_confirmations(self):
+        """The endurance property: a 24/7 stream must not grow the prompt.
+
+        A confirmation coalesces into scalars rather than appending a row, so an episode confirmed
+        4,000 times must serialize to essentially the same size as one confirmed twice — never 2,000x
+        the size."""
+        short = episode_judge_context(self._log_with_open_episode(confirmations=2, value="a bag"))
+        long = episode_judge_context(self._log_with_open_episode(confirmations=4000, value="a bag"))
+
+        self.assertLessEqual(len(long), len(short) + 32)  # only the digits of the clock may grow
+        self.assertLessEqual(len(long), EPISODE_CONTEXT_MAX_CHARS)
+
+    def test_size_is_bounded_under_many_state_changes(self):
+        """The timeline is truncated to its most recent rows, and the omission is DECLARED."""
+        log = self._log_with_open_episode()
+        episode = log.current_open()
+        for i in range(400):
+            log.record_revision(episode, "updated", t=20.0 + i, value=f"finding {i}")
+
+        text = episode_judge_context(log)
+        projected = episode.to_judge_dict()
+
+        self.assertLessEqual(len(projected["revisions"]), JUDGE_CONTEXT_MAX_REVISIONS)
+        self.assertGreater(projected["revisions_omitted"], 0)
+        self.assertLessEqual(len(text), EPISODE_CONTEXT_MAX_CHARS)
+        self.assertIn("finding 399", text)      # the most RECENT changes are the ones kept
+        self.assertNotIn("finding 0,", text)    # the oldest are what gets dropped first
+
+    def test_size_is_bounded_under_a_pathological_value(self):
+        log = self._log_with_open_episode(value="X" * 100_000)
+        self.assertLessEqual(len(episode_judge_context(log)), EPISODE_CONTEXT_MAX_CHARS)
+
+    def test_many_open_episodes_contribute_one_plus_a_count(self):
+        """Size must not grow with the number of open episodes either."""
+        log = EpisodeLog("watch")
+        for i in range(40):
+            log.observe(10.0 + i, f"obs-{i}", None, subject_key=f"subject_{i}")
+
+        text = episode_judge_context(log)
+        self.assertEqual(len(log.open_episodes()), 40)
+        self.assertIn("subject_39", text)      # the most recently seen one is the one shown
+        self.assertNotIn("subject_0,", text)
+        self.assertIn("39 other open episode(s) not shown", text)
+        self.assertLessEqual(len(text), EPISODE_CONTEXT_MAX_CHARS)
+
+    def test_injection_copies_the_caller_context_and_refuses_to_overwrite(self):
+        caller = {"process_qa": True}
+        merged = with_open_episode(caller, "episode text")
+
+        self.assertEqual(merged[JUDGE_OPEN_EPISODE_KEY], "episode text")
+        self.assertNotIn(JUDGE_OPEN_EPISODE_KEY, caller)  # caller's dict never mutated
+        with self.assertRaises(ReservedContextKeyError):
+            with_open_episode(merged, "second text")
+
+    def test_running_answer_path_can_also_carry_the_open_episode(self):
+        vision = _StepFake()
+        goal = Goal(id="g", condition="is the bag still there?", say="x",
+                    state={"judge_mode": JUDGE_MODE_EPISODE_MEMORY})
+        store = EpisodeMemoryStore()
+        log = self._log_with_open_episode(confirmations=2, value="a black backpack")
+
+        async def go():
+            await judge_episode_memory(vision, goal, "frame", store=store, episode_log=log)
+            await judge_episode_memory(vision, goal, "frame", store=store)  # no log -> unchanged
+
+        asyncio.run(go())
+
+        with_log, without_log = vision.seen_contexts
+        self.assertIn("a black backpack", with_log[JUDGE_OPEN_EPISODE_KEY])
+        self.assertTrue(with_log["process_qa"])            # both halves ride together
+        self.assertNotIn(JUDGE_OPEN_EPISODE_KEY, without_log)
 
 
 if __name__ == "__main__":
