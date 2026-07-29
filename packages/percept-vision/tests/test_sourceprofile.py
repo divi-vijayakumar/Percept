@@ -69,7 +69,7 @@ def _industrial() -> SourceProfile:
         evidence_strategy="cycle_window_plus_telemetry",
         identity_strategy="part_serial",
         default_timebase="wall",
-        parameters={"coast_interval_s": 5.0, "episode_unit": "shift"},
+        parameters={"coast_interval_s": 5.0, "cadence_label": "shift"},
     )
 
 
@@ -231,11 +231,36 @@ def test_screen_document_identity_is_content_never_geometry():
 def test_screen_document_shape():
     assert SCREEN_DOCUMENT.default_timebase == "media"        # files
     assert SCREEN_DOCUMENT.temporal_unit == "page"
-    assert SCREEN_DOCUMENT.parameters["episode_unit"] == "page_interval"
     assert SCREEN_DOCUMENT.parameters["plan_mode"] == "window"    # never sprite (ADR-008 Corrections(a))
     parts = SCREEN_DOCUMENT.parameters["evidence_parts"]
     assert parts[:2] == ("full_screenshot", "changed_region_crop")
     assert "previous_screenshot" in SCREEN_DOCUMENT.parameters["evidence_optional_parts"]
+
+
+def test_episode_unit_is_gone_not_a_dead_declaration():
+    """``parameters["episode_unit"]`` was carried by all three shipped profiles and read by
+    NOTHING — grepped across the whole package, the only hits were this dict literal, docs quoting
+    it, and a test asserting its presence. ``SourceProfile.default_episode_policy`` (the actual,
+    load-bearing episode-segmentation mechanism) is built solely from
+    ``unknown_continuity_gap_s`` / ``unknown_attaches_to_active_bound`` — never from
+    ``episode_unit`` — and screen_document's document-presence folding already works off that
+    mechanism (and off ``content_key`` identity), so the key blocked nothing by being inert. Rather
+    than leave a free-text ``parameters`` entry that reads as a contract nobody honors, it is
+    removed outright; a future camera-episode design lands its own real, read parameter instead of
+    inheriting this one's name.
+    """
+    for profile in ALL_SOURCE_PROFILES:
+        assert "episode_unit" not in profile.parameters, (
+            f"{profile.name} still declares episode_unit — the key was supposed to be retired"
+        )
+    # No consumer regressed: the mechanism that DOES drive episode segmentation is untouched and
+    # still resolves exactly as before for every shipped profile.
+    assert PHYSICAL_SCENE.default_episode_policy.unknown_attaches_to_active_bound is True
+    assert PHYSICAL_SCENE.default_episode_policy.unknown_continuity_gap_s is None
+    assert SCREEN_DOCUMENT.default_episode_policy.unknown_continuity_gap_s == SCREEN_COAST_INTERVAL_S * 3.0
+    assert SCREEN_DOCUMENT.default_episode_policy.unknown_attaches_to_active_bound is False
+    assert CONVERSATION.default_episode_policy.unknown_continuity_gap_s is None
+    assert CONVERSATION.default_episode_policy.unknown_attaches_to_active_bound is False
 
 
 def test_screen_document_notes_carry_the_measured_evidence_not_a_guess():

@@ -1,183 +1,154 @@
 {
-  "bars": [
-    {
-      "direction": "min",
-      "metric": "candidate_recall",
-      "require_ci_excludes_zero": false,
-      "value": 0.6
-    },
-    {
-      "direction": "min",
-      "metric": "recall_delta",
-      "require_ci_excludes_zero": true,
-      "value": 0.05
-    },
-    {
-      "direction": "max",
-      "metric": "false_fire_delta",
-      "require_ci_excludes_zero": false,
-      "value": 0.0
-    }
-  ],
-  "bars_declared_by": "DS3 \u2014 GUI-World screen_document pack",
+  "declared_at": "2026-07-23",
+  "registration_hash": "4725bccb6296b41613a16e0e25c1dcedc5d31421badb7a52f9df927434a65061",
+  "expected_registration_hash": null,
+  "eval_run_id": "derive-4725bccb6296",
+  "bootstrap_seed": 78227406807702,
   "bars_hash": "0cba19c2869eee59a098457f0103cfc03a30c07073f876db1d9e3dbe2d02803d",
   "bars_source": "bars.json",
-  "bootstrap_seed": 67117583526303,
-  "declared_at": "2026-07-23",
-  "eval_run_id": "derive-3d0b07b9699f",
-  "expected_registration_hash": null,
-  "fixture_set_hash": "3939d62845408a403c4cf175795a936e81c4a19022ed8a0afda1960adb6226c6",
+  "bars_declared_by": "DS3 \u2014 GUI-World screen_document pack",
+  "ladder_source": "eval.datasets.guiworld",
   "ladder": {
+    "winner_rule": "the earliest rung, in the operator's declared order, that meets EVERY supplied bar",
     "rungs": [
       {
-        "fixture_dir": "coast_only",
         "name": "coast_only",
+        "fixture_dir": "coast_only",
+        "watch_profile": {
+          "name": "screen-coast-only",
+          "environment": "screen_capture",
+          "goal_type": "dynamic",
+          "state": "transition",
+          "salience_stat": "block_max",
+          "plan_mode": "window",
+          "notes": "Shipped default: block_max/0.20 + the mandatory coast floor, no client change signal. A page-scale text edit dilutes below every calibrated cutoff, so only the coast keeps it observed.",
+          "stat_thresholds": {
+            "block_max": 0.2
+          },
+          "cadence": {
+            "base_fps": 0.5,
+            "max_fps": 0.5,
+            "escalate_threshold": 1.0,
+            "hold_s": 0.5
+          },
+          "gate": {
+            "require_false_first": true,
+            "refractory_s": 0.5
+          },
+          "goal_density_guidance": {
+            "max_recommended_goals": 3,
+            "note": ""
+          }
+        },
+        "watch_profile_hash": "ccaed18ce0f645a0154d2d02ff6f056f01b8624bcf360834a52ca44d8d535a94",
         "source_profile": {
-          "admission_strategy": "tier0_localized_salience_or_coast",
-          "admission_tuned": true,
-          "default_identity_policy": "content_key",
-          "default_timebase": "media",
-          "evidence_strategy": "screenshot_plus_changed_region",
-          "identity_strategy": "content_key",
+          "name": "screen_document",
           "modalities": [
             "text",
             "video"
           ],
-          "name": "screen_document",
-          "notes": "Screen recordings, document and page content. TUNED @1: the declared default admission is localized block_max salience at 0.20 \u2014 the SAME cutoff physical_scene carries, never lowered \u2014 which clears on a screen change large enough to register on the 48x36 gate frame (a highlighted cell, a popup, a UI element). A fixed low-rate coast remains mandatory underneath it: a full-PAGE, text-scale edit still dilutes below every calibrated cutoff (see the measured evidence below), so the coast \u2014 not the tuned admission \u2014 is what keeps that harder residual case observed. A client whose content is dominated by page-scale edits should still register their own page-change / phash / OCR signal (register_detector) and A/B it with `percept eval` \u2014 see docs/how-to/tune-admission.md. An unreadable content key defaults to temporal-proximity unknown-continuity (SCREEN_UNKNOWN_CONTINUITY_GAP_S) rather than a fresh provisional subject per tick. Measured with percept-doctor on probes/01-screen-walkthrough/data/clean.mp4 (36s accounting screen recording, 180 frames, 1920x1080, containing a hard cut between two different documents): mean max 0.0163 vs threshold 0.100 -> 0 admitted; block_max max 0.0919 vs threshold 0.200 -> 0 admitted; p95 max 0.0743 vs threshold 0.150 -> 0 admitted. block_max amplifies the localized signal 5.6x over the mean as designed and still lands under HALF its own cutoff. Cause: the tier-0 gate frame is 48x36 greyscale (runtime/source.py) and block_max reads an 8x6 grid over it, so one block is ~6x6 px of a downsampled 1080p screen \u2014 a document-sized edit is diluted away. This is an under-resolved EYE, not a mis-selected statistic, and it is NOT fixed by lowering a threshold (the same cutoffs carry physical-scene precision).",
+          "temporal_unit": "page",
+          "admission_strategy": "tier0_localized_salience_or_coast",
+          "evidence_strategy": "screenshot_plus_changed_region",
+          "identity_strategy": "content_key",
+          "default_identity_policy": "content_key",
+          "default_timebase": "media",
           "parameters": {
             "change_signal": "tier0_block_max_salience",
+            "salience_stat": "block_max",
+            "salience_threshold": 0.2,
             "coast_interval_s": 2.0,
             "coast_required": true,
-            "episode_unit": "page_interval",
-            "evidence_optional_parts": [
-              "previous_screenshot"
-            ],
             "evidence_parts": [
               "full_screenshot",
               "changed_region_crop",
               "previous_screenshot"
             ],
+            "evidence_optional_parts": [
+              "previous_screenshot"
+            ],
+            "plan_mode": "window",
             "identity_key_hint": "document_or_page_key",
             "measured_evidence": "Measured with percept-doctor on probes/01-screen-walkthrough/data/clean.mp4 (36s accounting screen recording, 180 frames, 1920x1080, containing a hard cut between two different documents): mean max 0.0163 vs threshold 0.100 -> 0 admitted; block_max max 0.0919 vs threshold 0.200 -> 0 admitted; p95 max 0.0743 vs threshold 0.150 -> 0 admitted. block_max amplifies the localized signal 5.6x over the mean as designed and still lands under HALF its own cutoff. Cause: the tier-0 gate frame is 48x36 greyscale (runtime/source.py) and block_max reads an 8x6 grid over it, so one block is ~6x6 px of a downsampled 1080p screen \u2014 a document-sized edit is diluted away. This is an under-resolved EYE, not a mis-selected statistic, and it is NOT fixed by lowering a threshold (the same cutoffs carry physical-scene precision).",
-            "plan_mode": "window",
-            "salience_stat": "block_max",
-            "salience_threshold": 0.2,
             "unknown_continuity_gap_s": 6.0
           },
           "stability": "stable",
-          "temporal_unit": "page"
-        },
-        "watch_profile": {
-          "cadence": {
-            "base_fps": 0.5,
-            "escalate_threshold": 1.0,
-            "hold_s": 0.5,
-            "max_fps": 0.5
-          },
-          "environment": "screen_capture",
-          "gate": {
-            "refractory_s": 0.5,
-            "require_false_first": true
-          },
-          "goal_density_guidance": {
-            "max_recommended_goals": 3,
-            "note": ""
-          },
-          "goal_type": "dynamic",
-          "name": "screen-coast-only",
-          "notes": "Shipped default: block_max/0.20 + the mandatory coast floor, no client change signal. A page-scale text edit dilutes below every calibrated cutoff, so only the coast keeps it observed.",
-          "plan_mode": "window",
-          "salience_stat": "block_max",
-          "stat_thresholds": {
-            "block_max": 0.2
-          },
-          "state": "transition"
-        },
-        "watch_profile_hash": "ccaed18ce0f645a0154d2d02ff6f056f01b8624bcf360834a52ca44d8d535a94"
+          "admission_tuned": true,
+          "notes": "Screen recordings, document and page content. TUNED @1: the declared default admission is localized block_max salience at 0.20 \u2014 the SAME cutoff physical_scene carries, never lowered \u2014 which clears on a screen change large enough to register on the 48x36 gate frame (a highlighted cell, a popup, a UI element). A fixed low-rate coast remains mandatory underneath it: a full-PAGE, text-scale edit still dilutes below every calibrated cutoff (see the measured evidence below), so the coast \u2014 not the tuned admission \u2014 is what keeps that harder residual case observed. A client whose content is dominated by page-scale edits should still register their own page-change / phash / OCR signal (register_detector) and A/B it with `percept eval` \u2014 see docs/how-to/tune-admission.md. An unreadable content key defaults to temporal-proximity unknown-continuity (SCREEN_UNKNOWN_CONTINUITY_GAP_S) rather than a fresh provisional subject per tick. Measured with percept-doctor on probes/01-screen-walkthrough/data/clean.mp4 (36s accounting screen recording, 180 frames, 1920x1080, containing a hard cut between two different documents): mean max 0.0163 vs threshold 0.100 -> 0 admitted; block_max max 0.0919 vs threshold 0.200 -> 0 admitted; p95 max 0.0743 vs threshold 0.150 -> 0 admitted. block_max amplifies the localized signal 5.6x over the mean as designed and still lands under HALF its own cutoff. Cause: the tier-0 gate frame is 48x36 greyscale (runtime/source.py) and block_max reads an 8x6 grid over it, so one block is ~6x6 px of a downsampled 1080p screen \u2014 a document-sized edit is diluted away. This is an under-resolved EYE, not a mis-selected statistic, and it is NOT fixed by lowering a threshold (the same cutoffs carry physical-scene precision)."
+        }
       },
       {
-        "fixture_dir": "client_change_signal",
         "name": "client_change_signal",
+        "fixture_dir": "client_change_signal",
+        "watch_profile": {
+          "name": "screen-client-change-signal",
+          "environment": "screen_capture",
+          "goal_type": "dynamic",
+          "state": "transition",
+          "salience_stat": "block_max",
+          "plan_mode": "window",
+          "notes": "Client-registered page-change / phash / OCR change signal escalating above the coast floor. The coast floor is retained underneath it, not replaced.",
+          "stat_thresholds": {
+            "block_max": 0.2
+          },
+          "cadence": {
+            "base_fps": 0.5,
+            "max_fps": 4.0,
+            "escalate_threshold": 0.2,
+            "hold_s": 0.5
+          },
+          "gate": {
+            "require_false_first": true,
+            "refractory_s": 0.5
+          },
+          "goal_density_guidance": {
+            "max_recommended_goals": 3,
+            "note": ""
+          }
+        },
+        "watch_profile_hash": "3ad491c40bb3870a551587e0910fb0767907ca09d097a21d995ec15f4628f78c",
         "source_profile": {
-          "admission_strategy": "tier0_localized_salience_or_coast",
-          "admission_tuned": true,
-          "default_identity_policy": "content_key",
-          "default_timebase": "media",
-          "evidence_strategy": "screenshot_plus_changed_region",
-          "identity_strategy": "content_key",
+          "name": "screen_document",
           "modalities": [
             "text",
             "video"
           ],
-          "name": "screen_document",
-          "notes": "Screen recordings, document and page content. TUNED @1: the declared default admission is localized block_max salience at 0.20 \u2014 the SAME cutoff physical_scene carries, never lowered \u2014 which clears on a screen change large enough to register on the 48x36 gate frame (a highlighted cell, a popup, a UI element). A fixed low-rate coast remains mandatory underneath it: a full-PAGE, text-scale edit still dilutes below every calibrated cutoff (see the measured evidence below), so the coast \u2014 not the tuned admission \u2014 is what keeps that harder residual case observed. A client whose content is dominated by page-scale edits should still register their own page-change / phash / OCR signal (register_detector) and A/B it with `percept eval` \u2014 see docs/how-to/tune-admission.md. An unreadable content key defaults to temporal-proximity unknown-continuity (SCREEN_UNKNOWN_CONTINUITY_GAP_S) rather than a fresh provisional subject per tick. Measured with percept-doctor on probes/01-screen-walkthrough/data/clean.mp4 (36s accounting screen recording, 180 frames, 1920x1080, containing a hard cut between two different documents): mean max 0.0163 vs threshold 0.100 -> 0 admitted; block_max max 0.0919 vs threshold 0.200 -> 0 admitted; p95 max 0.0743 vs threshold 0.150 -> 0 admitted. block_max amplifies the localized signal 5.6x over the mean as designed and still lands under HALF its own cutoff. Cause: the tier-0 gate frame is 48x36 greyscale (runtime/source.py) and block_max reads an 8x6 grid over it, so one block is ~6x6 px of a downsampled 1080p screen \u2014 a document-sized edit is diluted away. This is an under-resolved EYE, not a mis-selected statistic, and it is NOT fixed by lowering a threshold (the same cutoffs carry physical-scene precision).",
+          "temporal_unit": "page",
+          "admission_strategy": "tier0_localized_salience_or_coast",
+          "evidence_strategy": "screenshot_plus_changed_region",
+          "identity_strategy": "content_key",
+          "default_identity_policy": "content_key",
+          "default_timebase": "media",
           "parameters": {
             "change_signal": "tier0_block_max_salience",
+            "salience_stat": "block_max",
+            "salience_threshold": 0.2,
             "coast_interval_s": 2.0,
             "coast_required": true,
-            "episode_unit": "page_interval",
-            "evidence_optional_parts": [
-              "previous_screenshot"
-            ],
             "evidence_parts": [
               "full_screenshot",
               "changed_region_crop",
               "previous_screenshot"
             ],
+            "evidence_optional_parts": [
+              "previous_screenshot"
+            ],
+            "plan_mode": "window",
             "identity_key_hint": "document_or_page_key",
             "measured_evidence": "Measured with percept-doctor on probes/01-screen-walkthrough/data/clean.mp4 (36s accounting screen recording, 180 frames, 1920x1080, containing a hard cut between two different documents): mean max 0.0163 vs threshold 0.100 -> 0 admitted; block_max max 0.0919 vs threshold 0.200 -> 0 admitted; p95 max 0.0743 vs threshold 0.150 -> 0 admitted. block_max amplifies the localized signal 5.6x over the mean as designed and still lands under HALF its own cutoff. Cause: the tier-0 gate frame is 48x36 greyscale (runtime/source.py) and block_max reads an 8x6 grid over it, so one block is ~6x6 px of a downsampled 1080p screen \u2014 a document-sized edit is diluted away. This is an under-resolved EYE, not a mis-selected statistic, and it is NOT fixed by lowering a threshold (the same cutoffs carry physical-scene precision).",
-            "plan_mode": "window",
-            "salience_stat": "block_max",
-            "salience_threshold": 0.2,
             "unknown_continuity_gap_s": 6.0
           },
           "stability": "stable",
-          "temporal_unit": "page"
-        },
-        "watch_profile": {
-          "cadence": {
-            "base_fps": 0.5,
-            "escalate_threshold": 0.2,
-            "hold_s": 0.5,
-            "max_fps": 4.0
-          },
-          "environment": "screen_capture",
-          "gate": {
-            "refractory_s": 0.5,
-            "require_false_first": true
-          },
-          "goal_density_guidance": {
-            "max_recommended_goals": 3,
-            "note": ""
-          },
-          "goal_type": "dynamic",
-          "name": "screen-client-change-signal",
-          "notes": "Client-registered page-change / phash / OCR change signal escalating above the coast floor. The coast floor is retained underneath it, not replaced.",
-          "plan_mode": "window",
-          "salience_stat": "block_max",
-          "stat_thresholds": {
-            "block_max": 0.2
-          },
-          "state": "transition"
-        },
-        "watch_profile_hash": "3ad491c40bb3870a551587e0910fb0767907ca09d097a21d995ec15f4628f78c"
+          "admission_tuned": true,
+          "notes": "Screen recordings, document and page content. TUNED @1: the declared default admission is localized block_max salience at 0.20 \u2014 the SAME cutoff physical_scene carries, never lowered \u2014 which clears on a screen change large enough to register on the 48x36 gate frame (a highlighted cell, a popup, a UI element). A fixed low-rate coast remains mandatory underneath it: a full-PAGE, text-scale edit still dilutes below every calibrated cutoff (see the measured evidence below), so the coast \u2014 not the tuned admission \u2014 is what keeps that harder residual case observed. A client whose content is dominated by page-scale edits should still register their own page-change / phash / OCR signal (register_detector) and A/B it with `percept eval` \u2014 see docs/how-to/tune-admission.md. An unreadable content key defaults to temporal-proximity unknown-continuity (SCREEN_UNKNOWN_CONTINUITY_GAP_S) rather than a fresh provisional subject per tick. Measured with percept-doctor on probes/01-screen-walkthrough/data/clean.mp4 (36s accounting screen recording, 180 frames, 1920x1080, containing a hard cut between two different documents): mean max 0.0163 vs threshold 0.100 -> 0 admitted; block_max max 0.0919 vs threshold 0.200 -> 0 admitted; p95 max 0.0743 vs threshold 0.150 -> 0 admitted. block_max amplifies the localized signal 5.6x over the mean as designed and still lands under HALF its own cutoff. Cause: the tier-0 gate frame is 48x36 greyscale (runtime/source.py) and block_max reads an 8x6 grid over it, so one block is ~6x6 px of a downsampled 1080p screen \u2014 a document-sized edit is diluted away. This is an under-resolved EYE, not a mis-selected statistic, and it is NOT fixed by lowering a threshold (the same cutoffs carry physical-scene precision)."
+        }
       }
-    ],
-    "winner_rule": "the earliest rung, in the operator's declared order, that meets EVERY supplied bar"
+    ]
   },
-  "ladder_source": "eval.datasets.guiworld",
-  "registration_hash": "3d0b07b9699f041f0f1a536bc3a326eac2aa9b831364a6ad7496ede6c1ed5a48",
   "split": {
     "declared": true,
-    "exploratory": [
-      "gw-desktop-02__error_shown",
-      "gw-desktop-02__modal_appeared",
-      "gw-multi-05__error_shown",
-      "gw-multi-05__modal_appeared",
-      "gw-multi-05__page_changed",
-      "gw-web-04__modal_appeared"
-    ],
+    "source": "splits.json",
+    "split_name": "test",
     "held_out": [
       "gw-desktop-06__error_shown",
       "gw-desktop-06__page_changed",
@@ -187,7 +158,34 @@
       "gw-web-01__modal_appeared",
       "gw-web-01__page_changed"
     ],
-    "source": "splits.json",
-    "split_name": "test"
-  }
+    "exploratory": [
+      "gw-desktop-02__error_shown",
+      "gw-desktop-02__modal_appeared",
+      "gw-multi-05__error_shown",
+      "gw-multi-05__modal_appeared",
+      "gw-multi-05__page_changed",
+      "gw-web-04__modal_appeared"
+    ]
+  },
+  "bars": [
+    {
+      "metric": "candidate_recall",
+      "direction": "min",
+      "value": 0.6,
+      "require_ci_excludes_zero": false
+    },
+    {
+      "metric": "recall_delta",
+      "direction": "min",
+      "value": 0.05,
+      "require_ci_excludes_zero": true
+    },
+    {
+      "metric": "false_fire_delta",
+      "direction": "max",
+      "value": 0.0,
+      "require_ci_excludes_zero": false
+    }
+  ],
+  "fixture_set_hash": "3939d62845408a403c4cf175795a936e81c4a19022ed8a0afda1960adb6226c6"
 }

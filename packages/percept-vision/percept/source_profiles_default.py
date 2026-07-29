@@ -123,7 +123,6 @@ PHYSICAL_SCENE = SourceProfile(
         # EdgeSettings / the WatchProfile, never from this dict.
         "salience_threshold": 0.20,
         "coast_interval_s": None,   # motion IS the signal here; no coast needed
-        "episode_unit": "activity_interval",
         "change_signal": "tier0_motion_salience",
         # See PHYSICAL_UNKNOWN_ATTACHES_TO_ACTIVE_BOUND's docstring above for why this is the
         # conservative choice and unknown_continuity_gap_s is deliberately absent.
@@ -198,7 +197,6 @@ SCREEN_DOCUMENT = SourceProfile(
         # override LOUDLY — a receipt warning coded coast_required_overridden, and a doctor finding
         # when such a run then admits zero frames — rather than silently dropping the floor.
         "coast_required": True,
-        "episode_unit": "page_interval",
         "evidence_parts": ("full_screenshot", "changed_region_crop", "previous_screenshot"),
         "evidence_optional_parts": ("previous_screenshot",),
         "plan_mode": "window",
@@ -242,7 +240,6 @@ CONVERSATION = SourceProfile(
     parameters={
         "change_signal": "utterance_boundary",
         "coast_interval_s": None,
-        "episode_unit": "turn_interval",
         "experimental_reasons": (
             "speaker identity is OFF-CONTRACT: identity_strategy='speaker_label' has no "
             "diarization behind it in this build, so two speakers can collapse to one entity",

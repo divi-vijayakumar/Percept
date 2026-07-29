@@ -162,8 +162,8 @@ class SourceProfile:
     - ``evidence_strategy`` — how evidence is packaged for judge + incident.
     - ``identity_strategy`` — how two observations are decided to be the same entity.
     - ``default_timebase`` — ``"auto"`` / ``"media"`` / ``"wall"``.
-    - ``parameters`` — everything strategy-specific (coast interval, episode unit, change signal,
-      ...). Immutable; read by name, never by position.
+    - ``parameters`` — everything strategy-specific (coast interval, change signal, unknown-continuity
+      gap, ...). Immutable; read by name, never by position.
     - ``stability`` — ``"stable"`` or ``"experimental"``; experimental profiles ship for evaluation.
     - ``notes`` — provenance/honesty text. Doctor and the ADR both quote it.
     """
