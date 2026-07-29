@@ -204,8 +204,8 @@ class FakeVoiceTransport:
         The voice embodiment moved app-side in the SDK diet — ``RuntimeSession.attach_transport`` is a
         raising stub, so nothing in the SDK orchestrates this fake anymore. It stays as the reference impl
         of the still-defined ``VoiceTransport`` contract and the registry ``make_transport("fake")`` seam.
-        A voice application uses the template's own ``VoiceEngine`` fake instead
-        (``templates/realtime_voice_watch_agent/tests/fakes.py``).
+        A voice application uses its own ``VoiceEngine`` fake instead — see
+        ``docs/sources/voice-and-watchdog.md``.
 
     Drive (transport -> brain):
       * ``await emit_utterance(text=...)`` — deliver a completed user turn to the on_utterance sink.

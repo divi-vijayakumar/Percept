@@ -414,7 +414,8 @@ def guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) -
     language↔conductor crossing (``on_speech_endpoint`` / ``arm_from_language``) and at the live-voice
     wiring points ``run(on_utterance=…)`` / ``session.start(on_utterance=…)`` — NOT at ``create()``, which
     cannot yet know a language path is coming. (An app that wires a voice ENGINE — see
-    ``templates/realtime_voice_watch_agent`` — calls this itself at ``PerceptBridge.attach``.)
+    ``docs/sources/voice-and-watchdog.md`` — calls this itself at its own PerceptBridge.attach-style
+    seam.)
 
     Skipped when the whole run is declared scripted (``mode="offline"`` — everything is announced
     scripted, including the voice) or when the ugly-on-purpose ``allow_scripted_brain`` hatch is set.

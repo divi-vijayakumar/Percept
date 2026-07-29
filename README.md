@@ -266,7 +266,6 @@ packages/percept-vision/    the SDK (pip install percept-vision; import percept)
                             └─ percept.contracts  bundled frozen wire-contract (DTOs + Protocols)
 packages/percept-edge/      on-device JS/WASM edge (npm)
 docs/                       documentation + the generated architecture.svg/html + the demo harness
-templates/                  copyable reference applications
 examples/                   short, runnable snippets
 eval/                       golden corpus + regression gate CI template
 tools/                      architecture, tunables, registries, and docs-index generators

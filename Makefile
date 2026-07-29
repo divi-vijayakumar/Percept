@@ -7,11 +7,10 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all test-templates test-capability-gate parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check docs docs-tunables docs-registries docs-index docs-check docs-links
+.PHONY: help test test-harness test-js test-all test-capability-gate parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check docs docs-tunables docs-registries docs-index docs-check docs-links
 
 help:
-	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast) + template lane"
-	@echo "test-templates  L1 unit — templates/ reference apps (keyless; pipecat-dependent tests skip cleanly)"
+	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast)"
 	@echo "test-capability-gate  L1 capability gate — Y16 task-level suite (CAPABILITY asserts, no keys, no stat bars)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
@@ -36,12 +35,6 @@ help:
 # voice tests that unskip once pipecat is installed hit live-mode ModeError.
 test:
 	cd $(SDK) && PYTHONPATH=. PERCEPT_MODE=offline $(PY) -m unittest discover -s tests
-	$(MAKE) test-templates
-
-# templates/ = copyable reference applications; each ships its own tests. Keyless: pipecat-dependent
-# tests skipUnless the template's deps are installed; everything else runs on the bare SDK checkout.
-test-templates:
-	cd templates/realtime_voice_watch_agent && PYTHONPATH=.:$(abspath $(SDK)) PERCEPT_NO_BANNER=1 $(PY) -m unittest discover -s tests -t .
 
 test-js:
 	cd $(EDGE) && npm test
@@ -172,7 +165,6 @@ check-skills-sync:  ## Verify skill directories are byte-identical
 
 check: architecture-check check-skills-sync
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
-	@$(PY) -m compileall -q templates && echo "templates compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
 
 architecture:  ## (re)generate docs/architecture.html + docs/architecture.svg from code + meta

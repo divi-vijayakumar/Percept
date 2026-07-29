@@ -21,7 +21,7 @@ https://percept.percia.ai
 - `.adr/`: architecture decision records. Tracked and citable from code, but internal reasoning, not adoption docs.
 - `packages/percept-vision/`: the SDK. `packages/percept-edge/`: the JS/WASM edge.
 - `tools/`: generators — architecture diagram, tunables doc, registries doc, docs index, link checker.
-- `eval/`, `templates/`, `examples/`: benchmark harness, reference apps, runnable snippets.
+- `eval/`, `examples/`: benchmark harness, runnable snippets.
 - `scratch/`, `execution-docs/`, `codewiki/`, `.dispatch-board/`: gitignored local working areas. Never shipped.
 
 ## Package Choices
@@ -68,7 +68,7 @@ goals=[...], vision="gemini")`.
 - Benchmarks (status, methodology, runbook): `docs/evaluation/benchmarks.md`
 - Edge parity and detector handshake: `docs/admission/edge-parity.md`
 - Browser demo driving the real runtime: `docs/demo/README.md` (demo-04 is the one to show)
-- Reference voice/realtime application: `templates/realtime_voice_watch_agent/`
+- Voice/realtime application shape: `docs/sources/voice-and-watchdog.md`
 
 ## Quality Gates
 

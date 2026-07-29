@@ -50,12 +50,14 @@ eval/bench-staging/perception_test/raw/
 perception_test_prevalence.json
 **/perception_test_prevalence.json
 
-# local-only scratch (never commit)
-scratch/
+# local-only internal execution material (never commit)
+Product-Execution/
 handoff/
 
 # codewiki generated caches (regenerable — never commit)
-codewiki/
+# (no trailing slash: codewiki/.dispatch-board are symlinks into Product-Execution/,
+# and a trailing-slash pattern only matches real directories, not symlinks)
+codewiki
 .codewiki/
 **/codewiki/
 **/.codewiki/
@@ -132,8 +134,6 @@ docs/publish-readiness-plan.md
 /review/
 internal-docs/
 
-# session handoffs / execution notes — internal only, never committed
-execution-docs/
 # client-facing docs (onboarding, incident/probe responses, dogfooding feedback) — internal only,
 # never in the public OSS tree; regenerate/keep under internal-docs/client-preview/
 client-preview/
@@ -162,11 +162,9 @@ docs/benchmark-scorecard-runbook.md
 # Dispatch board activity feed (Tasks/ board)
 Tasks/.board-events.jsonl
 
-# headless diagnostic harnesses (kept local, not shipped with the template)
-templates/realtime_voice_watch_agent/scratch_*.py
-
 # dispatch-board local state (snapshotted to refs/dispatch-board/state)
-.dispatch-board/
+# (no trailing slash — see codewiki note above; .dispatch-board is now a symlink)
+.dispatch-board
 
 # local-only diagnostic (per-video pt-action breakdown)
 eval/viability/PT_ACTION_N10_DIAGNOSTIC.md

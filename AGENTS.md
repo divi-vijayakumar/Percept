@@ -79,8 +79,9 @@ asyncio.run(main())
 ## Gotchas / conventions
 - **`percept.run` owns the capture loop.** Point it at `source="webcam:0"` / an RTSP URL / a video file
   and it drives capture → gate → judge → incident for you (`async for incident in percept.run(core,
-  source=…)`; add `audio_source="mic:0"` for sound). See `templates/` for copyable applications. The
-  manual `perceive_judged`-per-frame loop is the advanced "bring-your-own-capture" path, not the default.
+  source=…)`; add `audio_source="mic:0"` for sound). See `docs/sources/voice-and-watchdog.md` for worked
+  application shapes. The manual `perceive_judged`-per-frame loop is the advanced "bring-your-own-capture"
+  path, not the default.
 - **Rising-edge, not level.** A goal fires once when its condition goes false→true, then stays quiet
   (refractory) — so the agent never nags. Don't poll for "is it true now"; react to the `FireEvent`.
 - **`ask` is a feature.** Low confidence yields `ask`, not a guess. This is the "refuse to deliver a
@@ -101,7 +102,6 @@ asyncio.run(main())
 - `docs/judges/custom-specialist-judge.md` — bring your own vision backend or a specialist judge (with a conformance suite).
 - `docs/evaluation/evaluate-your-data.md` · `docs/configuration/optimize.md` · `docs/evaluation/benchmarks.md` — the offline quality rail.
 - `docs/demo/README.md` — the browser harness; simulation mode vs BYOK.
-- `templates/` — copyable reference applications; `templates/realtime_voice_watch_agent/` is the flagship voice+vision agent.
 - `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal (kept in sync with `.agents/skills/percept-agent/`).
 - `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)
   for Python deployments.
