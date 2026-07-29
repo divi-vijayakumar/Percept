@@ -6,7 +6,7 @@ status: stable
 ---
 # Two apps on one command seam — a silent watchdog and a voice assistant
 
-`percept.run` is the watch; `RuntimeSession` is the [command seam](../reference/command-seam.md). The
+`percept.run` is the watch; `RuntimeSession` is the [command seam](../watches/driving-a-live-watch.md). The
 same SDK underneath, two very different application **modalities** on top:
 
 - **Watchdog** — silent, headless, programmatic. Fully runnable below.
@@ -93,6 +93,6 @@ untracked) — camera + mic + a Gemini key required.
 
 ---
 
-See also: [runtime.md](./runtime.md) (the watch in full), [command-seam.md](../reference/command-seam.md)
-(`RuntimeSession`), [audio-modality.md](../reference/audio-modality.md) (audio as a *sensor* vs. audio as
+See also: [runtime.md](../watches/creating-a-watch.md) (the watch in full), [command-seam.md](../watches/driving-a-live-watch.md)
+(`RuntimeSession`), [audio-modality.md](audio.md) (audio as a *sensor* vs. audio as
 a *command*).

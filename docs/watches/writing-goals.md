@@ -49,7 +49,7 @@ choose the behavior deliberately:
   `PERCEPT_GATE_REQUIRE_FALSE_FIRST`, or `GateSettings.require_false_first`) so the gate waits for a
   false→true edge and does not fire on a state that was true from frame one.
 
-See [Wake policy](../reference/edge-policy.md) for how the gate arms and fires.
+See [Wake policy](../admission/wake-policy.md) for how the gate arms and fires.
 
 ### 4. Give the plan a prior when you know the temporal shape
 The goal's `state` carries hints the plan reads (see Part 2): whether the event is **brief**
@@ -108,8 +108,8 @@ The fovea (`percept.sampling.SensePolicy`) coasts at `base_fps` and saccades tow
   motion the default would suppress; raise it to ignore ambient jitter.
 - **`hold_s`** — keeps the escalation alive for a beat after a spike so the saccade settles.
 
-See [Motion and strip](../explanation/motion-and-strip.md) for the motion score and
-[Wake policy](../reference/edge-policy.md) for how salience becomes a judge call.
+See [Motion and strip](../admission/how-admission-works.md) for the motion score and
+[Wake policy](../admission/wake-policy.md) for how salience becomes a judge call.
 
 ---
 

@@ -22,7 +22,7 @@ standard library and runs offline with deterministic fakes. Highlights of the su
 - **Offline quality rail** — `percept-eval` (differential A/B), `percept-optimize` (locked-config
   search), `percept-derive-profile`, `percept-bench` (per-concern P/R + scorecard), and the model-free
   `percept-doctor` / `percept-replay` / trace visualizer. No Percept accuracy numbers are published yet
-  (methodology + runbook only — see `docs/benchmarks/running-benchmarks.md`).
+  (methodology + runbook only — see `docs/evaluation/running-benchmarks.md`).
 
 The detailed additive changes that accumulated on the pre-1.0 development line are recorded below.
 
@@ -212,6 +212,6 @@ composed through the SDK's public seams only.
 ### Benchmark fixes
 - pt-action sensitive above-Nyquist cadence (edge recall 0→0.75); proactiveqa running-answer resolution
   (unresolved 1.0→0.29, PAUC 25→55 on gemini-3.5-flash); per-performer counting (HERO; pommel 9→33==GT);
-  timespeak zero-width-window filter. See `docs/benchmarks/methodology.md`.
+  timespeak zero-width-window filter. See `docs/evaluation/methodology.md`.
 
 `percept/gate.py` (the three-state firing gate) is **byte-for-byte stable** across this release.

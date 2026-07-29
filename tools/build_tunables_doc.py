@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate `docs/reference/tunables.md` from `percept.tunables.REGISTRY`.
+"""Generate `docs/configuration/tunables.md` from `percept.tunables.REGISTRY`.
 
 The registry is the single source of truth for every behaviour-affecting knob (ADR-008). This
 generator renders it to a reference page, so the page cannot drift from what ships: regenerate it
@@ -17,7 +17,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 PKG = REPO / "packages" / "percept-vision"
-OUT = REPO / "docs" / "reference" / "tunables.md"
+OUT = REPO / "docs" / "configuration" / "tunables.md"
 
 sys.path.insert(0, str(PKG))
 
@@ -140,10 +140,10 @@ def render() -> str:
     add("")
     add("## Related")
     add("")
-    add("- [Configuration reference](configuration.md) — the `Settings` tree and resolver precedence.")
-    add("- [Run an optimization](../how-to/optimize.md) — searching the safe subset into a lock.")
-    add("- [Create a custom configuration](../how-to/custom-configuration.md) — authoring a profile.")
-    add("- [Tune admission](../how-to/tune-admission.md) — the knobs that decide what reaches a judge.")
+    add("- [Configuration reference](overview.md) — the `Settings` tree and resolver precedence.")
+    add("- [Run an optimization](optimize.md) — searching the safe subset into a lock.")
+    add("- [Create a custom configuration](profiles.md) — authoring a profile.")
+    add("- [Tune admission](../admission/tuning-admission.md) — the knobs that decide what reaches a judge.")
     add("")
     return "\n".join(L)
 

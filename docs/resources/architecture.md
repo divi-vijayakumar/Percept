@@ -35,7 +35,7 @@ tier does strictly less work than the one above it and hands up a smaller, more 
 
 - **Feeds** own the `run(source) -> incidents` loop and turn a device into frames + audio.
 - **Measures** turn raw signal into channels and timed boundaries and answer one cheap question per
-  frame: *is anything worth a closer look?* See [Motion score and the temporal strip](motion-and-strip.md).
+  frame: *is anything worth a closer look?* See [Motion score and the temporal strip](../admission/how-admission-works.md).
 - **Cognition (System 1)** is the brain. It **never sees pixels** — it reasons over a stream of
   `Verdict{satisfied, confidence, evidence}` and cheap tier-0 signals. It is stdlib-pure, deterministic,
   and always running.
@@ -76,7 +76,7 @@ sample ──► route ──► cache ──► judge ──► gate ──► 
   ([`gate.py`](../../packages/percept-vision/percept/gate.py)) maps the verdict to **FIRE** (known true,
   rising edge), **ASK** (unknown), or **SILENT** (not true, or a duplicate). It fires once when a
   condition becomes true and re-arms on a confident-false. See
-  [../reference/consequence-gate.md](../reference/consequence-gate.md).
+  [../reference/consequence-gate.md](../watches/the-gate.md).
 - **deliver** — a FIRE or ASK becomes an `Incident` delivered to a sink; evidence is retained behind an
   opaque handle, the episode is updated, and a trace is recorded.
 
@@ -118,9 +118,9 @@ The cognition core is documented module-by-module in the CodeWiki at
 
 ## See also
 
-- [Core concepts](concepts.md) — the cognition/perception split, the gate, rising-edge firing, memory.
-- [End to end: one judged request](e2e-flow-milk-boilover.md) — a single goal traced through the pipeline.
-- [Motion score and the temporal strip](motion-and-strip.md) — the tier-0 wake layer.
-- [Backends](../reference/backends.md) · [Edge policy](../reference/edge-policy.md) ·
-  [Configuration](../reference/configuration.md) · [Watch contract](../reference/watch-contract.md)
+- [Core concepts](how-it-works.md) — the cognition/perception split, the gate, rising-edge firing, memory.
+- [End to end: one judged request](worked-example-milk-boilover.md) — a single goal traced through the pipeline.
+- [Motion score and the temporal strip](../admission/how-admission-works.md) — the tier-0 wake layer.
+- [Backends](../judges/backends.md) · [Edge policy](../admission/wake-policy.md) ·
+  [Configuration](../configuration/overview.md) · [Watch contract](../watches/watch-contract.md)
 - [README](../../README.md) · project site <https://percept.percia.ai>

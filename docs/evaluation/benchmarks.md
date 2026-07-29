@@ -19,8 +19,8 @@ How Percept is measured, how to reproduce a measurement, and what it is honest t
 |---|---|
 | run a benchmark on your own clips | [Running benchmarks](running-benchmarks.md) |
 | understand how the benchmark is designed | [Methodology](methodology.md) |
-| measure *your* goals, not ours | [Evaluate](../how-to/eval.md) — per-concern precision/recall on your manifest |
-| size a live run before spending on it | [Eval hours costing](../reference/eval-hours-costing.md) |
+| measure *your* goals, not ours | [Evaluate](evaluate-your-data.md) — per-concern precision/recall on your manifest |
+| size a live run before spending on it | [Eval hours costing](sizing-a-run.md) |
 
 ## Run one in two commands
 
@@ -83,6 +83,6 @@ make scorecard         # the offline scorecard
 
 ## Related
 
-- [Operating frontier](../reference/operating-frontier.md) — the recall / false-fire trade-off surface.
-- [Tunables](../reference/tunables.md) — the 31 knobs an optimizer may search.
-- [Run an optimization](../how-to/optimize.md) — search → validated `OptimizationLock`.
+- [Operating frontier](../observability/operating-frontier.md) — the recall / false-fire trade-off surface.
+- [Tunables](../configuration/tunables.md) — the 31 knobs an optimizer may search.
+- [Run an optimization](../configuration/optimize.md) — search → validated `OptimizationLock`.

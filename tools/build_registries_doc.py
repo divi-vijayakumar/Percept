@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate `docs/reference/registries.md` from the live registries.
+"""Generate `docs/judges/registries.md` from the live registries.
 
 Percept resolves every vendor dependency through a *name -> factory* registry, so the core never
 imports an SDK directly. This page enumerates what is registered in a stock build and how to add
@@ -19,7 +19,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 PKG = REPO / "packages" / "percept-vision"
-OUT = REPO / "docs" / "reference" / "registries.md"
+OUT = REPO / "docs" / "judges" / "registries.md"
 
 sys.path.insert(0, str(PKG))
 
@@ -129,7 +129,7 @@ def render() -> str:
     add("```")
     add("")
     add("Your adapter must pass the runnable conformance suite before it is trusted — see")
-    add("[Vision adapter interface](vision-adapter.md) and [Custom judge](../how-to/custom-judge.md).")
+    add("[Vision adapter interface](bring-your-own-model.md) and [Custom judge](custom-specialist-judge.md).")
     add("")
     add("---")
     add("")
@@ -139,7 +139,7 @@ def render() -> str:
     add("plan composes by name, each declaring a `DetectorManifest` of what it senses and when to use it.")
     add("")
     add("**For the how-to — register / introspect / select into a `WatchSpec` / teardown, built-ins,")
-    add("and the conformance bar — see [Registration](registration.md).** Below is the generated,")
+    add("and the conformance bar — see [Registration](../admission/detectors.md).** Below is the generated,")
     add("can't-drift inventory of what is registered in a stock build:")
     add("")
     add("| name | category | senses | output | when to use |")
@@ -198,17 +198,17 @@ def render() -> str:
     add("")
     add("Ownership is enforced at resolve time: a surface may only write tunables it owns, and a")
     add("write from the wrong surface is **refused, not silently applied**. The full ownership map is")
-    add("the `owner` column in [Tunables](tunables.md).")
+    add("the `owner` column in [Tunables](../configuration/tunables.md).")
     add("")
     add("---")
     add("")
     add("## Related")
     add("")
-    add("- [Tunables](tunables.md) — all 157 knobs, and which surface owns each.")
-    add("- [Configuration reference](configuration.md) — the `Settings` tree and resolver precedence.")
+    add("- [Tunables](../configuration/tunables.md) — all 157 knobs, and which surface owns each.")
+    add("- [Configuration reference](../configuration/overview.md) — the `Settings` tree and resolver precedence.")
     add("- [Backends](backends.md) — the seams in prose, extras, and selection.")
-    add("- [Vision adapter interface](vision-adapter.md) — the extension contract + conformance suite.")
-    add("- [Registration](registration.md) — detector / concern / enricher registration in detail.")
+    add("- [Vision adapter interface](bring-your-own-model.md) — the extension contract + conformance suite.")
+    add("- [Registration](../admission/detectors.md) — detector / concern / enricher registration in detail.")
     add("")
     return "\n".join(L)
 

@@ -188,7 +188,7 @@ class EdgeSettings:
     # Per-stat escalation cutoffs. block_max/p95 live on a HIGHER value scale than the whole-frame mean
     # (a single active block >= the frame average), so they need their own thresholds — the mean-tuned
     # 0.10 over-fires them. Calibrated on Perception Test action events (N=80, 7.8k frames): block_max
-    # @0.20 -> 0.85 recall, p95 @0.15 -> 0.79, vs the mean's 0.06 at 0.10. See docs/reference/edge-policy.
+    # @0.20 -> 0.85 recall, p95 @0.15 -> 0.79, vs the mean's 0.06 at 0.10. See docs/admission/wake-policy.md.
     motion_gate_block_max: float = 0.20  # PERCEPT_MOTION_GATE_BLOCK_MAX
     motion_gate_p95: float = 0.15  # PERCEPT_MOTION_GATE_P95
     # Whether a SourceProfile-declared coast floor is bound into the runtime. A profile such as

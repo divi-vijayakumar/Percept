@@ -22,7 +22,7 @@ Three axes, each a different question:
 class. The two axes are orthogonal: a screen recording (`SourceProfile`) can be watched with any
 mount's tuning (`WatchProfile`).
 
-For the full `Settings` tree and the layer precedence, see [../reference/configuration.md](../reference/configuration.md).
+For the full `Settings` tree and the layer precedence, see [../reference/configuration.md](overview.md).
 The lowest-effort change of all is an env var — `PERCEPT_SALIENCE_STAT=block_max`,
 `PERCEPT_GATE_REFRACTORY_S=15`, `PERCEPT_MOTION_GATE_BLOCK_MAX=0.20`, `PERCEPT_COAST_ENABLED=0` —
 no code, no registration.
@@ -149,12 +149,12 @@ core = Percept.configure(source_profile=MY_SOURCE)   # full layered resolution
 `Percept.configure` runs the six-layer resolver (SDK < SourceProfile < DomainPack < ExecutionPolicy
 < OptimizationLock < Deployment < WatchPlan), so a tuned admission signal and a declared coast floor
 are bound onto the runtime with per-field provenance. See
-[../reference/configuration.md](../reference/configuration.md) for the precedence and the provenance receipt.
+[../reference/configuration.md](overview.md) for the precedence and the provenance receipt.
 
 ## Prefer to derive a profile from data?
 
 Hand-tuning is fine for a known environment. When you have labeled fixtures and want the numbers to
 pick the winner, `percept-derive-profile` scores a declared ladder of candidate profiles and emits a
-provenance-stamped, content-addressed profile — see [./derive-a-profile.md](./derive-a-profile.md).
-To search safe numeric knobs within one fixed shape, see [./optimize.md](./optimize.md). Both refuse
+provenance-stamped, content-addressed profile — see [./derive-a-profile.md](../sources/source-profiles.md).
+To search safe numeric knobs within one fixed shape, see [./optimize.md](optimize.md). Both refuse
 to score if the configuration moved after your bars were declared.

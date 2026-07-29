@@ -169,7 +169,7 @@
   `>= 0.368`, so it FAILS a 0.90 bar and the report prints the 29 episodes it would take. Bounds
   come from `percept.eval.exact_ci` — Garwood/Poisson (`factor(k)/T`) for rates, Clopper–Pearson
   (`Beta⁻¹(0.05; x, n−x+1)`) for proportions — pure Python, no SciPy, and asserted cell-by-cell
-  against every table in `docs/reference/eval-hours-costing.md`. **No normal approximation**: at
+  against every table in `docs/evaluation/sizing-a-run.md`. **No normal approximation**: at
   these counts a Wald interval on a perfect run returns zero width at 1.0, which is not a bound.
   **Both denominators, always.** Per scheduled watch-hour is the bar-eligible number (concurrency is
   already inside it; degraded time stays inside it — a watch blind for 20 minutes still owes them);
@@ -182,7 +182,7 @@
   `percept.harness.golden_eval.score`, every funnel/degraded/unresolved figure from
   `percept.tracing.TraceSummary` (card D8a), and the whole thing hangs off the **existing**
   `percept eval` entry point (`--frontier`, `--frontier-bars`, `--frontier-arm`, `--frontier-json`)
-  — no second CLI, no second entry-point family. See `docs/reference/operating-frontier.md`.
+  — no second CLI, no second entry-point family. See `docs/observability/operating-frontier.md`.
 
 - **The native visualizer — WHERE a decision died, not just that nothing happened (card D9).**
   `percept.visualize` renders a **standalone, single-file HTML page** over the artifacts that
@@ -255,7 +255,7 @@
   `ADMISSION_SIGNAL_UNTUNED` ("this profile is running on coast alone, supply a change signal") and
   `SOURCE_PROFILE_EXPERIMENTAL`. Both are **warns** — an untuned admission signal never invents an
   exit code. The `--json` report carries the full profile under `plan.source_profile.profile`.
-- **`docs/how-to/tune-admission.md` — the tuning loop as a deliverable.** A worked, runnable guide
+- **`docs/admission/tuning-admission.md` — the tuning loop as a deliverable.** A worked, runnable guide
   from "nothing fires" to a tuned eye: how to read a doctor report correctly (using the `clean.mp4`
   numbers above, including why the answer is NOT to lower the threshold), how to name your source
   class, how to turn on the coast, how to register your own phash/OCR model as an **admission**
@@ -421,7 +421,7 @@
 
 
 - **Consequence gate GA (card O2)** — the FIRE/ASK/SILENT decision model is now a documented, stable
-  surface: `docs/reference/consequence-gate.md`.
+  surface: `docs/watches/the-gate.md`.
   - `Gate.decide(...) -> GateOutcome` — the typed outcome (action **plus** a reason code) alongside the
     unchanged `Gate.evaluate(...) -> GateAction`. `evaluate` is exactly `decide(...).action`.
   - A closed reason vocabulary — `GATE_REASONS`, `REASON_ACTION`, `SUPPRESSION_REASONS`,
@@ -432,7 +432,7 @@
     reason code and the decision time. Previously a silent non-event.
   - `SILENT` is documented and asserted as **internal-only** — never the action on a delivered event.
 
-- **Published Vision adapter interface + conformance suite** — `docs/reference/vision-adapter.md`
+- **Published Vision adapter interface + conformance suite** — `docs/judges/bring-your-own-model.md`
   documents the frozen `Vision` seam as the public extension point (every escalation kwarg, the
   `Verdict`/`Observation` invariants, and fail-closed injection: your instance reaches `core.vision`
   unwrapped, and a live core with no vision raises `ModeError` rather than falling back to a scripted
@@ -489,7 +489,7 @@ notification once per event.
 - **Gate time-refractory** `PERCEPT_GATE_REFRACTORY_S` — suppress duplicate notifications of the same goal;
   one fire per episode.
 - **Production trace telemetry** — opt-in per-frame trace (edge decision · verdict · gate action · reason).
-- **Docs:** `docs/how-to/runtime.md` (embed the runtime), `docs/how-to/authoring-goals-and-watch-plans.md`,
+- **Docs:** `docs/watches/creating-a-watch.md` (embed the runtime), `docs/watches/writing-goals.md`,
   `examples/vision_assistant.py`, updated `percept-agent` Claude skill.
 
 ### Notes

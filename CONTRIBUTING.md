@@ -29,13 +29,20 @@ runtime only when you need it: `percept-vision[gemini]`, `[claude]`, `[openroute
 `docs/` is the **public tree** — it feeds the website and is adoption material only. Internal
 reasoning does not go there.
 
-| you're writing | it goes in |
+`docs/` is organized **object-first**, by the thing a reader is trying to build, not by writing genre:
+
+| you're writing about | it goes in |
 |---|---|
-| teach someone their first run | `docs/tutorials/` |
-| accomplish one specific task | `docs/how-to/` |
-| describe a surface exactly | `docs/reference/` |
-| how it's measured / what may be claimed | `docs/benchmarks/` |
-| why it's designed this way | `docs/explanation/` |
+| install, first run, onboarding | `docs/get-started/` |
+| the watch object — goals, the gate, driving it live | `docs/watches/` |
+| what a watch observes — cameras, files, streams, screens, audio | `docs/sources/` |
+| everything upstream of a model call — motion, salience, detectors | `docs/admission/` |
+| the models that judge a condition, and bringing your own | `docs/judges/` |
+| incidents and how they're delivered | `docs/incidents/` |
+| settings, profiles, tunables | `docs/configuration/` |
+| traces, replay, cost, the quality frontier | `docs/observability/` |
+| evaluation and benchmarks | `docs/evaluation/` |
+| how it works, the architecture, the CLI | `docs/resources/` |
 | an architecture decision record | `.adr/` — **not** `docs/` |
 | a spec, plan, probe, or anything strategic | `scratch/` — gitignored, never shipped |
 
@@ -58,8 +65,8 @@ make docs-check     # CI gate: fails if any generated page is stale vs the code
 make docs-links     # CI gate: fails on a broken relative link in any tracked .md
 ```
 
-`docs/reference/tunables.md` comes from `percept.tunables.REGISTRY`,
-`docs/reference/registries.md` from the live registries, and `docs/README.md` from every page's
+`docs/configuration/tunables.md` comes from `percept.tunables.REGISTRY`,
+`docs/judges/registries.md` from the live registries, and `docs/README.md` from every page's
 frontmatter — so none of them can drift from what ships.
 
 **Strategy never enters tracked code or docs.** Code may cite a reference doc by path and may state
@@ -74,7 +81,7 @@ plan, or a future offering. That material lives in `scratch/`.
 
 ## Architecture
 
-Start with [`docs/tutorials/quickstart.md`](docs/tutorials/quickstart.md),
-[`docs/explanation/concepts.md`](docs/explanation/concepts.md), and
-[`docs/explanation/architecture.md`](docs/explanation/architecture.md) — or the
+Start with [`docs/get-started/quickstart.md`](docs/get-started/quickstart.md),
+[`docs/resources/how-it-works.md`](docs/resources/how-it-works.md), and
+[`docs/resources/architecture.md`](docs/resources/architecture.md) — or the
 [docs index](docs/README.md). `llms.txt` is the agent-readable SDK reference.

@@ -191,7 +191,7 @@ Its defaults were chosen against the measurement above, not against making a fix
 
 ### 5. The tuning loop is a deliverable
 
-`docs/how-to/tune-admission.md` ships with this card: a worked, runnable guide from "nothing fires" to
+`docs/admission/tuning-admission.md` ships with this card: a worked, runnable guide from "nothing fires" to
 a tuned eye, using the tools that now exist — `percept-doctor` (the per-stat table, and which rule
 suppressed each non-admit, for zero judge spend), `percept.edge.detectors.register_detector` (the client's own phash/OCR model
 as an **admission** detector, running at native fps on the **full-resolution judge frame**, emitting

@@ -61,4 +61,4 @@ live-test checklist in the template's own `README.md`):
 
 **References:**
 - See `.claude/skills/percept-agent/` for the lightweight offline watch-agent templates
-- See `docs/how-to/runtime.md` for the perception runtime API
+- See `docs/watches/creating-a-watch.md` for the perception runtime API

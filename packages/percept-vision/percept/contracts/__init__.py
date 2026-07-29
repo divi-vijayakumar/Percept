@@ -1786,7 +1786,7 @@ class Enricher(Protocol):
       :meth:`Vision.judge` accepts it directly. That parameter is live and wired; it simply never had a
       registry behind it.
 
-    See ``docs/reference/registration.md`` ("Admission is not extraction")."""
+    See ``docs/admission/detectors.md`` ("Admission is not extraction")."""
 
     def enrich(self, signal: Any, frame: Any = None) -> dict:
         """Run the specialist on a triggering ``signal`` (+ optional ``frame``); return structured facts.

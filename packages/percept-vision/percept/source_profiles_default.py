@@ -45,7 +45,7 @@ not know in advance which one a client's content will produce. Lowering the cuto
 harder case to admit would wreck physical-scene precision, which is calibrated on the SAME cutoffs —
 so this profile does not lower one; it keeps ``block_max``/0.20 as the tuned default and leans on the
 coast for what that eye cannot resolve. A client whose content is dominated by full-page edits should
-still register their own page-change / phash / OCR signal — see ``docs/how-to/tune-admission.md`` —
+still register their own page-change / phash / OCR signal — see ``docs/admission/tuning-admission.md`` —
 and A/B it with ``percept eval`` on THEIR fixtures against THEIR bars.
 
 Importing this module seeds :data:`percept.sourceprofile.DEFAULT_SOURCE_REGISTRY` (see :func:`seed`,
@@ -61,7 +61,7 @@ from .sourceprofile import (
 )
 
 #: The measured doctor readout that justifies :data:`SCREEN_DOCUMENT` being untuned. Quoted verbatim
-#: by ADR-005 and docs/how-to/tune-admission.md so the three cannot drift apart.
+#: by ADR-005 and docs/admission/tuning-admission.md so the three cannot drift apart.
 SCREEN_EVIDENCE = (
     "Measured with percept-doctor on probes/01-screen-walkthrough/data/clean.mp4 "
     "(36s accounting screen recording, 180 frames, 1920x1080, containing a hard cut between two "
@@ -150,7 +150,7 @@ PHYSICAL_SCENE = SourceProfile(
 #: static-but-important page is still sampled when no change signal fires. It is deliberately slow
 #: enough to be affordable on a long session and fast enough that a page cannot live and die entirely
 #: between two samples in a human-paced walkthrough. Tune it on YOUR content
-#: (docs/how-to/tune-admission.md); the coast is NOT optional and must not be set to None.
+#: (docs/admission/tuning-admission.md); the coast is NOT optional and must not be set to None.
 SCREEN_COAST_INTERVAL_S = 2.0
 
 #: The default unknown-to-unknown continuity gap for :data:`SCREEN_DOCUMENT`, in seconds
@@ -220,7 +220,7 @@ SCREEN_DOCUMENT = SourceProfile(
         "the measured evidence below), so the coast — not the tuned admission — is what keeps that "
         "harder residual case observed. A client whose content is dominated by page-scale edits "
         "should still register their own page-change / phash / OCR signal (register_detector) and "
-        "A/B it with `percept eval` — see docs/how-to/tune-admission.md. An unreadable content key "
+        "A/B it with `percept eval` — see docs/admission/tuning-admission.md. An unreadable content key "
         "defaults to temporal-proximity unknown-continuity (SCREEN_UNKNOWN_CONTINUITY_GAP_S) rather "
         "than a fresh provisional subject per tick. " + SCREEN_EVIDENCE
     ),

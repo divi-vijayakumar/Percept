@@ -182,6 +182,6 @@ It checks the method set, the optional-kwarg escalations, the `Verdict` invarian
 and that the adapter survives fail-closed injection into a live core (it is not silently replaced by
 a scripted double, and a live core with no vision refuses to run at all).
 
-See [../reference/backends.md](../reference/backends.md) for the shipped adapters and the
-identity/configuration split, and [../reference/vision-adapter.md](../reference/vision-adapter.md)
+See [../reference/backends.md](backends.md) for the shipped adapters and the
+identity/configuration split, and [../reference/vision-adapter.md](bring-your-own-model.md)
 for the full adapter contract.

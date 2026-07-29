@@ -41,7 +41,7 @@ Percept does not ship these and does not partially ship them.
 
 `SourceProfile.identity_strategy` is free text over an open registry, so a future resolution scheme
 is added by *registering* one rather than by editing percept
-([registration](registration.md), [derive a profile](../how-to/derive-a-profile.md)). That openness
+([registration](../admission/detectors.md), [derive a profile](../sources/source-profiles.md)). That openness
 is a seam for you to extend — it is **not** a claim that percept generalises. percept does not
 generalise ahead of evidence.
 

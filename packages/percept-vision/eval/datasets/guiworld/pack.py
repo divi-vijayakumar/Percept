@@ -160,7 +160,7 @@ SCREEN_OBSERVATION_V1 = DomainPack(
         "low-rate coast floor stays MANDATORY underneath it and must NOT be dropped; a client whose "
         "content is dominated by page-scale edits must register their own page-change / phash / OCR "
         "change signal (register_detector) and A/B it with `percept eval` on THEIR fixtures against "
-        "THEIR bars (docs/how-to/tune-admission.md). Identity is a content key, never geometry; "
+        "THEIR bars (docs/admission/tuning-admission.md). Identity is a content key, never geometry; "
         "plan_mode is an ordered frame window, never a sprite montage."
     ),
 )

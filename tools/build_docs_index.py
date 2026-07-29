@@ -28,54 +28,58 @@ PKG = REPO / "packages" / "percept-vision"
 
 #: Section order, folder -> (heading, blurb). Drives both the index and the on-disk layout.
 SECTIONS: list[tuple[str, str, str]] = [
-    ("tutorials", "Tutorials — start here", "Learning-oriented. Run something that works, then understand it."),
-    ("how-to", "How-to — do a specific task", "Task-oriented. You know what you want; these get you there."),
-    ("reference", "Reference — the surface", "Information-oriented. What exists, what it's called, what it defaults to."),
-    ("benchmarks", "Benchmarks — how it's measured", "How the benchmark is designed, how to run it, and what may honestly be claimed."),
-    ("explanation", "Explanation — why it works this way", "Understanding-oriented. The design and the reasoning behind it."),
-    ("agents", "Coding agents — onboarding", "Adopt Percept from Claude Code, Codex, Cursor, or Copilot."),
-    ("demo", "Demo — see it run", "A browser harness driving the real runtime."),
+    ("get-started", "Get started", "Install it, run something that works, then build."),
+    ("watches", "Watches", "The core object: a goal armed against a source, firing on the rising edge."),
+    ("sources", "Sources", "What Percept watches — cameras, files, streams, screens, audio."),
+    ("admission", "Admission — the eye", "Everything upstream of a model call. This is what makes Percept cheap."),
+    ("judges", "Judges", "The models that answer \"is this condition true?\" — and how to bring your own."),
+    ("incidents", "Incidents and delivery", "What comes out, and how it reaches your app."),
+    ("configuration", "Configuration", "Every knob, who owns it, and how to tune it safely."),
+    ("observability", "Observability", "Traces, replay, cost, and the quality frontier."),
+    ("evaluation", "Evaluation and benchmarks", "Measure it on your data, and read the numbers honestly."),
+    ("resources", "Resources", "How it works, the architecture, and the full CLI."),
+    ("demo", "Demo", "A browser harness driving the real runtime."),
 ]
 
 #: Curated one-line summaries. A page missing here falls back to its first prose sentence.
 SUMMARY: dict[str, str] = {
-    "tutorials/quickstart.md": "Install, run offline on the scripted backend, then a real one.",
-    "how-to/runtime.md": "**Start here to embed Percept.** `run(source) → incidents`: sources, sinks, tuning, egomotion, cost, troubleshooting.",
-    "how-to/authoring-goals-and-watch-plans.md": "Phrase goals and match the plan to the action, so quality isn't lost before the judge runs.",
-    "how-to/custom-configuration.md": "Author a `SourceProfile` / `WatchProfile` for your use case.",
-    "how-to/custom-judge.md": "Bring your own vision model or author a specialist judge; the conformance suite.",
-    "how-to/tune-admission.md": "From \"nothing fires\" to a tuned eye. **Percept ships the harness; you tune the eye for your content.**",
-    "how-to/optimize.md": "`percept-optimize` — safe-tunable search into a validated `OptimizationLock`.",
-    "how-to/eval.md": "Per-concern precision/recall on your manifest, the paired A/B differential, and the CI gate.",
-    "how-to/derive-a-profile.md": "Turn labelled fixtures + a ladder into a provenance-stamped profile.",
-    "how-to/trace-bundles-and-replay.md": "Portable bug reports and deterministic replay.",
-    "how-to/porch-package.md": "A discrete physical-event watch recipe.",
-    "how-to/screenshare.md": "A fixed-cadence content watch.",
-    "how-to/voice-and-watchdog.md": "The voice-escalation seam and long-running watches.",
-    "reference/configuration.md": "**Everything you can tune** — the `Settings` tree, every env var, and resolver precedence.",
-    "reference/tunables.md": "**All 157 tunables, and the 31 an optimizer may search.** Generated from the registry.",
-    "reference/registries.md": "**Backend seams, detectors, and profile registries** — and how to add your own. Generated.",
-    "reference/cli.md": "All nine console scripts, their flags, and install requirements.",
-    "reference/scope-and-persistence.md": "**Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart.",
-    "reference/watch-contract.md": "The frozen public entrypoint and the `WatchEvent` schema.",
-    "reference/consequence-gate.md": "FIRE/ASK/SILENT, the rising edge, refractory, and the typed reason vocabulary.",
-    "reference/backends.md": "The seams, backend names, extras, and custom backends.",
-    "reference/vision-adapter.md": "The public extension point — bring your own model, fail-closed injection, conformance suite.",
-    "reference/registration.md": "Detector / concern / enricher registration in detail.",
-    "reference/edge-policy.md": "The on-device \"should we spend a VLM call?\" layer.",
-    "reference/edge-parity.md": "JS ↔ Python edge conformance.",
-    "reference/audio-modality.md": "Fused vision + audio judging.",
-    "reference/command-seam.md": "Drive a running watch — arm by voice, ask, pause/mute.",
-    "reference/operating-frontier.md": "The recall / false-fire trade-off surface.",
-    "reference/eval-hours-costing.md": "Sizing a live evaluation run before you spend on it.",
-    "benchmarks/README.md": "**Start here** — status, how to run one, and how to read a precision number without being misled.",
-    "benchmarks/methodology.md": "How the benchmark is designed (no numbers).",
-    "benchmarks/running-benchmarks.md": "The scorecard, the audit gate, and the reproducible model-sweep runbook.",
-    "explanation/architecture.md": "The four tiers, the two-layer brain, the firing paths.",
-    "explanation/concepts.md": "The cognition / perception split, the gate, rising-edge firing, memory.",
-    "explanation/e2e-flow-milk-boilover.md": "A judged path, end to end.",
-    "explanation/motion-and-strip.md": "The motion score and the temporal strip.",
-    "agents/README.md": "Install the `percept-agent` skill; the three things agents get wrong.",
+    "get-started/quickstart.md": "Install, run offline on the scripted backend, then a real one.",
+    "watches/creating-a-watch.md": "**Start here to embed Percept.** `run(source) → incidents`: sources, sinks, tuning, egomotion, cost, troubleshooting.",
+    "watches/writing-goals.md": "Phrase goals and match the plan to the action, so quality isn't lost before the judge runs.",
+    "configuration/profiles.md": "Author a `SourceProfile` / `WatchProfile` for your use case.",
+    "judges/custom-specialist-judge.md": "Bring your own vision model or author a specialist judge; the conformance suite.",
+    "admission/tuning-admission.md": "From \"nothing fires\" to a tuned eye. **Percept ships the harness; you tune the eye for your content.**",
+    "configuration/optimize.md": "`percept-optimize` — safe-tunable search into a validated `OptimizationLock`.",
+    "evaluation/evaluate-your-data.md": "Per-concern precision/recall on your manifest, the paired A/B differential, and the CI gate.",
+    "sources/source-profiles.md": "Turn labelled fixtures + a ladder into a provenance-stamped profile.",
+    "observability/traces-and-replay.md": "Portable bug reports and deterministic replay.",
+    "watches/scenario-porch-package.md": "A discrete physical-event watch recipe.",
+    "watches/scenario-screenshare.md": "A fixed-cadence content watch.",
+    "sources/voice-and-watchdog.md": "The voice-escalation seam and long-running watches.",
+    "configuration/overview.md": "**Everything you can tune** — the `Settings` tree, every env var, and resolver precedence.",
+    "configuration/tunables.md": "**All 157 tunables, and the 31 an optimizer may search.** Generated from the registry.",
+    "judges/registries.md": "**Backend seams, detectors, and profile registries** — and how to add your own. Generated.",
+    "resources/cli.md": "All nine console scripts, their flags, and install requirements.",
+    "incidents/scope-and-persistence.md": "**Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart.",
+    "watches/watch-contract.md": "The frozen public entrypoint and the `WatchEvent` schema.",
+    "watches/the-gate.md": "FIRE/ASK/SILENT, the rising edge, refractory, and the typed reason vocabulary.",
+    "judges/backends.md": "The seams, backend names, extras, and custom backends.",
+    "judges/bring-your-own-model.md": "The public extension point — bring your own model, fail-closed injection, conformance suite.",
+    "admission/detectors.md": "Detector / concern / enricher registration in detail.",
+    "admission/wake-policy.md": "The on-device \"should we spend a VLM call?\" layer.",
+    "admission/edge-parity.md": "JS ↔ Python edge conformance.",
+    "sources/audio.md": "Fused vision + audio judging.",
+    "watches/driving-a-live-watch.md": "Drive a running watch — arm by voice, ask, pause/mute.",
+    "observability/operating-frontier.md": "The recall / false-fire trade-off surface.",
+    "evaluation/sizing-a-run.md": "Sizing a live evaluation run before you spend on it.",
+    "evaluation/benchmarks.md": "**Start here** — status, how to run one, and how to read a precision number without being misled.",
+    "evaluation/methodology.md": "How the benchmark is designed (no numbers).",
+    "evaluation/running-benchmarks.md": "The scorecard, the audit gate, and the reproducible model-sweep runbook.",
+    "resources/architecture.md": "The four tiers, the two-layer brain, the firing paths.",
+    "resources/how-it-works.md": "The cognition / perception split, the gate, rising-edge firing, memory.",
+    "resources/worked-example-milk-boilover.md": "A judged path, end to end.",
+    "admission/how-admission-works.md": "The motion score and the temporal strip.",
+    "get-started/coding-agents.md": "Install the `percept-agent` skill; the three things agents get wrong.",
     "demo/README.md": "Browser demos driving the **real** runtime — upload a video or watch a live stream.",
 }
 
@@ -171,8 +175,8 @@ def render_index(pages: dict[str, dict[str, str]], version: str) -> str:
     add("it cannot list a page that doesn't exist or miss one that does. Every page carries an")
     add("`updated:` date — a page older than the release it documents is visibly stale.")
     add("")
-    add("New here? → **[Quickstart](tutorials/quickstart.md)** · want the whole surface? →")
-    add("**[Tunables](reference/tunables.md)** · using an agent? → **[Coding agents](agents/README.md)**")
+    add("New here? → **[Quickstart](get-started/quickstart.md)** · want the whole surface? →")
+    add("**[Tunables](configuration/tunables.md)** · using an agent? → **[Coding agents](get-started/coding-agents.md)**")
     add("")
     add("The architecture diagram is **generated from the code**")
     add("([`architecture.svg`](architecture.svg) · interactive [`architecture.html`](architecture.html))")
@@ -202,7 +206,7 @@ def render_index(pages: dict[str, dict[str, str]], version: str) -> str:
     add("")
     add("- **Architecture decision records** live in [`.adr/`](../.adr/) — tracked and citable from")
     add("  code, but internal reasoning rather than adoption material.")
-    add("- **Benchmark numbers** are not published yet. See [Benchmarks](benchmarks/README.md) for")
+    add("- **Benchmark numbers** are not published yet. See [Benchmarks](evaluation/benchmarks.md) for")
     add("  the status and the gate a published claim must pass.")
     add("- **Per-module API reference** is the generated CodeWiki, regenerated from source.")
     add("")

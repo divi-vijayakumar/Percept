@@ -95,7 +95,7 @@ my-backend = "my_pkg.adapters:register"
 ```
 
 Your adapter must pass the runnable conformance suite before it is trusted — see
-[Vision adapter interface](vision-adapter.md) and [Custom judge](../how-to/custom-judge.md).
+[Vision adapter interface](bring-your-own-model.md) and [Custom judge](custom-specialist-judge.md).
 
 ---
 
@@ -105,7 +105,7 @@ Your adapter must pass the runnable conformance suite before it is trusted — s
 plan composes by name, each declaring a `DetectorManifest` of what it senses and when to use it.
 
 **For the how-to — register / introspect / select into a `WatchSpec` / teardown, built-ins,
-and the conformance bar — see [Registration](registration.md).** Below is the generated,
+and the conformance bar — see [Registration](../admission/detectors.md).** Below is the generated,
 can't-drift inventory of what is registered in a stock build:
 
 | name | category | senses | output | when to use |
@@ -142,14 +142,14 @@ core = percept.Percept.configure(watch_profile="kitchen")
 
 Ownership is enforced at resolve time: a surface may only write tunables it owns, and a
 write from the wrong surface is **refused, not silently applied**. The full ownership map is
-the `owner` column in [Tunables](tunables.md).
+the `owner` column in [Tunables](../configuration/tunables.md).
 
 ---
 
 ## Related
 
-- [Tunables](tunables.md) — all 157 knobs, and which surface owns each.
-- [Configuration reference](configuration.md) — the `Settings` tree and resolver precedence.
+- [Tunables](../configuration/tunables.md) — all 157 knobs, and which surface owns each.
+- [Configuration reference](../configuration/overview.md) — the `Settings` tree and resolver precedence.
 - [Backends](backends.md) — the seams in prose, extras, and selection.
-- [Vision adapter interface](vision-adapter.md) — the extension contract + conformance suite.
-- [Registration](registration.md) — detector / concern / enricher registration in detail.
+- [Vision adapter interface](bring-your-own-model.md) — the extension contract + conformance suite.
+- [Registration](../admission/detectors.md) — detector / concern / enricher registration in detail.

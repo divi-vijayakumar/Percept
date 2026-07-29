@@ -30,7 +30,7 @@ package.
 This page is the how-to. For the generated, can't-drift inventory of what is registered in a stock
 build — including the **backend seam** map (`vision` / `specialist` / `conductor` / `stt` / `tts` /
 `transport` / `extractor`) and the config-registry map — see [Registries and
-adapters](registries.md).
+adapters](../judges/registries.md).
 
 ---
 

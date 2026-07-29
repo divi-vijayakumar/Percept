@@ -99,7 +99,7 @@ DTO field bumps `CONTRACT_VERSION`. Most changes bump at most one.
 
 ## Relationship to `run()`
 
-[`percept.runtime.run()`](../how-to/runtime.md) is a separate, richer entrypoint: it owns live camera
+[`percept.runtime.run()`](creating-a-watch.md) is a separate, richer entrypoint: it owns live camera
 capture, the tier-0 **motion gate** (the cheap "should we even look?" pre-filter), pre-roll snippets,
 health events, and reconnect/backpressure handling, yielding `Incident`s. `watch()` is the minimal
 seam underneath that richness — a direct frame-in / `WatchEvent`-out wrapper around the judge+gate

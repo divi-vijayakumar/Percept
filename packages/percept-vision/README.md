@@ -106,8 +106,8 @@ VLM-in-a-loop collapses the two; percept keeps them apart so the common case cos
 
 Full architecture — the four tiers (Feeds → Measures → Cognition → VLM), every claim anchored to code,
 plus the **generated** architecture diagram — is in the docs:
-[Architecture](https://github.com/divi-vijayakumar/Percept/blob/main/docs/explanation/architecture.md)
-· [Concepts](https://github.com/divi-vijayakumar/Percept/blob/main/docs/explanation/concepts.md)
+[Architecture](https://github.com/divi-vijayakumar/Percept/blob/main/docs/resources/architecture.md)
+· [Concepts](https://github.com/divi-vijayakumar/Percept/blob/main/docs/resources/how-it-works.md)
 · [docs index](https://github.com/divi-vijayakumar/Percept/blob/main/docs/README.md)
 · [percept.percia.ai](https://percept.percia.ai).
 
@@ -136,8 +136,8 @@ These refusals are a feature. **Do not lead with surveillance demos.**
 
 **No Percept accuracy numbers are published yet.** The benchmark is designed but the reproducible
 model-sweep run is a separate, later phase — see the
-[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/benchmarks/methodology.md)
-and the [benchmarks how-to](https://github.com/divi-vijayakumar/Percept/blob/main/docs/benchmarks/running-benchmarks.md).
+[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/evaluation/methodology.md)
+and the [benchmarks how-to](https://github.com/divi-vijayakumar/Percept/blob/main/docs/evaluation/running-benchmarks.md).
 The scorecard tooling operates on a manifest you provide; the bundled golden set ships with the **source
 repo, not the wheel**, so the default-manifest commands run from a repo checkout:
 

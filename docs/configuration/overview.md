@@ -123,7 +123,7 @@ off, preserving the historical rising-edge gate exactly.
 `vision`/`conductor`/`specialist` default to `None`, **not** `"fake"`: you do not land on a scripted
 backend by not typing something. A bare LIVE run with `vision` unset raises `ModeError` rather than
 silently faking a perception result — set a real backend and its key, or pass `mode="offline"` for
-the keyless scripted path. See [reference/backends.md](backends.md).
+the keyless scripted path. See [reference/backends.md](../judges/backends.md).
 
 ### `routing` — local-router deferral
 
@@ -187,7 +187,7 @@ localized, so small low-motion actions survive), or `p95` (95th percentile). Thr
 mean, each with its own cutoff, so the mean-tuned `0.10` over-fires them. `salience_stat="mean"` with
 `motion_gate=0.10` preserves the legacy whole-frame gate byte-for-byte. `ego_compensate` subtracts
 global camera motion before diffing — for a **moving** camera only. See
-[reference/edge-policy.md](edge-policy.md).
+[reference/edge-policy.md](../admission/wake-policy.md).
 
 ---
 
@@ -239,8 +239,8 @@ environment *before* importing `percept`; an embedder should do the same:
 | `PERCEPT_EGO_COMPENSATE` | `true` | **moving** camera only (glasses / body-cam) |
 
 There is no warning on the untuned path — it simply admits less. If you embed Percept rather than run
-the CLI, set these yourself. See [how-to/tune-admission.md](../how-to/tune-admission.md) and, for content
-that has near-zero pixel motion (screenshares, documents), [how-to/screenshare.md](../how-to/screenshare.md).
+the CLI, set these yourself. See [how-to/tune-admission.md](../admission/tuning-admission.md) and, for content
+that has near-zero pixel motion (screenshares, documents), [how-to/screenshare.md](../watches/scenario-screenshare.md).
 
 ---
 
@@ -261,10 +261,10 @@ content-key admission plus a fixed low-rate coast floor), `conversation` (experi
 
 Built-in **WatchProfiles**: `fixed-cam-localized`, `dynamic-action`, `handheld`, `wildcard-default`.
 
-To author your own profile, see [how-to/custom-configuration.md](../how-to/custom-configuration.md) — that
+To author your own profile, see [how-to/custom-configuration.md](profiles.md) — that
 recipe (define + register a `SourceProfile` / `WatchProfile`, and apply it) is not duplicated here.
 For reading a `percept-doctor` report and tuning the admission signal for your content, see
-[how-to/tune-admission.md](../how-to/tune-admission.md).
+[how-to/tune-admission.md](../admission/tuning-admission.md).
 
 ---
 
@@ -284,4 +284,4 @@ outside its ownership just because it is more specific.
 
 **Provenance is recorded per field.** The resolved result carries, for every effective field, which
 layer set it — inspectable via `percept resolve --explain` (see
-[reference/cli.md](cli.md)).
+[reference/cli.md](../resources/cli.md)).

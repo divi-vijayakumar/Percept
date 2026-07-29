@@ -8,7 +8,7 @@ status: stable
 
 This page traces a single goal — **"the milk is boiling over"** — through the whole pipeline, for a fixed
 kitchen camera pointed at a pot on the stove. It names the real component at each step so you can follow
-the same path in code. If you have not read [Core concepts](concepts.md), start there.
+the same path in code. If you have not read [Core concepts](how-it-works.md), start there.
 
 The scenario is deliberately simple: one static camera, one standing goal, one thing that eventually
 happens. The point is to see how the cheaper tiers absorb the quiet frames so that a paid model call
@@ -42,7 +42,7 @@ model call.
 
 Before any expensive perception, the tier-0 gate
 ([`percept.harness`](../../packages/percept-vision/percept/harness), see
-[Motion score and the temporal strip](motion-and-strip.md)) asks one cheap question: *did anything worth
+[Motion score and the temporal strip](../admission/how-admission-works.md)) asks one cheap question: *did anything worth
 a closer look change?*
 
 - **Still pot, calm milk.** The frame-diff against the previous frame is near zero. The motion score sits
@@ -128,7 +128,7 @@ each positive one. Here, one judge call fires one incident on the rising edge.
 
 ## See also
 
-- [Architecture](architecture.md) · [Core concepts](concepts.md) ·
-  [Motion score and the temporal strip](motion-and-strip.md)
-- [../reference/consequence-gate.md](../reference/consequence-gate.md) ·
-  [../how-to/authoring-goals-and-watch-plans.md](../how-to/authoring-goals-and-watch-plans.md)
+- [Architecture](architecture.md) · [Core concepts](how-it-works.md) ·
+  [Motion score and the temporal strip](../admission/how-admission-works.md)
+- [../reference/consequence-gate.md](../watches/the-gate.md) ·
+  [../how-to/authoring-goals-and-watch-plans.md](../watches/writing-goals.md)

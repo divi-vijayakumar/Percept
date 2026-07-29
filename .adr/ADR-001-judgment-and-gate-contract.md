@@ -71,7 +71,7 @@ Diagnostic and dead-letter payloads carry no secrets, no raw media, and no incid
 
 `SILENT` is a value of the decision model, not an event anyone receives. Code switching on
 `event.action` needs exactly two branches. See
-[the consequence gate reference](../docs/reference/consequence-gate.md) for the normative reason-code
+[the consequence gate reference](../docs/watches/the-gate.md) for the normative reason-code
 vocabulary.
 
 ## §3 — The rising edge

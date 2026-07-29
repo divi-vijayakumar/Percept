@@ -178,7 +178,7 @@ Exit codes: `0` every replayed action matches the recorded run · `1` a divergen
 percept-replay t.json
 ```
 
-**Install:** bare stdlib. See [../how-to/trace-bundles-and-replay.md](../how-to/trace-bundles-and-replay.md).
+**Install:** bare stdlib. See [../how-to/trace-bundles-and-replay.md](../observability/traces-and-replay.md).
 
 ---
 
@@ -229,7 +229,7 @@ percept-eval --baseline base.yaml --candidate cand.yaml --fixtures ./fixtures --
 ```
 
 **Install:** ships in the wheel, bare stdlib (YAML plans need `pyyaml`). See
-[../how-to/eval.md](../how-to/eval.md).
+[../how-to/eval.md](../evaluation/evaluate-your-data.md).
 
 ---
 
@@ -256,7 +256,7 @@ Exit codes: `0` derived or reported · `1` no rung met the bars · `2` refused.
 percept-derive-profile --fixtures ./fixtures --ladder ladder.json --bars bars.json --out-profile p.json
 ```
 
-**Install:** bare stdlib. See [../how-to/derive-a-profile.md](../how-to/derive-a-profile.md).
+**Install:** bare stdlib. See [../how-to/derive-a-profile.md](../sources/source-profiles.md).
 
 ---
 
@@ -318,5 +318,5 @@ Most commands run from a bare `pip install percept-vision`:
 - **Repo checkout + `[bench]`** (numpy + opencv, `PYTHONPATH=packages/percept-vision`):
   `percept-bench`.
 
-See [configuration.md](configuration.md) for every environment variable, and
-[backends.md](backends.md) for provider selection.
+See [configuration.md](../configuration/overview.md) for every environment variable, and
+[backends.md](../judges/backends.md) for provider selection.

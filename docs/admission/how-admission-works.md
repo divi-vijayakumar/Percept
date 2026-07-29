@@ -10,8 +10,8 @@ The tier-0 wake layer answers one cheap question per frame — *is anything wort
 brain spends a paid model call only when something plausibly changed. Three decisions are involved, and
 keeping them distinct is the whole game: **how** motion is measured, **whether** the camera itself is
 moving, and **how much history** the model sees once it does look. This page explains each conceptually;
-for the exact env vars and thresholds see [Configuration](../reference/configuration.md) and
-[Edge policy](../reference/edge-policy.md).
+for the exact env vars and thresholds see [Configuration](../configuration/overview.md) and
+[Edge policy](wake-policy.md).
 
 ## The motion score
 
@@ -95,14 +95,14 @@ The fix is not a better motion statistic — it is to stop gating on motion at a
 uses a **fixed cadence**: `gate_on="fixed"` makes the gate escalate on a timer every
 `min_judge_interval` seconds regardless of motion, giving the model a steady look at content that a
 frame-diff cannot see. This is the pattern behind
-[watching a screenshare](../how-to/screenshare.md) — use `gate_on="fixed"` for screens, documents, and
+[watching a screenshare](../watches/scenario-screenshare.md) — use `gate_on="fixed"` for screens, documents, and
 reminders, and the motion gate for physical events.
 
 ## See also
 
-- [../how-to/screenshare.md](../how-to/screenshare.md) — the fixed-cadence screen-watching template.
-- [../how-to/authoring-goals-and-watch-plans.md](../how-to/authoring-goals-and-watch-plans.md) — where
+- [../how-to/screenshare.md](../watches/scenario-screenshare.md) — the fixed-cadence screen-watching template.
+- [../how-to/authoring-goals-and-watch-plans.md](../watches/writing-goals.md) — where
   `salience_stat`, `ego_compensate`, and `gate_on` are set on a goal.
-- [../reference/configuration.md](../reference/configuration.md) · [../reference/edge-policy.md](../reference/edge-policy.md)
+- [../reference/configuration.md](../configuration/overview.md) · [../reference/edge-policy.md](wake-policy.md)
   — the exact env vars, thresholds, and wake-policy channels.
-- [Architecture](architecture.md) · [End to end: one judged request](e2e-flow-milk-boilover.md)
+- [Architecture](../resources/architecture.md) · [End to end: one judged request](../resources/worked-example-milk-boilover.md)

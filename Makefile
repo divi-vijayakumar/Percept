@@ -182,10 +182,10 @@ architecture-check:  ## CI gate: fail if the committed diagram is stale vs code/
 	$(PY) tools/build_architecture.py --check --meta docs/architecture.meta.json --out docs/architecture.html --svg docs/architecture.svg
 	git diff --exit-code docs/architecture.html docs/architecture.svg
 
-docs-tunables:  ## (re)generate docs/reference/tunables.md from percept.tunables.REGISTRY
+docs-tunables:  ## (re)generate docs/configuration/tunables.md from percept.tunables.REGISTRY
 	$(PY) tools/build_tunables_doc.py
 
-docs-registries:  ## (re)generate docs/reference/registries.md from the live registries
+docs-registries:  ## (re)generate docs/judges/registries.md from the live registries
 	$(PY) tools/build_registries_doc.py
 
 docs-index:  ## stamp frontmatter on docs/**.md and (re)generate docs/README.md

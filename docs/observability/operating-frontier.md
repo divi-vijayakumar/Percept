@@ -60,7 +60,7 @@ minutes. Degraded time is subtracted from **coverage**, never from a rate denomi
 
 **Per source-hour at a stated active-watch count** is the second, deployment-economics denominator.
 It is published only when the active-watch count was actually stated; a bare per-stream-hour figure
-is underspecified (see §4 of [Eval-hours costing](eval-hours-costing.md)), and this report omits it rather than printing it with an
+is underspecified (see §4 of [Eval-hours costing](../evaluation/sizing-a-run.md)), and this report omits it rather than printing it with an
 implied concurrency of 1.
 
 **Assisted recall** is the same matcher with `predicted_actions={"fire","ask"}` — "the episode was

@@ -1070,7 +1070,7 @@ async def run(
       They reach admission two ways: a goal whose condition compiles to ``gate_on="structural"`` /
       ``"semantic"`` escalates on that channel against its own threshold, and a ``wake_policy`` fuses the
       channels into one wake score. Both are ADMISSION signals — they decide *when to spend the cloud
-      judge*; they do NOT deliver facts to the judge (see ``docs/reference/registration.md``). Called
+      judge*; they do NOT deliver facts to the judge (see ``docs/admission/detectors.md``). Called
       once per frame on the gate frame, so keep them cheap, and keep them total — an adapter that raises
       propagates out of the gate and stops the watch (loudly, not silently). Both default ``None`` → the
       reported signal and every escalation decision are byte-for-byte the motion-only path.

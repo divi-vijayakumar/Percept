@@ -65,7 +65,7 @@ will not lose an hour to it.
 
 Those two lines cover almost everyone. Every optional extra — `[gemini]`, `[claude]`, `[deepgram]`,
 `[screen]`, `[mic]`, `[edge]`, `[bench]`, `[pose]`, `[otel]`, `[all]` — with what it pulls in and
-which key it needs, is in **[docs/reference/backends.md](docs/reference/backends.md)**.
+which key it needs, is in **[docs/judges/backends.md](docs/judges/backends.md)**.
 
 ### 60-second quickstart — no keys, fully offline
 
@@ -108,9 +108,9 @@ For a real watch agent you don't write a capture loop — **`percept.run` owns i
 source, runs the cheap tier-0 gate so a still scene spends no cloud calls, judges, and yields an
 `Incident` on each rising-edge fire. One `async for` is the whole integration surface.
 
-- **[Quickstart](docs/tutorials/quickstart.md)** — the guided path: offline → a real backend → a live
+- **[Quickstart](docs/get-started/quickstart.md)** — the guided path: offline → a real backend → a live
   source, with what each step is actually doing.
-- **[Runtime worker](docs/how-to/runtime.md)** — everything for embedding it: sources, sinks
+- **[Runtime worker](docs/watches/creating-a-watch.md)** — everything for embedding it: sources, sinks
   (`on_incident` → Slack/webhook), refusals (`on_ask`), fused audio, the decision trace, moving
   cameras, cost, and a troubleshooting table.
 
@@ -139,7 +139,7 @@ verified API, the templates, and the traps. Codex and other harnesses read
 `.agents/skills/percept-agent/`, and `AGENTS.md` + [`llms.txt`](llms.txt) are picked up
 automatically at the repo root.
 
-Full guide: **[docs/agents/README.md](docs/agents/README.md)**.
+Full guide: **[docs/get-started/coding-agents.md](docs/get-started/coding-agents.md)**.
 
 ## Architecture
 
@@ -154,7 +154,7 @@ detectors/pose) → **Cognition / System 1** (`percept` — senses · the three-
 cache; cheap, deterministic, *always in the loop*) → **VLM / System 2** (`percept.backends` —
 summoned behind vendor-neutral registry seams, paid per call).
 
-*Prose map: [docs/explanation/architecture.md](docs/explanation/architecture.md) · interactive:
+*Prose map: [docs/resources/architecture.md](docs/resources/architecture.md) · interactive:
 [architecture.html](docs/architecture.html).*
 
 ## What you can configure
@@ -169,10 +169,10 @@ the only ones `percept-optimize` may search. A few worth knowing:
 | tier-0 salience statistic | `PERCEPT_SALIENCE_STAT` | `mean` | set `block_max` for small/localized actions on a fixed camera |
 | moving-camera compensation | `PERCEPT_EGO_COMPENSATE` | `false` | set `true` for glasses/body-cam |
 
-- **[Every tunable](docs/reference/tunables.md)** — all 157, typed, owned, with bounds. Generated from the registry.
-- **[Registries and adapters](docs/reference/registries.md)** — the 7 backend seams, the detectors, and how to add your own.
-- **[Configuration reference](docs/reference/configuration.md)** — the `Settings` tree and resolver precedence.
-- **[Author a profile](docs/how-to/custom-configuration.md)** — a `SourceProfile` / `WatchProfile` for your use case.
+- **[Every tunable](docs/configuration/tunables.md)** — all 157, typed, owned, with bounds. Generated from the registry.
+- **[Registries and adapters](docs/judges/registries.md)** — the 7 backend seams, the detectors, and how to add your own.
+- **[Configuration reference](docs/configuration/overview.md)** — the `Settings` tree and resolver precedence.
+- **[Author a profile](docs/configuration/profiles.md)** — a `SourceProfile` / `WatchProfile` for your use case.
 
 ## Judges (and bringing your own)
 
@@ -181,7 +181,7 @@ An admitted frame falls through three tiers of rising cost: a local regex **rout
 judge is **fail-closed**: a request for a specialist judge is authorized against a deployment
 catalog, bound to an immutable SHA-256-verified static context, and only then dispatched. Any
 mismatch refuses the arm rather than silently falling back.
-→ **[docs/how-to/custom-judge.md](docs/how-to/custom-judge.md)**
+→ **[docs/judges/custom-specialist-judge.md](docs/judges/custom-specialist-judge.md)**
 
 ## Tune, evaluate, benchmark
 
@@ -194,9 +194,9 @@ percept-bench    eval/benchmark_ci_gate/manifest.json --out benchmark.json     #
 ```
 
 **No Percept accuracy numbers are published yet.** The methodology and runbook exist; the
-reproducible model-sweep run is a separate phase. See **[docs/benchmarks/](docs/benchmarks/README.md)**
+reproducible model-sweep run is a separate phase. See **[docs/evaluation/](docs/evaluation/benchmarks.md)**
 for the status and the gate a published claim must pass. Every command has a full flag reference in
-[docs/reference/cli.md](docs/reference/cli.md).
+[docs/resources/cli.md](docs/resources/cli.md).
 
 ## The envelope — refusals, stated proudly
 
@@ -243,14 +243,14 @@ Full index: **[docs/README.md](docs/README.md)** — generated, every page dated
 
 | I want to… | go to |
 |---|---|
-| run something that works | [Quickstart](docs/tutorials/quickstart.md) |
-| embed it in my app | [Runtime worker](docs/how-to/runtime.md) |
-| make it fire on *my* content | [Tune admission](docs/how-to/tune-admission.md) |
-| bring my own model | [Custom judge & backend](docs/how-to/custom-judge.md) |
-| see every knob | [Tunables](docs/reference/tunables.md) |
-| understand the design | [Architecture](docs/explanation/architecture.md) · [Concepts](docs/explanation/concepts.md) |
-| measure it | [Benchmarks](docs/benchmarks/README.md) |
-| build with an agent | [Coding agents](docs/agents/README.md) |
+| run something that works | [Quickstart](docs/get-started/quickstart.md) |
+| embed it in my app | [Runtime worker](docs/watches/creating-a-watch.md) |
+| make it fire on *my* content | [Tune admission](docs/admission/tuning-admission.md) |
+| bring my own model | [Custom judge & backend](docs/judges/custom-specialist-judge.md) |
+| see every knob | [Tunables](docs/configuration/tunables.md) |
+| understand the design | [Architecture](docs/resources/architecture.md) · [Concepts](docs/resources/how-it-works.md) |
+| measure it | [Benchmarks](docs/evaluation/benchmarks.md) |
+| build with an agent | [Coding agents](docs/get-started/coding-agents.md) |
 
 ## Community & support
 

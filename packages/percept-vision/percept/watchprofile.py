@@ -14,7 +14,7 @@ is a typed handle onto a setting that already exists and is read elsewhere in th
   ``motion_gate``/``motion_gate_block_max``/``motion_gate_p95``) and
   :func:`percept.harness.tier0.compile_watchspec`'s ``salience_stat=`` / ``stat_thresholds=`` kwargs.
 - ``plan_mode`` <-> :data:`percept.behavior.Temporal` (``"single" | "strip" | "window" | "sprite"`` — the
-  ``PerceptionSpec.temporal`` vocabulary; docs/how-to/authoring-goals-and-watch-plans.md Part 2.1).
+  ``PerceptionSpec.temporal`` vocabulary; docs/watches/writing-goals.md Part 2.1).
 - ``cadence`` <-> :class:`percept.sampling.SensePolicy` (``base_fps``, ``max_fps``, ``escalate_threshold``,
   ``hold_s`` — the fovea's per-concern processing-density envelope).
 - ``gate.require_false_first`` <-> :data:`percept.config.GateSettings.require_false_first`.
@@ -22,7 +22,7 @@ is a typed handle onto a setting that already exists and is read elsewhere in th
   detectors' ``refractory_s`` read — a logical "gate" knob (not a literal ``GateSettings`` field) because
   the gate-relaxation finding tunes require-false-first and refractory together.
 - ``goal_density_guidance`` <-> the authoring-time "keep the active goal set small and mutually distinct"
-  guidance (docs/how-to/authoring-goals-and-watch-plans.md Part 1.1); advisory, nothing enforces it.
+  guidance (docs/watches/writing-goals.md Part 1.1); advisory, nothing enforces it.
 
 **This module is schema + registry ONLY.** No line in ``agent.py`` / ``runtime/worker.py`` reads a
 WatchProfile yet — that wiring is separate, per the architectural rule: "the runtime reads its
@@ -123,7 +123,7 @@ class GateProfile:
 @dataclass(frozen=True)
 class GoalDensityGuidance:
     """Advisory, NOT enforced by any runtime code: authoring guidance for how many concurrent goals a
-    scene tolerates before cross-talk (docs/how-to/authoring-goals-and-watch-plans.md Part 1.1 — "keep the
+    scene tolerates before cross-talk (docs/watches/writing-goals.md Part 1.1 — "keep the
     active goal set small and mutually distinct"). The empirically-tuned operating point held this at <=3 distinct goals.
     This rides on the profile so a derived profile can carry the finding that produced it; nothing reads
     it automatically (that's a separate authoring-time surface)."""

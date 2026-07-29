@@ -32,7 +32,7 @@ import percept
 The **core runs offline** with deterministic scripted backends, so you can build and test the whole
 cognition path — goals, the gate, entity memory, escalation — with no API keys. You will add one
 extra later in this page for a real backend. The full matrix of extras, what each pulls in, and
-which key it needs is in **[backends.md](../reference/backends.md)** — the canonical install
+which key it needs is in **[backends.md](../judges/backends.md)** — the canonical install
 reference.
 
 ---
@@ -151,8 +151,8 @@ never pixels.
 > `percept.run` owns capture, gating, and incident emission.
 
 You can also select backends per-seam via env vars without touching code
-(`PERCEPT_VISION_BACKEND=gemini`, etc.) — see [backends.md](../reference/backends.md). Every tunable
-env var (backends, gate thresholds, salience) is listed in [configuration.md](../reference/configuration.md).
+(`PERCEPT_VISION_BACKEND=gemini`, etc.) — see [backends.md](../judges/backends.md). Every tunable
+env var (backends, gate thresholds, salience) is listed in [configuration.md](../configuration/overview.md).
 
 ---
 
@@ -189,23 +189,23 @@ asyncio.run(main())
 That's the whole agent. `run` also takes `on_incident=` (a notification sink — webhook/SMS/log),
 `on_ask=` (low-confidence refusals), `audio_source="mic:0"` (fused audio+video — hear a kettle whistle,
 not just see steam), and returns `RuntimeStats` for cost/escalation counters. Full options:
-[how-to/runtime.md](../how-to/runtime.md).
+[how-to/runtime.md](../watches/creating-a-watch.md).
 
 To **drive** a running watch — arm goals by voice, ask "what do you see?", pause/mute it — wrap it in a
-`RuntimeSession` (the command seam): [reference/command-seam.md](../reference/command-seam.md).
+`RuntimeSession` (the command seam): [reference/command-seam.md](../watches/driving-a-live-watch.md).
 
 ---
 
 ## Where to go next
 
-- **[how-to/runtime.md](../how-to/runtime.md)** — `percept.run` in full: sources, sinks, audio, tuning.
-- **[reference/command-seam.md](../reference/command-seam.md)** — `RuntimeSession`: arm/ask/pause/mute a
+- **[how-to/runtime.md](../watches/creating-a-watch.md)** — `percept.run` in full: sources, sinks, audio, tuning.
+- **[reference/command-seam.md](../watches/driving-a-live-watch.md)** — `RuntimeSession`: arm/ask/pause/mute a
   live watch; the interface voice / programmatic / text apps build on.
-- **[concepts.md](../explanation/concepts.md)** — the three-state gate, rising-edge firing, BehaviorProgram vs
+- **[concepts.md](../resources/how-it-works.md)** — the three-state gate, rising-edge firing, BehaviorProgram vs
   PerceptionSpec, edge detectors, and the escalation ladder.
-- **[backends.md](../reference/backends.md)** — install extras, keys, env-var selection, and swapping backends.
-- **[configuration.md](../reference/configuration.md)** — every `PERCEPT_*` env var you can tune, in one place.
-- **[e2e-flow-milk-boilover.md](../explanation/e2e-flow-milk-boilover.md)** — a full trace of one request through
+- **[backends.md](../judges/backends.md)** — install extras, keys, env-var selection, and swapping backends.
+- **[configuration.md](../configuration/overview.md)** — every `PERCEPT_*` env var you can tune, in one place.
+- **[e2e-flow-milk-boilover.md](../resources/worked-example-milk-boilover.md)** — a full trace of one request through
   the whole system, and where the perception bottleneck lives.
 - **Website:** <https://percept.percia.ai>.
 

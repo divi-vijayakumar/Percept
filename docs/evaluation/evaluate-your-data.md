@@ -18,7 +18,7 @@ Three distinct CLIs cover three distinct questions. Pick by what you are trying 
 |---|---|---|---|
 | `percept-bench` | per-concern **precision / recall** for one configuration | a labelled-clip **manifest** (one JSON file) | a P/R report; offline, deterministic `fake` backend. **The rest of this page.** |
 | `percept-eval` | did the **candidate** beat the **baseline**? (paired A/B) | two **plans** + a **fixtures directory** + pre-registered **bars** | exit `0` pass / `1` a bar failed / `2` refused. See [Differential A/B](#differential-ab-percept-eval). |
-| `percept-optimize` | which **safe tunables** to pick | a search space over declared-safe tunables | an `OptimizationLock`. See [optimize.md](./optimize.md). |
+| `percept-optimize` | which **safe tunables** to pick | a search space over declared-safe tunables | an `OptimizationLock`. See [optimize.md](../configuration/optimize.md). |
 
 `percept-bench` scores **one** config against ground truth. `percept-eval` scores **two** configs
 against each other on the same fixtures, and only pronounces pass/fail against bars you declared
@@ -51,7 +51,7 @@ percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.
 
 For the public-grade live benchmark plan, including sample-size gates, cost estimates, and the
 decision to use OpenAI/TML as reference rows rather than paid reproduced legs, see
-[the benchmarks hub](../benchmarks/README.md).
+[the benchmarks hub](benchmarks.md).
 
 ---
 
@@ -305,7 +305,7 @@ percept-eval --baseline base.yaml \
 - **`--json`** — write the full paired report as JSON.
 - **`--frontier`** — also emit the **operating-frontier report**: exact one-sided 95% bounds on FIRE
   recall and false FIREs per scheduled watch-hour, ASK rate, coverage, and duplicate FIREs per episode.
-  See [operating-frontier.md](../reference/operating-frontier.md).
+  See [operating-frontier.md](../observability/operating-frontier.md).
 
 Exit codes: **`0`** pass (or reported, when no bars) / **`1`** a bar failed / **`2`** refused (bad input,
 a missing/broken split, or a configuration that drifted after the bars were declared).
@@ -325,7 +325,7 @@ fixtures/
 ```
 
 `<arm>` is `baseline` / `candidate` for a differential A/B; for a `percept-derive-profile` ladder it is
-each rung/template name instead (see [derive-a-profile.md](./derive-a-profile.md)). Everything but
+each rung/template name instead (see [derive-a-profile.md](../sources/source-profiles.md)). Everything but
 `ground_truth.json` is optional — an arm with no `trace.json` is scored on events alone and simply
 excluded from the funnel comparison.
 

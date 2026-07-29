@@ -17,7 +17,7 @@ They answer different questions, so reach for the right one:
 
 | Command | Question | You supply | It emits |
 | --- | --- | --- | --- |
-| [`percept-derive-profile`](./derive-a-profile.md) | which **hand-authored profile** wins? | a ladder of candidate profiles | a `VersionedProfile` |
+| [`percept-derive-profile`](../sources/source-profiles.md) | which **hand-authored profile** wins? | a ladder of candidate profiles | a `VersionedProfile` |
 | `percept-optimize` | within one fixed **shape**, which value of a few safe numeric knobs scores best? | a template + a search space | an `OptimizationLock` |
 
 `percept-optimize` never invents the shape — that stays an operator-declared template. It expands
@@ -75,6 +75,6 @@ both `percept-optimize` and `percept-derive-profile` refuse (exit `2`). Pin the 
 
 Both jobs read the same fixtures directory layout — one directory per fixture with
 `ground_truth.json`, per-arm `events.json` / `trace.json`, and an optional `splits.json` whose
-`test` split is held out. See [./eval.md](./eval.md) for the full layout, and
-[./derive-a-profile.md](./derive-a-profile.md) for the ladder/bars document shapes `--space` and
+`test` split is held out. See [./eval.md](../evaluation/evaluate-your-data.md) for the full layout, and
+[./derive-a-profile.md](../sources/source-profiles.md) for the ladder/bars document shapes `--space` and
 `--bars` build on.

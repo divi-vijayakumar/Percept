@@ -225,15 +225,15 @@ gate downstream is identical.
 
 The **Vision** seam is documented in full — every escalation kwarg, the `Verdict`/`Observation`
 invariants, fail-closed injection, and a runnable conformance suite you can execute against your own
-adapter — in [The Vision adapter interface](vision-adapter.md):
+adapter — in [The Vision adapter interface](bring-your-own-model.md):
 
 ```bash
 python -m percept.conformance myvlm.vision:MyVision
 ```
 
 For the step-by-step **bring-your-own-backend recipe**, see
-[Custom judge](../how-to/custom-judge.md); for the full extension-point contract (`judge`/`detect`/
-`detect_events`, invariants, conformance), see [The Vision adapter interface](vision-adapter.md).
+[Custom judge](custom-specialist-judge.md); for the full extension-point contract (`judge`/`detect`/
+`detect_events`, invariants, conformance), see [The Vision adapter interface](bring-your-own-model.md).
 
 ---
 
@@ -247,4 +247,4 @@ logic without asserting any model intelligence. This split is deliberate:
 - **L2/L3 (live):** real backends, keys present. The only place model behavior is exercised.
 
 So a green offline test means *your integration is correct*; testing whether Percept actually
-*perceives* the world is a live-backend job. See [quickstart.md](../tutorials/quickstart.md) for both paths.
+*perceives* the world is a live-backend job. See [quickstart.md](../get-started/quickstart.md) for both paths.

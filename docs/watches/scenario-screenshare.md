@@ -29,7 +29,7 @@ async for incident in run(agent, source=my_screen_frames(), on_incident=show_tip
 Why `gate_on="fixed"`: the screenshare is nearly all still pixels, so `motion ≈ 0` every frame — the
 motion gate would **never** spend a cloud call, and the assistant would see nothing. `gate_on="fixed"`
 makes the gate escalate **every `min_judge_interval` seconds regardless of motion** (the demo fires on a
-constant, zero-motion screen). See [motion-and-strip](../explanation/motion-and-strip.md) for why.
+constant, zero-motion screen). See [motion-and-strip](../admission/how-admission-works.md) for why.
 
 **Live screen source.** `pip install "percept-vision[screen]"` installs the screen-grab dependency
 (`mss`), but the runtime intentionally keeps the capture adapter thin: capture the display, downsample

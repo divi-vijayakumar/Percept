@@ -141,5 +141,5 @@ acoustic-onset boundary is what tells the gate *when* that escalation is worth a
 > the VLM confirms *what it means* (expensive) only at those boundaries. Audio gates the read; it
 > never becomes a second, ungated judge.
 
-See also: [`registration.md`](registration.md) (register your own detector + category),
-[`concepts.md`](../explanation/concepts.md) (the gate + the one perception seam).
+See also: [`registration.md`](../admission/detectors.md) (register your own detector + category),
+[`concepts.md`](../resources/how-it-works.md) (the gate + the one perception seam).

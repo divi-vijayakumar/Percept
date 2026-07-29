@@ -698,7 +698,7 @@ def check_vision_adapter(adapter: Any, **kwargs: Any) -> ConformanceReport:
 #
 # What a client actually plugs in here: an OCR / phash / embedding model that answers "the document
 # changed at t=8.2" — WHEN to look closely. It never answers WHAT the frame says (see
-# docs/reference/registration.md, "Admission is not extraction"). The failure mode this suite exists
+# docs/admission/detectors.md, "Admission is not extraction"). The failure mode this suite exists
 # to prevent is the silent one: a detector whose `signal` is misspelled gets routed to the motion
 # channel by DetectorBank, or one that is never registered is DROPPED by the selection firewall — in
 # both cases the watch simply under-admits, with no exception, no log, and no way to see it at 2am.

@@ -130,7 +130,7 @@ frozen). `decide()`, the reason vocabulary and the suppression hook are purely a
 ## Related
 
 - [`watch-contract.md`](watch-contract.md) — the frozen public entrypoint the gate feeds.
-- [`edge-policy.md`](edge-policy.md) — the *tier-0* gate (escalate-or-not), which runs strictly
+- [`edge-policy.md`](../admission/wake-policy.md) — the *tier-0* gate (escalate-or-not), which runs strictly
   before this one. Note that `percept.harness.tier0.GateDecision` and
   `percept.sequencing.GateDecision` are different types from `percept.GateOutcome`; only the latter
   is the consequence gate's own outcome, and only it is exported from the top-level namespace.

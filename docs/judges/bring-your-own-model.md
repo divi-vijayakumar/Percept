@@ -202,7 +202,7 @@ failure is reported and never fails the run.
 
 **Accuracy.** No check asserts a particular `satisfied` for a particular frame. A conformant adapter
 is free to be *wrong*; it is not free to be *shaped* wrong. Model quality is an L2/L3 eval question —
-see [Benchmark methodology](../benchmarks/methodology.md) and the `percept.bench` scorecards.
+see [Benchmark methodology](../evaluation/methodology.md) and the `percept.bench` scorecards.
 
 ### Reading the report
 
@@ -260,5 +260,5 @@ cannot be statically conformance-checked without the dependency present.
 ## See also
 
 - [Backends](backends.md) — the five seams, names, extras, env vars.
-- [`watch()` contract](watch-contract.md) — the frozen entrypoint your adapter ends up serving.
-- [Registration](registration.md) — detector / concern / enricher registries (the other extension points).
+- [`watch()` contract](../watches/watch-contract.md) — the frozen entrypoint your adapter ends up serving.
+- [Registration](../admission/detectors.md) — detector / concern / enricher registries (the other extension points).

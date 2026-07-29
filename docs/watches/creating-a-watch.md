@@ -19,7 +19,7 @@ your source ──▶ fovea (cheap motion/salience gate) ──▶ VLM judge ─
 ```
 
 > **Before you design around it**, read
-> [Scope and persistence](../reference/scope-and-persistence.md). Three things adopters have read
+> [Scope and persistence](../incidents/scope-and-persistence.md). Three things adopters have read
 > too generously: coverage is **narrow** — biometric re-identification, growth prediction and robotics
 > control are explicitly excluded; **episodes are session-only** and do not survive a restart, which
 > blocks any 24/7 claim; and delivery is **provisional incident + superseding revision**, not a wide
@@ -239,7 +239,7 @@ session.mute();  session.unmute()                # judge, but suppress alerts
 
 `start` wraps `run(core, source=..., regate_on_goal_change=True, ...)` in a background task; the
 headless `run()` stays the front door. The full interface — voice arming, barge-in, deafen-during-
-playback — is in [command-seam.md](../reference/command-seam.md).
+playback — is in [command-seam.md](driving-a-live-watch.md).
 
 ### `run(...)` parameters
 
@@ -277,7 +277,7 @@ playback — is in [command-seam.md](../reference/command-seam.md).
 - `audio_wake` — treat a wake phrase on the audio channel as an escalation.
 - `on_utterance` — sink for finalized speech utterances.
 - `vad`, `utterance_threshold`, `utterance_hangover_frames`, `utterance_min_speech_frames` — voice-activity / endpointing tuning.
-- `wake_policy` — the weighted edge wake policy (fuse `audio_event`, `presence`, `change`, … into one cheap score). See [reference/edge-policy.md](../reference/edge-policy.md).
+- `wake_policy` — the weighted edge wake policy (fuse `audio_event`, `presence`, `change`, … into one cheap score). See [reference/edge-policy.md](../admission/wake-policy.md).
 
 **Runtime control & durability**
 - `paused` / `muted` — start paused (no judging) or muted (judge, but suppress alerts).
@@ -301,7 +301,7 @@ playback — is in [command-seam.md](../reference/command-seam.md).
 > - **A moving / wearable camera** (head-cam, drone, handheld) → `ego_compensate=True` — see below.
 >
 > `salience_stat`, `ego_compensate`, and their per-stat thresholds live in
-> [reference/edge-policy.md](../reference/edge-policy.md).
+> [reference/edge-policy.md](../admission/wake-policy.md).
 
 ### Moving cameras — glasses, body-cam, phone ⚠️
 
@@ -365,8 +365,8 @@ export PERCEPT_SALIENCE_STAT=block_max     # fixed camera + small/localized acti
 export PERCEPT_GATE_REFRACTORY_S=15        # suppress repeats of the SAME goal for N seconds (8–30 typical)
 ```
 
-The full set is [Configuration](../reference/configuration.md); every knob, typed and bounded, is
-[Tunables](../reference/tunables.md).
+The full set is [Configuration](../configuration/overview.md); every knob, typed and bounded, is
+[Tunables](../configuration/tunables.md).
 
 ### Cadence — `gate_on`
 
@@ -389,12 +389,12 @@ Goal phrasing is the single biggest accuracy lever — bigger than any knob on t
   judge confuse them and tanks precision.
 
 Full guidance — phrasing patterns, matching the plan to the action, and the authoring checklist — is in
-[Authoring goals and watch plans](authoring-goals-and-watch-plans.md).
+[Authoring goals and watch plans](writing-goals.md).
 
 ## Worked scenarios
 
-- **Physical event (porch package)**: motion-gated, `temporal="strip"`. See [porch-package.md](porch-package.md).
-- **Content event (screenshare)**: `gate_on="fixed"` on a zero-motion screen. See [screenshare.md](screenshare.md).
+- **Physical event (porch package)**: motion-gated, `temporal="strip"`. See [porch-package.md](scenario-porch-package.md).
+- **Content event (screenshare)**: `gate_on="fixed"` on a zero-motion screen. See [screenshare.md](scenario-screenshare.md).
 
 > **Assistant-class, not a guarantee.** The runtime *alerts a human who stays responsible*. It is not a
 > certified safety/detection system standing between a person and harm — percept is never the sole
@@ -407,7 +407,7 @@ Full guidance — phrasing patterns, matching the plan to the action, and the au
 
 - **Listen too (fused audio).** `run(agent, source="webcam:0", audio_source="mic:0")` fills the audio
   window so a `modality="fused"` goal judges sound + vision together, and an off-camera sound onset can
-  escalate a frame the motion gate would skip. Extra: `[mic]`. See [audio-modality.md](../reference/audio-modality.md).
+  escalate a frame the motion gate would skip. Extra: `[mic]`. See [audio-modality.md](../sources/audio.md).
 - **Absence-native fires.** A goal with `state["miss_cost"]="severe"` fires a **coverage-loss** incident
   when it stops being observed ("I can't see the stove") — perception-robust (fires on the *lack* of
   evidence). A goal with `state["rearm"]="deadline", state["deadline_s"]=…` fires **overdue** when an
@@ -418,7 +418,7 @@ Full guidance — phrasing patterns, matching the plan to the action, and the au
 - **Deictic grounding (`exemplar`).** Give a goal a reference image via `state["exemplar"]=(mime, bytes)`
   and the judge answers "is this **the** specific X?" against it — individuation, not just category.
 - **Drive it live.** Wrap the watch in a `RuntimeSession` to arm goals, ask frame-grounded questions,
-  and pause/mute at runtime — the command seam: [command-seam.md](../reference/command-seam.md).
+  and pause/mute at runtime — the command seam: [command-seam.md](driving-a-live-watch.md).
 
 ## Webhook sink
 
@@ -495,8 +495,8 @@ sink = webhook(user_url, url_policy=UrlPolicy(
 
 ## See also
 
-- [Authoring goals and watch plans](authoring-goals-and-watch-plans.md) — the biggest accuracy lever.
-- [Tune admission](tune-admission.md) — when the gate is the thing that needs fixing.
-- [Configuration](../reference/configuration.md) · [Tunables](../reference/tunables.md) — every knob.
-- [`watch()` contract](../reference/watch-contract.md) — the frozen streaming entrypoint under `run()`.
+- [Authoring goals and watch plans](writing-goals.md) — the biggest accuracy lever.
+- [Tune admission](../admission/tuning-admission.md) — when the gate is the thing that needs fixing.
+- [Configuration](../configuration/overview.md) · [Tunables](../configuration/tunables.md) — every knob.
+- [`watch()` contract](watch-contract.md) — the frozen streaming entrypoint under `run()`.
 - [`examples/vision_assistant.py`](../../examples/vision_assistant.py) — a complete runnable integration.

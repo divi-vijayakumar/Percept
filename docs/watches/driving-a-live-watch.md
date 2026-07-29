@@ -75,5 +75,5 @@ session.resume()
 The **fires** (proactive nudges) flow out `on_incident`; the **commands** flow in through the seam. What
 turns a microphone, a webhook, or a text box into those calls is the application adapter — not the SDK.
 
-See also: [how-to/runtime.md](../how-to/runtime.md) (the headless watch), [reference/audio-modality.md](./audio-modality.md)
-(audio as a sensor vs. audio as a command), [quickstart.md](../tutorials/quickstart.md).
+See also: [how-to/runtime.md](creating-a-watch.md) (the headless watch), [reference/audio-modality.md](../sources/audio.md)
+(audio as a sensor vs. audio as a command), [quickstart.md](../get-started/quickstart.md).

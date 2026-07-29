@@ -31,7 +31,7 @@ answers *"is this plain-language condition true of this frame, right now?"* and 
 it cheap, deterministic, and backend-agnostic: swap Claude for Gemini for a keyless offline fake and the
 brain is unchanged. Run the whole thing without keys via `Percept.create(mode="offline")`, which wires
 deterministic fake backends that prove wiring, not model intelligence. See
-[Backends](../reference/backends.md).
+[Backends](../judges/backends.md).
 
 ## The three-state consequence gate
 
@@ -47,7 +47,7 @@ actions — it never guesses:
 
 `FIRE` and `ASK` are the only actions a subscriber sees; `SILENT` is internal and produces no event. The
 precise contract — the reason vocabulary, freshness, suppression guards — is in
-[../reference/consequence-gate.md](../reference/consequence-gate.md).
+[../reference/consequence-gate.md](../watches/the-gate.md).
 
 ## ASK — the trust state
 
@@ -109,15 +109,15 @@ list[FireEvent{goal_id, action, text}]        # what to surface or speak
 
 You normally never call the gate directly — `agent.perceive_judged(...)` runs every active goal through
 it and returns the resulting fire events. The plain-language goal you author, and the frozen `watch()`
-seam that compiles it, are specified in [../reference/watch-contract.md](../reference/watch-contract.md);
+seam that compiles it, are specified in [../reference/watch-contract.md](../watches/watch-contract.md);
 for how to author goals and watch plans see
-[../how-to/authoring-goals-and-watch-plans.md](../how-to/authoring-goals-and-watch-plans.md).
+[../how-to/authoring-goals-and-watch-plans.md](../watches/writing-goals.md).
 
 ## See also
 
 - [Architecture](architecture.md) — the four tiers and the two-layer brain.
-- [End to end: one judged request](e2e-flow-milk-boilover.md) — a full trace of a single goal.
-- [../reference/consequence-gate.md](../reference/consequence-gate.md) ·
-  [../reference/watch-contract.md](../reference/watch-contract.md)
+- [End to end: one judged request](worked-example-milk-boilover.md) — a full trace of a single goal.
+- [../reference/consequence-gate.md](../watches/the-gate.md) ·
+  [../reference/watch-contract.md](../watches/watch-contract.md)
 - CodeWiki deep dives: [Core & Agent](../../codewiki/Core-and-Agent.md) ·
   [Sensing & Signals](../../codewiki/Sensing-and-Signals.md)

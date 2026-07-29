@@ -17,7 +17,7 @@ judge, and the one thing neither of them does:
   "the document changed at t=8.2"; it never says WHAT it now says. If you need extracted FACTS to
   reach the model, call the judge yourself with `vision.judge(condition, frame, context={...})` —
   `context=` is a live Vision parameter, but the watch loop has no channel that fills it for you.
-  See docs/reference/registration.md, "Admission is not extraction".
+  See docs/admission/detectors.md, "Admission is not extraction".
 """
 
 from __future__ import annotations

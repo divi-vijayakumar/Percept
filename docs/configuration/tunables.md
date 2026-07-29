@@ -272,7 +272,7 @@ takes effect.
 
 ## Related
 
-- [Configuration reference](configuration.md) — the `Settings` tree and resolver precedence.
-- [Run an optimization](../how-to/optimize.md) — searching the safe subset into a lock.
-- [Create a custom configuration](../how-to/custom-configuration.md) — authoring a profile.
-- [Tune admission](../how-to/tune-admission.md) — the knobs that decide what reaches a judge.
+- [Configuration reference](overview.md) — the `Settings` tree and resolver precedence.
+- [Run an optimization](optimize.md) — searching the safe subset into a lock.
+- [Create a custom configuration](profiles.md) — authoring a profile.
+- [Tune admission](../admission/tuning-admission.md) — the knobs that decide what reaches a judge.

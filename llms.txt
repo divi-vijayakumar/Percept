@@ -9,11 +9,11 @@ https://percept.percia.ai
 
 - `README.md`: the problem, the solution, install commands, getting started, package map.
 - `AGENTS.md`: verified integration guide for Codex, Claude Code, Cursor, Copilot, and other coding agents.
-- `docs/agents/README.md`: agent onboarding — install the `percept-agent` skill; the three things agents get wrong.
+- `docs/get-started/coding-agents.md`: agent onboarding — install the `percept-agent` skill; the three things agents get wrong.
 - `docs/README.md`: documentation index (generated; every page carries an `updated:` date).
-- `docs/tutorials/quickstart.md`: 60-second offline first run on the scripted backend.
-- `docs/explanation/concepts.md`: cognition/perception split, gate, rising-edge firing, entity memory.
-- `docs/reference/backends.md`: scripted, Gemini, Claude, OpenRouter, Deepgram, and backend selection.
+- `docs/get-started/quickstart.md`: 60-second offline first run on the scripted backend.
+- `docs/resources/how-it-works.md`: cognition/perception split, gate, rising-edge firing, entity memory.
+- `docs/judges/backends.md`: scripted, Gemini, Claude, OpenRouter, Deepgram, and backend selection.
 
 ## Repository Layout (where things live)
 
@@ -57,16 +57,16 @@ goals=[...], vision="gemini")`.
 
 ## Key Docs
 
-- Architecture (generated diagram + the four tiers): `docs/explanation/architecture.md`
-- Runtime worker, embedding, sources, sinks, egomotion, cost, troubleshooting: `docs/how-to/runtime.md`
-- Configuration: `docs/reference/configuration.md`; author a profile: `docs/how-to/custom-configuration.md`
-- ALL 157 tunables (31 safe to optimize), generated from the registry: `docs/reference/tunables.md`
-- Backend seams, detectors, profile registries + how to register your own: `docs/reference/registries.md`
-- Custom judge / bring-your-own backend: `docs/how-to/custom-judge.md`
-- Command-line reference (nine tools): `docs/reference/cli.md`
-- Evaluate / optimize: `docs/how-to/eval.md`, `docs/how-to/optimize.md`
-- Benchmarks (status, methodology, runbook): `docs/benchmarks/README.md`
-- Edge parity and detector handshake: `docs/reference/edge-parity.md`
+- Architecture (generated diagram + the four tiers): `docs/resources/architecture.md`
+- Runtime worker, embedding, sources, sinks, egomotion, cost, troubleshooting: `docs/watches/creating-a-watch.md`
+- Configuration: `docs/configuration/overview.md`; author a profile: `docs/configuration/profiles.md`
+- ALL 157 tunables (31 safe to optimize), generated from the registry: `docs/configuration/tunables.md`
+- Backend seams, detectors, profile registries + how to register your own: `docs/judges/registries.md`
+- Custom judge / bring-your-own backend: `docs/judges/custom-specialist-judge.md`
+- Command-line reference (nine tools): `docs/resources/cli.md`
+- Evaluate / optimize: `docs/evaluation/evaluate-your-data.md`, `docs/configuration/optimize.md`
+- Benchmarks (status, methodology, runbook): `docs/evaluation/benchmarks.md`
+- Edge parity and detector handshake: `docs/admission/edge-parity.md`
 - Browser demo driving the real runtime: `docs/demo/README.md` (demo-04 is the one to show)
 - Reference voice/realtime application: `templates/realtime_voice_watch_agent/`
 

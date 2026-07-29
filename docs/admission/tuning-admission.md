@@ -113,7 +113,7 @@ contract (zero admits is still exit 2, as on any source).
 A source profile changes admission, sampling, evidence packaging, identity, episode segmentation and
 the default timebase. It **never** changes gate semantics — `FIRE`/`ASK`/`SILENT`, the rising edge,
 refractory and dwell mean the same thing on every source (see
-[`../reference/consequence-gate.md`](../reference/consequence-gate.md) and ADR-005 Decision 2).
+[`../reference/consequence-gate.md`](../watches/the-gate.md) and ADR-005 Decision 2).
 
 If your source class is not one of the three shipped ones, register it — the registry is **open**:
 
@@ -190,7 +190,7 @@ you register runs at **native fps on the full-resolution judge frame** — not t
 each boundary it emits is fed to the brain as an occurrence with **no cloud judge call**
 (`percept/runtime/worker.py`, the `bank.push(t, motion=..., frame=judge_frame, ...)` path).
 
-A detector is three members (see [`../reference/registration.md`](../reference/registration.md)):
+A detector is three members (see [`../reference/registration.md`](detectors.md)):
 
 ```python
 from percept.edge import register_detector
@@ -302,10 +302,10 @@ The loop, once: `percept-doctor` → change one thing → `percept eval` → kee
 
 ## See also
 
-- [`../how-to/custom-configuration.md`](../how-to/custom-configuration.md) — author a `SourceProfile` /
+- [`../how-to/custom-configuration.md`](../configuration/profiles.md) — author a `SourceProfile` /
   `WatchProfile` (why gate semantics are source-independent; the source-class axis is ADR-005).
-- [`../reference/registration.md`](../reference/registration.md) — the detector / concern / enricher
+- [`../reference/registration.md`](detectors.md) — the detector / concern / enricher
   registries in full.
-- [`../reference/consequence-gate.md`](../reference/consequence-gate.md) — `FIRE`/`ASK`/`SILENT`, the
+- [`../reference/consequence-gate.md`](../watches/the-gate.md) — `FIRE`/`ASK`/`SILENT`, the
   rising edge, refractory and dwell. Unchanged by every source profile.
-- [`eval.md`](eval.md) — the wider benchmark harness.
+- [`eval.md`](../evaluation/evaluate-your-data.md) — the wider benchmark harness.
