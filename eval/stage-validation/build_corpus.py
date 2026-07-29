@@ -305,6 +305,16 @@ def build_perception_test(limit: int) -> list[dict[str, Any]]:
 # repcount — ground-truth rep counts + per-cycle bounds; the natural Stage-2 counting corpus
 # --------------------------------------------------------------------------------------------
 #: RepCount action_type -> a condition phrased the way a client would state it.
+#:
+#: KEYED ON A NORMALIZED action name (see ``_normalize_action``).  The dataset is inconsistent about
+#: separators — it ships BOTH ``frontraise`` and ``front_raise``, ``jump_jack`` and ``jumpjack`` —
+#: and this table originally held only the unseparated spellings.  Every underscored row therefore
+#: missed the lookup and fell through to the ``f"a person completes a {action}"`` fallback, which
+#: put the raw dataset token into the condition a live judge was asked to evaluate: 12 of the 20
+#: repcount goals literally read "a person completes a jump_jack".  That is not a phrasing blemish,
+#: it is a different experiment — the judge was shown a token no client would ever write, on the one
+#: goal_kind (``count``) the dataset exists to test.  Normalizing the key makes both spellings hit
+#: the same intended sentence.
 _REPCOUNT_PHRASING = {
     "situp": "a person completes a sit-up",
     "pushup": "a person completes a push-up",
@@ -318,6 +328,25 @@ _REPCOUNT_PHRASING = {
     "bespin": "a person completes a spin",
     "soccer": "a person completes a soccer juggle",
 }
+
+
+def _normalize_action(action: str) -> str:
+    """``"front_raise"``, ``"Front-Raise"``, ``"frontraise"`` -> ``"frontraise"``."""
+    return "".join(ch for ch in str(action).lower() if ch.isalnum())
+
+
+def repcount_goal_text(action: str) -> str:
+    """The client-shaped condition for one RepCount action type.
+
+    The fallback still exists for an action the table has never seen, but it now spells the token
+    out as words instead of pasting a snake_case identifier into a natural-language condition.
+    """
+    action = str(action or "").strip()
+    known = _REPCOUNT_PHRASING.get(_normalize_action(action))
+    if known:
+        return known
+    spelled = " ".join(part for part in action.replace("-", "_").split("_") if part)
+    return f"a person completes a {spelled or action}"
 
 
 def build_repcount(limit: int) -> list[dict[str, Any]]:
@@ -370,7 +399,7 @@ def build_repcount(limit: int) -> list[dict[str, Any]]:
                 "dataset": "repcount",
                 "video_path": _rel(path),
                 "duration_s": None,
-                "goal_text": _REPCOUNT_PHRASING.get(action, f"a person completes a {action}"),
+                "goal_text": repcount_goal_text(action),
                 "goal_kind": "count",
                 "positives": positives,
                 "provenance": {
@@ -426,13 +455,115 @@ def build(datasets: list[str], per_dataset: int, *, hash_media: bool = True) -> 
     }
 
 
+# --------------------------------------------------------------------------------------------
+# corpus VERSIONING
+# --------------------------------------------------------------------------------------------
+#: The revision ``corpus.json`` holds.  It is FROZEN: the file is never edited in place, because
+#: every result already on disk was scored against those exact bytes and must stay re-derivable
+#: from them.  A correction ships as a NEW file with a new version, selected explicitly through
+#: ``PERCEPT_SV_CORPUS``, and the version is stamped into every artifact's meta so a table can
+#: never silently mix revisions.
+FROZEN_VERSION = "1.0"
+NEXT_VERSION = "1.1"
+
+
+def revise(frozen: dict[str, Any], *, version: str = NEXT_VERSION) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Derive the next corpus revision from the frozen one, and report exactly what moved.
+
+    DERIVED, not rebuilt.  Re-running the builders would re-select from live dataset files and a
+    changed snapshot, ffprobe result or annotation cache could silently alter case MEMBERSHIP —
+    at which point v1.0 and v1.1 would no longer be the same experiment and no result could be
+    carried across them.  Applying the corrected phrasing to the frozen cases guarantees the two
+    revisions differ in the goal wording and in nothing else, which is the only way a v1.0 result
+    and a v1.1 result are comparable at all.
+    """
+    cases = json.loads(json.dumps(frozen["cases"]))  # deep copy: the frozen doc is never mutated
+    changes: list[dict[str, Any]] = []
+    for case in cases:
+        if case.get("dataset") != "repcount":
+            continue
+        action = str((case.get("provenance") or {}).get("action_type") or "")
+        before = case["goal_text"]
+        after = repcount_goal_text(action)
+        if after != before:
+            case["goal_text"] = after
+            changes.append({"case_id": case["case_id"], "action_type": action,
+                            "goal_text_before": before, "goal_text_after": after})
+
+    revised = dict(frozen)
+    revised["cases"] = cases
+    revised["corpus_version"] = version
+    revised["derived_from"] = {
+        "corpus_version": frozen.get("corpus_version") or FROZEN_VERSION,
+        "sha256": hashlib.sha256(
+            json.dumps(frozen, indent=2, sort_keys=True).encode()).hexdigest(),
+        "method": "goal_text re-derived from provenance.action_type; every other field copied "
+                  "verbatim, so case membership, media pins and ground truth are identical",
+    }
+    revised["changelog"] = [
+        f"repcount goal_text: {len(changes)} of "
+        f"{sum(1 for c in cases if c.get('dataset') == 'repcount')} cases. _REPCOUNT_PHRASING was "
+        "keyed on unseparated action names only, so every underscored spelling missed the lookup "
+        "and the raw dataset token reached the judge (\"a person completes a jump_jack\")."
+    ]
+
+    def _kinds(doc_cases: list[dict[str, Any]]) -> dict[str, str]:
+        return {c["case_id"]: c["goal_kind"] for c in doc_cases}
+
+    before_kinds, after_kinds = _kinds(frozen["cases"]), _kinds(cases)
+    diff = {
+        "from_version": frozen.get("corpus_version") or FROZEN_VERSION,
+        "to_version": version,
+        "n_cases_before": len(frozen["cases"]),
+        "n_cases_after": len(cases),
+        "case_membership_identical": [c["case_id"] for c in frozen["cases"]] == [c["case_id"] for c in cases],
+        "goal_text_changed": len(changes),
+        "goal_text_changes": changes,
+        "goal_text_changes_by_action": dict(sorted(
+            {a: sum(1 for c in changes if c["action_type"] == a)
+             for a in {c["action_type"] for c in changes}}.items())),
+        # Reported even though it is expected to be empty: a phrasing fix that silently re-typed a
+        # goal would change which PRIMITIVE compiles, and that is a different experiment.
+        "goal_kind_changed": sorted(k for k in after_kinds if before_kinds.get(k) != after_kinds[k]),
+        "goal_kind_diff_note": "goal_kind is derived from the dataset/task, never from goal_text; "
+                               "an empty list is the expected and required result.",
+        "positives_identical": all(
+            a["positives"] == b["positives"] for a, b in zip(frozen["cases"], cases)),
+        "video_sha256_identical": all(
+            a.get("video_sha256") == b.get("video_sha256") for a, b in zip(frozen["cases"], cases)),
+    }
+    return revised, diff
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n", type=int, default=20, help="cases per dataset")
     ap.add_argument("--datasets", default=",".join(BUILDERS), help="comma-separated dataset names")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--no-hash", action="store_true", help="skip media hashing (faster, unpinned)")
+    ap.add_argument("--revise", action="store_true",
+                    help=f"derive corpus v{NEXT_VERSION} from the frozen v{FROZEN_VERSION} at "
+                         f"--out instead of rebuilding from the datasets. Writes "
+                         f"corpus.v{NEXT_VERSION}.json and corpus.version-diff.json; never touches "
+                         f"the frozen file.")
     args = ap.parse_args()
+
+    if args.revise:
+        frozen = json.loads(args.out.read_text())
+        revised, diff = revise(frozen)
+        out = args.out.with_name(f"{args.out.stem}.v{NEXT_VERSION}.json")
+        out.write_text(json.dumps(revised, indent=2, sort_keys=True))
+        diff_path = args.out.with_name(f"{args.out.stem}.version-diff.json")
+        diff_path.write_text(json.dumps(diff, indent=2, sort_keys=True))
+        print(f"corpus v{NEXT_VERSION} -> {out}")
+        print(f"  frozen v{FROZEN_VERSION} left untouched at {args.out}")
+        print(f"  case membership identical: {diff['case_membership_identical']}")
+        print(f"  positives identical:       {diff['positives_identical']}")
+        print(f"  goal_text changed:         {diff['goal_text_changed']} "
+              f"{diff['goal_text_changes_by_action']}")
+        print(f"  goal_kind changed:         {diff['goal_kind_changed'] or 'none'}")
+        print(f"  diff -> {diff_path}")
+        return 0
 
     manifest = build(
         [d.strip() for d in args.datasets.split(",") if d.strip()],

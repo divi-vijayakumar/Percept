@@ -54,7 +54,20 @@ What is measured per mode
 3. Provider accounting: logical calls, physical attempts, terminal outcome classes from the route
    receipts (``deadline``/``capacity``/``no_route``/``provider_error``/``malformed``/``cancelled``),
    tokens, estimated cost.
-4. Quality: occurrence precision/recall and timely recall at 2 s, per ``goal_kind``.
+4. Quality: occurrence recall, precision in BOTH units (per occurrence AND per emission, each
+   labelled), the per-dataset chance floor with chance-corrected lift, matching-tolerance
+   sensitivity, match lateness, and timely recall at 2 s, per ``goal_kind`` and per dataset.
+
+Re-scoring a finished run
+-------------------------
+``--rescore`` re-aggregates an existing artifact with the current scorers and makes no provider
+call — it ABORTS if any selected case is missing from the checkpoint, so zero spend is a checked
+property rather than an intention.  It also carries the MEASUREMENT provenance (build, model,
+deadlines, tag, wall) forward from the artifact being re-scored, because the wheel that produced
+the data is usually not the wheel installed when the re-scoring runs, and stamping the latter onto
+the former's numbers is how an artifact ends up claiming a build that never saw the corpus.  What
+changes is ``meta.harness`` (the scorer's own commit and sha256) and ``meta.scoring`` (every knob
+the score depends on).  Two SHAs, always: one produced the data, the other produced the numbers.
 
 Run it::
 
@@ -189,6 +202,44 @@ _FIXTURE_QUEUE_SIZE = 8
 _LEGACY_CAPTURE_FLOOR_FPS = 2.0
 
 MODES = ("reflex", "deliberate")
+
+# ---------------------------------------------------------------------------------------------
+# SCORING PARAMETERS -- declared here, stamped into every artifact, never tuned against a result
+# ---------------------------------------------------------------------------------------------
+
+#: How far outside an annotated occurrence an Incident may land and still count as matching it.
+#:
+#: The DEFAULT IS 0.0 ON PURPOSE.  A matching tolerance is the single easiest knob with which to
+#: flatter a detector -- every positive value can only raise recall and raise precision, never lower
+#: either -- so the headline number is computed at the STRICTEST setting, which is also the rule
+#: every artifact published before this change used.  Larger values are reported as a SENSITIVITY
+#: table beside the headline (``tolerance_sensitivity``), never in place of it, so a reader can see
+#: exactly what a looser rule would have bought and no one can pick one silently.
+MATCH_TOLERANCE_S = float(os.environ.get("PERCEPT_SV_MATCH_TOLERANCE_S", "0.0"))
+
+#: The tolerances the sensitivity table is computed at.  0.0 is always included so the table
+#: contains its own headline row.
+MATCH_TOLERANCE_SENSITIVITY_S = (0.0, 0.5, 1.0, 2.0)
+
+#: A case whose ground truth covers at least this fraction of its media cannot discriminate: an
+#: always-fire detector scores near-perfectly on it.  Such cases are NAMED in every report rather
+#: than averaged into a corpus-wide figure that hides them.
+SATURATED_COVERAGE = 0.98
+
+#: Below this much headroom above the chance floor, chance-corrected lift is not reported at all.
+#: ``(observed - chance) / (1 - chance)`` with ``chance = 0.999`` divides two vanishing quantities
+#: and reads 1.000 for a cell that is in fact incapable of discriminating.
+LIFT_MIN_HEADROOM = 0.02
+
+#: Schema marker for the quality block.  Bumped BECAUSE the meaning of a published key changed:
+#: schema 1 exposed one key ``occurrence_precision`` that was in fact emission-weighted.  Schema 2
+#: removes that name entirely rather than silently re-pointing it, and publishes two explicitly
+#: named, explicitly united figures instead.
+QUALITY_SCHEMA = "percept.quality/2-dual-unit-precision"
+
+#: Schema marker for the per-verdict rows persisted on every case record.  One row per
+#: ``gate.classified`` trace event: ``(media_ts, satisfied, confidence, truth, action, degraded)``.
+VERDICT_SCHEMA = "percept.verdicts/1-gate-classified"
 
 #: Receipt outcomes that mean the pool produced no usable provider answer.  NOTE: unlike the
 #: qualification bench, this harness does NOT pass these as ``terminal_outcomes`` -- a measurement
@@ -899,6 +950,38 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
 
     out["latency_rows"] = lat_rows
     out["receipts"] = receipts
+
+    # ---- PER-VERDICT PERSISTENCE ------------------------------------------------------------
+    # Until this card the per-case `trace` was built, consumed for span arithmetic, and DROPPED --
+    # nothing verdict-level ever reached disk. `receipts` carried a confidence but no media
+    # timestamp and no satisfied bit, so nobody could ask the calibration questions (is confidence
+    # informative? where on the media clock does the judge say yes?) without paying for the corpus
+    # again. Distilled here from the trace the run already produces, so the NEXT paid run yields it
+    # for free.
+    #
+    # `gate.classified` is the right row: it is emitted once per (frame, goal) that reached the
+    # gate and carries BOTH the judge's raw answer (`satisfied`, `confidence`) and the runtime's
+    # disposition of it (`truth`, `action`) at a media timestamp (`ev.t`). A degraded judgment is
+    # emitted too, flagged `degraded=True` with no satisfied bit -- kept, not filtered, so the
+    # denominator is every classification the gate actually made.
+    out["verdict_rows"] = [
+        {
+            "media_ts": round(float(t), 6),
+            "satisfied": d.get("satisfied"),
+            "confidence": (None if d.get("confidence") is None else float(d["confidence"])),
+            "truth": d.get("truth"),
+            "action": d.get("action"),
+            "degraded": bool(d.get("degraded")),
+            "reason": d.get("reason"),
+        }
+        for st, t, d in trace
+        if st == "gate.classified" and t is not None
+    ]
+    out["verdict_schema"] = VERDICT_SCHEMA
+    # The GT the case was scored against, persisted so a re-scoring run never has to re-derive it
+    # from a corpus file that may have moved on. Older artifacts have no such field; the scorers
+    # below fall back to re-deriving from the corpus and say which path they took.
+    out["gt_intervals"] = [[round(a, 6), round(b, 6)] for a, b in gt_events]
     out["_provider_latency_raw"] = {
         "completed": [round(x, 4) for x in provider.latencies_completed],
         "censored": [round(x, 4) for x in provider.latencies_censored],
@@ -973,31 +1056,315 @@ def stratified(cases: list[dict], n: int) -> list[dict]:
 # ---------------------------------------------------------------------------------------------
 
 
-def quality(rows: list[dict], lat: list[dict]) -> dict[str, Any]:
-    """Occurrence precision/recall and TIMELY recall at the product gate.
+@functools.lru_cache(maxsize=1)
+def _corpus_index() -> dict[str, dict]:
+    """``case_id -> corpus case``, loaded once, used ONLY to re-derive ground truth for artifacts
+    written before ``gt_intervals`` was persisted.  A fresh run never reaches this path."""
+    try:
+        return {c["case_id"]: c for c in SM.load_corpus()}
+    except Exception:  # noqa: BLE001 - a missing corpus must degrade the scorer, not kill the run
+        return {}
+
+
+def gt_intervals_for(row: dict) -> tuple[list[tuple[float, float]], str]:
+    """The GT occurrences one case was scored against, and WHERE they came from.
+
+    Preference order is deliberate: an artifact that carries its own ``gt_intervals`` is scored
+    against the ground truth the measurement actually used, so a later corpus revision can never
+    silently re-score an old run against annotations it never saw.  Only artifacts predating that
+    field fall back to re-deriving from the corpus -- and the fallback is reported, per case, in
+    ``gt_source`` rather than assumed to be equivalent.
+    """
+    stored = row.get("gt_intervals")
+    if stored:
+        return [(float(a), float(b)) for a, b in stored], "artifact"
+    case = _corpus_index().get(row.get("case_id"))
+    media_end = row.get("media_end_s")
+    if case is None or media_end is None:
+        return [], "unavailable"
+    _gt, events, _kind, _occ = SM.ground_truth(case["positives"], float(media_end))
+    return events, "rederived_from_corpus"
+
+
+def _pad(interval: tuple[float, float], tol: float, media_end: float) -> tuple[float, float]:
+    a, b = interval
+    return (max(0.0, a - tol), min(media_end, b + tol))
+
+
+def _complement(spans: Sequence[tuple[float, float]], media_end: float) -> list[tuple[float, float]]:
+    """``[0, media_end]`` minus ``spans`` -- the NEGATIVE intervals, which are the false-positive unit.
+
+    Taking the complement of the UNION (not of the individual occurrences) is what makes the
+    positive and negative units disjoint and exhaustive, so a precision denominator built from them
+    counts each stretch of media exactly once.
+    """
+    out: list[tuple[float, float]] = []
+    cursor = 0.0
+    for a, b in SM.union(spans):
+        if a > cursor:
+            out.append((cursor, a))
+        cursor = max(cursor, b)
+    if cursor < media_end:
+        out.append((cursor, media_end))
+    return [(a, b) for a, b in out if b > a]
+
+
+def _incident_ts(row: dict) -> list[float]:
+    """Every Incident's media timestamp for one case.
+
+    Read from ``latency_rows``, which carries one row per Incident emitted -- NOT from
+    ``incident_ts``, which is truncated to the first 200 and would silently cap a busy case.
+    """
+    return [float(x["incident_media_ts"]) for x in (row.get("latency_rows") or [])
+            if x.get("incident_media_ts") is not None]
+
+
+def score_matching(rows: Sequence[dict], tol: float) -> dict[str, Any]:
+    """Confusion counts in BOTH units, the chance floor, and lateness -- one pass, one match rule.
+
+    Everything here is recomputed from ``(gt_intervals, incident media timestamps)`` rather than
+    read off the counters the run stamped, so a tolerance other than the run's can be scored from a
+    finished artifact with no re-measurement.  At ``tol == 0`` it must reproduce the run's own
+    ``stage4`` counters exactly; that agreement is asserted by the caller and published.
+
+    The two precision units:
+
+    ``incident_emission``  numerator = Incidents landing inside a (padded) occurrence, denominator =
+                           Incidents emitted.  This is what the report used to publish under the
+                           name ``occurrence_precision``, and it is NOT occurrence-weighted: a
+                           176 s occurrence that draws 127 Incidents contributes 127 to it while
+                           contributing 1 to recall.  Keeping it is right -- it answers "what
+                           fraction of the messages we sent were justified?" -- but it must be
+                           named for the unit it counts.
+
+    ``interval``           numerator = annotated occurrences that received at least one Incident,
+                           denominator = that, plus the number of NEGATIVE intervals (stretches of
+                           media with no annotation at all) that received at least one Incident.
+                           Symmetric with recall: both count intervals of source, so one long
+                           occurrence weighs exactly as much as one short one on both sides.
+    """
+    tp_occ = fn_occ = fp_neg = tn_neg = 0
+    emissions = inside = 0
+    lateness: list[float] = []
+    gt_sources: Counter = Counter()
+    unscorable: list[str] = []
+    # chance-floor accumulators for a RATE-MATCHED uniform-random detector: same number of
+    # Incidents per case as this run emitted, placed uniformly at random on that case's media.
+    e_tp = e_fp = 0.0
+    e_recall_num = 0.0
+    e_prec_num = e_prec_den = 0.0
+    n_occ_total = n_neg_total = 0
+
+    for row in rows:
+        media_end = row.get("media_end_s")
+        if not media_end:
+            unscorable.append(str(row.get("case_id")))
+            continue
+        media_end = float(media_end)
+        events, source = gt_intervals_for(row)
+        gt_sources[source] += 1
+        ts = _incident_ts(row)
+        emissions += len(ts)
+        n = len(ts)
+
+        padded = [_pad(e, tol, media_end) for e in events]
+        negatives = _complement(padded, media_end)
+        n_occ_total += len(padded)
+        n_neg_total += len(negatives)
+
+        for (a, b), (raw_a, _raw_b) in zip(padded, events):
+            hits = [t for t in ts if a <= t < b]
+            if hits:
+                tp_occ += 1
+                lateness.append(min(hits) - float(raw_a))
+            else:
+                fn_occ += 1
+            p = 1.0 - (1.0 - min(1.0, (b - a) / media_end)) ** n if n else 0.0
+            e_tp += p
+            e_recall_num += p
+
+        for a, b in negatives:
+            if any(a <= t < b for t in ts):
+                fp_neg += 1
+            else:
+                tn_neg += 1
+            e_fp += 1.0 - (1.0 - min(1.0, (b - a) / media_end)) ** n if n else 0.0
+
+        inside += sum(1 for t in ts if any(a <= t < b for a, b in padded))
+        # emission-precision chance = P(a uniformly placed emission lands in padded GT), weighted
+        # by how many emissions this case actually contributed.
+        covered = sum(b - a for a, b in SM.union(padded))
+        e_prec_num += n * (covered / media_end)
+        e_prec_den += n
+
+    def _lift(observed: float | None, chance: float | None) -> float | None:
+        """Chance-corrected skill: the fraction of the headroom above chance that was captured.
+
+        1.0 = perfect, 0.0 = indistinguishable from the null, negative = worse than the null.
+
+        ``None`` once the headroom falls below ``LIFT_MIN_HEADROOM``.  As chance approaches 1 the
+        ratio divides two vanishing quantities and swings to 1.0 on a rounding difference -- on the
+        charades cell, chance recall is 0.9995 and a perfect recall would print "recall 1.000,
+        chance 1.000, lift 1.000", which reads as a triumph and means the cell cannot discriminate
+        at all.  Refusing the number is the honest output; the chance column beside it already says
+        why.
+        """
+        if observed is None or chance is None or (1.0 - chance) < LIFT_MIN_HEADROOM:
+            return None
+        return (observed - chance) / (1.0 - chance)
+
+    recall = (tp_occ / (tp_occ + fn_occ)) if (tp_occ + fn_occ) else None
+    prec_emission = (inside / emissions) if emissions else None
+    prec_interval = (tp_occ / (tp_occ + fp_neg)) if (tp_occ + fp_neg) else None
+
+    chance_recall = (e_recall_num / n_occ_total) if n_occ_total else None
+    chance_prec_emission = (e_prec_num / e_prec_den) if e_prec_den else None
+    chance_prec_interval = (e_tp / (e_tp + e_fp)) if (e_tp + e_fp) else None
+    always_fire_prec_interval = (n_occ_total / (n_occ_total + n_neg_total)) if n_neg_total else None
+
+    return {
+        "match_tolerance_s": tol,
+        "gt_source": dict(gt_sources),
+        "unscorable_cases": unscorable,
+        "gt_occurrences": tp_occ + fn_occ,
+        "occurrences_matched": tp_occ,
+        "occurrences_missed": fn_occ,
+        "occurrence_recall": recall,
+        "incidents": emissions,
+        "incidents_inside_gt": inside,
+        "negative_intervals": n_neg_total,
+        "negative_intervals_hit": fp_neg,
+        "negative_intervals_clean": tn_neg,
+        "precision_per_emission": prec_emission,
+        "precision_per_emission_unit": "incident_emission",
+        "precision_per_occurrence": prec_interval,
+        "precision_per_occurrence_unit": "interval (GT occurrence hit / (GT occurrence hit + negative interval hit))",
+        "lateness_media_s": dist(lateness),
+        "lateness_beyond_gate": sum(1 for x in lateness if x > ACTION_TO_INCIDENT_GATE_S),
+        "lateness_beyond_10s": sum(1 for x in lateness if x > 10.0),
+        "chance": {
+            "null_model": "rate-matched uniform: same Incident count per case, placed uniformly at "
+                          "random on that case's media",
+            "gt_coverage_emission_weighted": chance_prec_emission,
+            "occurrence_recall": chance_recall,
+            "precision_per_emission": chance_prec_emission,
+            "precision_per_occurrence": chance_prec_interval,
+            "always_fire_precision_per_emission": chance_prec_emission,
+            "always_fire_precision_per_occurrence": always_fire_prec_interval,
+            "always_fire_occurrence_recall": 1.0 if n_occ_total else None,
+        },
+        "lift": {
+            "note": "(observed - chance) / (1 - chance): the share of the headroom above the "
+                    "rate-matched null that was actually captured. 0 = no skill.",
+            "occurrence_recall": _lift(recall, chance_recall),
+            "precision_per_emission": _lift(prec_emission, chance_prec_emission),
+            "precision_per_occurrence": _lift(prec_interval, chance_prec_interval),
+        },
+    }
+
+
+def coverage_of(row: dict) -> float | None:
+    """Fraction of a case's media that its ground truth covers -- the always-fire precision on it."""
+    media_end = row.get("media_end_s")
+    gt_time = row.get("gt_time_s")
+    if not media_end or gt_time is None:
+        return None
+    return float(gt_time) / float(media_end)
+
+
+def saturation(rows: Sequence[dict]) -> dict[str, Any]:
+    """Which cases cannot discriminate, NAMED.
+
+    A case whose ground truth covers ~100 % of its media scores a detector that fires blindly at
+    ~1.0 precision. Averaging such a case into a corpus figure does not make it disappear, it makes
+    it invisible; so every one is listed with its coverage and the headline is republished with them
+    removed.
+    """
+    cov = [(str(r.get("case_id")), coverage_of(r)) for r in rows]
+    scored = [(cid, c) for cid, c in cov if c is not None]
+    sat = sorted(((cid, round(c, 4)) for cid, c in scored if c >= SATURATED_COVERAGE),
+                 key=lambda x: (-x[1], x[0]))
+    return {
+        "threshold": SATURATED_COVERAGE,
+        "n_cases_with_coverage": len(scored),
+        "n_saturated": len(sat),
+        "saturated_cases": [{"case_id": cid, "gt_coverage": c} for cid, c in sat],
+        "mean_gt_coverage": (round(sum(c for _, c in scored) / len(scored), 4) if scored else None),
+        "gt_coverage": dist([c for _, c in scored]),
+    }
+
+
+def quality(rows: list[dict], lat: list[dict], tol: float | None = None) -> dict[str, Any]:
+    """Occurrence recall, precision in BOTH units, the chance floor, and TIMELY recall.
 
     Timely recall is not recall with a filter bolted on: an Incident that lands inside the occurrence
     but 6 s after its onset is a correct answer that arrived too late to be a notification, and the
     pair (recall, timely recall) is the only way to see the difference.
+
+    ``occurrence_precision`` is GONE from this block on purpose. Schema 1 published that one name
+    for an emission-weighted number, so a reader comparing it against the occurrence-weighted recall
+    beside it was comparing two different denominators. Re-pointing the name at the corrected figure
+    would have made every historical artifact silently non-comparable under an unchanged key; the
+    name is retired instead, and both figures are published under names that state their unit.
     """
-    gt_events = sum(r["stages"]["stage4_cognition"]["gt_occurrences"] for r in rows)
-    matched = sum(r["stages"]["stage4_cognition"]["occurrences_matched"] for r in rows)
-    incidents = sum(r["stages"]["stage4_cognition"]["incidents"] for r in rows)
-    outside = sum(r["stages"]["stage4_cognition"]["incidents_outside_gt"] for r in rows)
+    tol = MATCH_TOLERANCE_S if tol is None else float(tol)
+    scored = score_matching(rows, tol)
+
     timely_occ = set()
     for row in lat:
         if row.get("matched_occurrence") and row.get("onset_to_incident_s") is not None:
             if row["onset_to_incident_s"] <= ACTION_TO_INCIDENT_GATE_S:
                 timely_occ.add((row["case_id"], tuple(row["matched_occurrence"])))
-    return {
-        "gt_occurrences": gt_events,
-        "occurrences_matched": matched,
-        "occurrence_recall": (matched / gt_events) if gt_events else None,
-        "incidents": incidents,
-        "incidents_inside_gt": incidents - outside,
-        "occurrence_precision": ((incidents - outside) / incidents) if incidents else None,
+
+    # The run's OWN counters, recomputed independently above. At tol == 0 the two must agree; a
+    # disagreement is published rather than reconciled, because it would mean the scorer and the
+    # runtime disagree about what matched.
+    stamped_gt = sum(r["stages"]["stage4_cognition"]["gt_occurrences"] for r in rows if r.get("stages"))
+    stamped_matched = sum(r["stages"]["stage4_cognition"]["occurrences_matched"]
+                          for r in rows if r.get("stages"))
+    stamped_incidents = sum(r["stages"]["stage4_cognition"]["incidents"] for r in rows if r.get("stages"))
+
+    out = {
+        "schema": QUALITY_SCHEMA,
+        **scored,
         "occurrences_timely_2s": len(timely_occ),
-        "timely_recall_2s": (len(timely_occ) / gt_events) if gt_events else None,
+        "timely_recall_2s": (len(timely_occ) / scored["gt_occurrences"]) if scored["gt_occurrences"] else None,
+        "saturation": saturation(rows),
+        "cross_check_vs_run_counters": {
+            "note": "the run stamped these while measuring; this block recomputed them from "
+                    "(gt_intervals, incident media ts). At match_tolerance_s == 0 they must agree.",
+            "gt_occurrences_agree": stamped_gt == scored["gt_occurrences"],
+            "occurrences_matched_agree": (tol > 0) or stamped_matched == scored["occurrences_matched"],
+            "incidents_agree": stamped_incidents == scored["incidents"],
+            "stamped": {"gt_occurrences": stamped_gt, "occurrences_matched": stamped_matched,
+                        "incidents": stamped_incidents},
+        },
+    }
+    return out
+
+
+def tolerance_sensitivity(rows: Sequence[dict]) -> dict[str, Any]:
+    """The headline metrics recomputed at every declared tolerance.
+
+    Published unconditionally so the choice of tolerance is visible in the artifact itself. A
+    tolerance can only help -- padding an interval adds matches and never removes one -- so a run
+    that quotes a number at one tolerance without this table is quoting an unfalsifiable choice.
+    """
+    return {
+        "default_s": MATCH_TOLERANCE_S,
+        "default_rationale": (
+            "0.0 s is the STRICTEST rule and the rule every artifact before this change used, so "
+            "the headline number is neither inflated nor retroactively incomparable. Larger values "
+            "appear here only."
+        ),
+        "values": {
+            f"{tol:g}": {
+                k: score_matching(rows, tol)[k]
+                for k in ("occurrence_recall", "precision_per_emission", "precision_per_occurrence",
+                          "occurrences_matched", "incidents_inside_gt", "negative_intervals_hit")
+            }
+            for tol in MATCH_TOLERANCE_SENSITIVITY_S
+        },
     }
 
 
@@ -1231,6 +1598,16 @@ def mode_report(rows: list[dict], prices: dict) -> dict[str, Any]:
                        [x for x in lat if x["dataset"] == k])
             for k in sorted({r["dataset"] for r in ok})
         },
+        # The same headline with every non-discriminating case removed. Reported BESIDE the
+        # headline, never instead of it: dropping cases silently is its own methodology error, and
+        # the pair is what shows how much of the corpus figure the saturated cases were carrying.
+        "quality_excluding_saturated": quality(
+            [r for r in ok if (coverage_of(r) or 0.0) < SATURATED_COVERAGE],
+            [x for x in lat
+             if x["case_id"] in {r["case_id"] for r in ok
+                                 if (coverage_of(r) or 0.0) < SATURATED_COVERAGE}],
+        ),
+        "tolerance_sensitivity": tolerance_sensitivity(ok),
         "latency": latency_summary(lat, ok),
         "accounting": accounting(ok, prices),
         "pace_lag_p95_s": dist([r["pace_lag"]["p95"] for r in ok
@@ -1299,6 +1676,21 @@ def _breakdown_table(rows: dict, key_label: str) -> list[str]:
     return L
 
 
+def _quality_table(rows: dict, overall: dict, key_label: str) -> list[str]:
+    """One quality table with BOTH precision units and their chance floors side by side."""
+    L = [f"| {key_label} | GT occ. | Occ. recall | Prec./occurrence | Prec./emission | "
+         "chance prec. | Timely recall @2s | Incidents |",
+         "|---|---|---|---|---|---|---|---|"]
+    for k, q in list(rows.items()) + [("**all**", overall)]:
+        L.append(
+            f"| {k} | {q['gt_occurrences']} | {_f(q['occurrence_recall'])} | "
+            f"{_f(q['precision_per_occurrence'])} | {_f(q['precision_per_emission'])} | "
+            f"{_f(q['chance']['precision_per_emission'])} | {_f(q['timely_recall_2s'])} | "
+            f"{q['incidents']} |"
+        )
+    return L
+
+
 def render_md(payload: dict) -> str:
     L: list[str] = []
     A = L.append
@@ -1307,6 +1699,22 @@ def render_md(payload: dict) -> str:
     A("")
     A(f"Runtime under test: `percept` {meta['package_version']} built from `{meta['build_commit']}` "
       f"(contract {meta['contract_version']}), interpreter `{meta['interpreter']}`.")
+    hp = meta.get("harness") or {}
+    A(f"Harness that SCORED these numbers: `{hp.get('harness_commit')}`"
+      + (" (working tree DIRTY)" if hp.get("scorer_tree_dirty") else "")
+      + f", scorer sha256 `{str(hp.get('scorer_sha256'))[:12]}`, corpus "
+        f"**v{hp.get('corpus_version')}** (`{hp.get('corpus_path')}`, "
+        f"sha256 `{str(hp.get('corpus_sha256'))[:12]}`, n={hp.get('corpus_n_cases')}). "
+        "The SDK commit and the harness commit are different things and both are stamped: one "
+        "produced the data, the other produced the numbers.")
+    rs = meta.get("rescored")
+    if rs:
+        A("")
+        A(f"> **RE-SCORED ARTIFACT.** {rs['note']} Re-scored {rs['rescored_at']}; quality schema "
+          f"moved `{rs['prior_quality_schema']}` -> "
+          f"`{(meta.get('scoring') or {}).get('quality_schema')}`. Measurement provenance "
+          f"(build, model, deadlines, tag, wall) is inherited from the measuring run, not from the "
+          f"environment this re-scoring ran in.")
     A(f"Provider: **{meta['backend']} / `{meta['model']}`**, transport `{meta['transport']}`, "
       f"evidence shape `video_clip` ({meta['temporal_frames']} frames over "
       f"{meta['temporal_window_s']} s).  Generated {meta['generated']}.")
@@ -1396,8 +1804,10 @@ def render_md(payload: dict) -> str:
             A(f"| {label} | {_f(a, nd)} | {_f(b, nd)} | {delta} |")
 
         cmp_row("Occurrence recall", r["quality"]["occurrence_recall"], d["quality"]["occurrence_recall"])
-        cmp_row("Occurrence precision", r["quality"]["occurrence_precision"],
-                d["quality"]["occurrence_precision"])
+        cmp_row("Precision (per occurrence)", r["quality"]["precision_per_occurrence"],
+                d["quality"]["precision_per_occurrence"])
+        cmp_row("Precision (per emission)", r["quality"]["precision_per_emission"],
+                d["quality"]["precision_per_emission"])
         cmp_row("Timely recall @ 2 s", r["quality"]["timely_recall_2s"], d["quality"]["timely_recall_2s"])
         cmp_row("Incidents emitted", r["quality"]["incidents"], d["quality"]["incidents"], 0)
         cmp_row("Stage-4 event recall (cumulative)",
@@ -1466,18 +1876,117 @@ def render_md(payload: dict) -> str:
     A("")
     A("`state` has n=4 cases in the full corpus and is reported, never gated.")
     A("")
+    A("**Precision appears twice and the two are different questions.** *Per emission* is "
+      "`Incidents inside GT / Incidents emitted` — \"what share of the messages we sent were "
+      "justified?\". *Per occurrence* counts intervals on both sides — `GT occurrences hit / "
+      "(GT occurrences hit + unannotated stretches of media that were flagged)` — so one long "
+      "occurrence weighs the same as one short one, exactly as it does in recall. Until this "
+      "revision only the emission figure was published, under the name `occurrence_precision`: a "
+      "176 s occurrence drawing 127 Incidents contributed 127 to it while contributing 1 to the "
+      "recall printed beside it.")
+    A("")
     for mode in payload["modes_run"]:
         A(f"### `{mode}`")
         A("")
-        A("| goal_kind | GT occurrences | Occ. recall | Occ. precision | Timely recall @2s | Incidents |")
-        A("|---|---|---|---|---|---|")
-        for k, q in payload["modes"][mode]["quality_by_goal_kind"].items():
-            A(f"| {k} | {q['gt_occurrences']} | {_f(q['occurrence_recall'])} | "
-              f"{_f(q['occurrence_precision'])} | {_f(q['timely_recall_2s'])} | {q['incidents']} |")
-        q = payload["modes"][mode]["quality"]
-        A(f"| **all** | {q['gt_occurrences']} | {_f(q['occurrence_recall'])} | "
-          f"{_f(q['occurrence_precision'])} | {_f(q['timely_recall_2s'])} | {q['incidents']} |")
+        L.extend(_quality_table(payload["modes"][mode]["quality_by_goal_kind"],
+                                payload["modes"][mode]["quality"], "goal_kind"))
         A("")
+
+    A("## Chance floor and chance-corrected lift")
+    A("")
+    A("A precision number means nothing without the score a detector with no skill would get on the "
+      "same annotations. The null here is **rate-matched uniform**: the same number of Incidents "
+      "this run emitted per case, placed uniformly at random on that case's media. Lift is "
+      "`(observed - chance) / (1 - chance)` — the share of the headroom above the null that was "
+      "actually captured. 0 means indistinguishable from noise at the same firing rate.")
+    A("")
+    for mode in payload["modes_run"]:
+        A(f"### `{mode}`")
+        A("")
+        A("| dataset | GT coverage | Occ. recall | (chance) | (lift) | Prec./occurrence | (chance) "
+          "| (lift) | Prec./emission | (chance) | (lift) |")
+        A("|---|---|---|---|---|---|---|---|---|---|---|")
+        by = dict(payload["modes"][mode]["quality_by_dataset"])
+        by["**all**"] = payload["modes"][mode]["quality"]
+        for k, q in by.items():
+            c, li = q["chance"], q["lift"]
+            A(f"| {k} | {_f(c['gt_coverage_emission_weighted'])} | "
+              f"{_f(q['occurrence_recall'])} | {_f(c['occurrence_recall'])} | {_f(li['occurrence_recall'])} | "
+              f"{_f(q['precision_per_occurrence'])} | {_f(c['precision_per_occurrence'])} | "
+              f"{_f(li['precision_per_occurrence'])} | "
+              f"{_f(q['precision_per_emission'])} | {_f(c['precision_per_emission'])} | "
+              f"{_f(li['precision_per_emission'])} |")
+        A("")
+
+    A("## Saturated-coverage cases — named, not averaged")
+    A("")
+    A(f"A case whose ground truth covers >= {SATURATED_COVERAGE:.0%} of its media cannot "
+      "discriminate: a detector that fires blindly scores ~1.0 precision on it. These are the cases "
+      "that do it, listed rather than folded into an average, followed by the headline recomputed "
+      "with them removed.")
+    A("")
+    for mode in payload["modes_run"]:
+        sat = payload["modes"][mode]["quality"]["saturation"]
+        A(f"### `{mode}` — {sat['n_saturated']} of {sat['n_cases_with_coverage']} cases saturated "
+          f"(mean GT coverage {_f(sat['mean_gt_coverage'])})")
+        A("")
+        if sat["saturated_cases"]:
+            A("| case_id | GT coverage of media |")
+            A("|---|---|")
+            for row in sat["saturated_cases"]:
+                A(f"| `{row['case_id']}` | {row['gt_coverage']:.4f} |")
+        else:
+            A("None.")
+        A("")
+        head, ex = payload["modes"][mode]["quality"], payload["modes"][mode]["quality_excluding_saturated"]
+        A("| Measure | all cases | saturated cases removed |")
+        A("|---|---|---|")
+        for label, key in (("GT occurrences", "gt_occurrences"), ("Occurrence recall", "occurrence_recall"),
+                           ("Precision (per occurrence)", "precision_per_occurrence"),
+                           ("Precision (per emission)", "precision_per_emission"),
+                           ("Timely recall @2s", "timely_recall_2s")):
+            A(f"| {label} | {_f(head[key])} | {_f(ex[key])} |")
+        A("")
+
+    A("## Matching tolerance — the sensitivity, so the choice is not silent")
+    A("")
+    ts0 = payload["modes"][payload["modes_run"][0]]["tolerance_sensitivity"]
+    A(f"**Default: {ts0['default_s']:g} s.** {ts0['default_rationale']}")
+    A("")
+    A("An Incident matches an occurrence when its media timestamp falls in "
+      "`[onset - tolerance, end + tolerance)`. Padding can only add matches, so every row below is "
+      "monotone in the tolerance; publishing one row without the others would be publishing an "
+      "unfalsifiable choice.")
+    A("")
+    for mode in payload["modes_run"]:
+        A(f"### `{mode}`")
+        A("")
+        A("| tolerance (s) | Occ. recall | Prec./occurrence | Prec./emission | occurrences matched "
+          "| Incidents inside GT | negative intervals hit |")
+        A("|---|---|---|---|---|---|---|")
+        for tol, v in payload["modes"][mode]["tolerance_sensitivity"]["values"].items():
+            mark = " **(default)**" if float(tol) == MATCH_TOLERANCE_S else ""
+            A(f"| {tol}{mark} | {_f(v['occurrence_recall'])} | {_f(v['precision_per_occurrence'])} | "
+              f"{_f(v['precision_per_emission'])} | {v['occurrences_matched']} | "
+              f"{v['incidents_inside_gt']} | {v['negative_intervals_hit']} |")
+        A("")
+
+    A("## Lateness — how late a 'correct' Incident actually was")
+    A("")
+    A("Matching on interval containment alone makes lateness invisible: inside a 176 s occurrence, "
+      "an Incident 80 s after onset scores exactly as a correct detection. This is the distribution "
+      "of `first matching Incident's media timestamp - occurrence onset`, per matched occurrence, "
+      "on the media clock (so it is annotation alignment, not pipeline latency — that is the "
+      "action-onset table above).")
+    A("")
+    A("| Mode | matched occurrences | lateness p50 | p95 | max | later than the 2 s gate | later than 10 s |")
+    A("|---|---|---|---|---|---|---|")
+    for mode in payload["modes_run"]:
+        q = payload["modes"][mode]["quality"]
+        lm = q["lateness_media_s"]
+        A(f"| `{mode}` | {q['occurrences_matched']} | {_d(lm,'p50')} | {_d(lm,'p95')} | "
+          f"{_d(lm,'max')} | {q['lateness_beyond_gate']} | {q['lateness_beyond_10s']} |")
+    A("")
 
     A("## Coverage — every (dataset, goal_kind) cell that was actually measured")
     A("")
@@ -1496,11 +2005,8 @@ def render_md(payload: dict) -> str:
     for mode in payload["modes_run"]:
         A(f"### `{mode}`")
         A("")
-        A("| dataset | GT occurrences | Occ. recall | Occ. precision | Timely recall @2s | Incidents |")
-        A("|---|---|---|---|---|---|")
-        for k, q in payload["modes"][mode]["quality_by_dataset"].items():
-            A(f"| {k} | {q['gt_occurrences']} | {_f(q['occurrence_recall'])} | "
-              f"{_f(q['occurrence_precision'])} | {_f(q['timely_recall_2s'])} | {q['incidents']} |")
+        L.extend(_quality_table(payload["modes"][mode]["quality_by_dataset"],
+                                payload["modes"][mode]["quality"], "dataset"))
         A("")
 
     A("## Provider accounting")
@@ -1712,6 +2218,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="JSON file of control measurements to fold into the report "
                          "(keys: transport_probe, concurrency_control). Re-render a finished run "
                          "with --resume and no new provider spend.")
+    ap.add_argument("--rescore", action="store_true",
+                    help="re-aggregate a FINISHED artifact with the current scorers and nothing "
+                         "else. ABORTS if any case is missing from the checkpoint, so 'zero "
+                         "provider calls' is a checked property and not a hope; and carries the "
+                         "MEASUREMENT provenance (build, model, deadlines, tag) forward from the "
+                         "existing artifact, so re-scored numbers are never attributed to whatever "
+                         "wheel happens to be installed today.")
     args = ap.parse_args(argv)
 
     # ---- ARM SELF-CHECK ----------------------------------------------------------------------
@@ -1775,6 +2288,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     RESULTS.mkdir(parents=True, exist_ok=True)
     ckpt = RESULTS / f"{args.out_stem}.checkpoint.jsonl"
 
+    # ---- prior artifact -----------------------------------------------------------------------
+    # On --rescore this is where the MEASUREMENT provenance comes from. The wheel that produced the
+    # data may not be the wheel installed now (it usually is not), so re-stamping build_info() onto
+    # re-scored numbers would attribute the measurement to a build that never saw the corpus.
+    prior_meta: dict[str, Any] = {}
+    prior_path = RESULTS / f"{args.out_stem}.json"
+    if args.rescore:
+        if not prior_path.exists():
+            raise SystemExit(f"[live_run] RESCORE ABORTED: no prior artifact at {prior_path}")
+        prior_meta = dict((json.loads(prior_path.read_text()).get("meta") or {}))
+        print(f"[live_run] rescore: inheriting measurement provenance from {prior_path.name} "
+              f"(build {prior_meta.get('build_commit')}, model {prior_meta.get('model')}, "
+              f"measured {prior_meta.get('generated')})", file=sys.stderr)
+
     # ---- resume ---------------------------------------------------------------------------
     # A case already measured is NOT re-run: it costs money and it would change nothing. The
     # checkpoint is append-only and keyed on (mode, case_id); a later line wins, so a partially
@@ -1807,6 +2334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 corpus=corpus, selected=selected, selection=selection, modes_run=modes_run,
                 prices=prices, args=args, model=model,
                 total_wall=time.monotonic() - t_all, complete=False,
+                prior_meta=prior_meta,
             )
             (RESULTS / f"{args.out_stem}.json").write_text(json.dumps(partial, indent=1, default=str))
             (RESULTS / f"{args.out_stem}.md").write_text(render_md(partial))
@@ -1829,6 +2357,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"[live_run] {m}: all {len(selected)} cases already checkpointed",
                       file=sys.stderr)
                 continue
+            if args.rescore:
+                # A re-scoring run that quietly measures the missing cases would spend money AND
+                # mix two measurement sessions into one artifact. Refuse both.
+                raise SystemExit(
+                    f"[live_run] RESCORE ABORTED: {m} is missing {len(todo)} of {len(selected)} "
+                    f"cases from {ckpt.name} (first: {todo[0]['case_id']}). --rescore re-aggregates "
+                    f"a FINISHED run and never makes a provider call. Drop --rescore to measure."
+                )
             asyncio.run(run_mode(todo, m, backend=args.backend, transport=args.transport,
                                  concurrency=args.concurrency, on_done=on_done))
     finally:
@@ -1839,7 +2375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                for m in modes_run}
     payload = build_payload(ordered, corpus=corpus, selected=selected, selection=selection,
                             modes_run=modes_run, prices=prices, args=args, model=model,
-                            total_wall=total_wall, complete=True)
+                            total_wall=total_wall, complete=True, prior_meta=prior_meta)
     (RESULTS / f"{args.out_stem}.json").write_text(json.dumps(payload, indent=1, default=str))
     (RESULTS / f"{args.out_stem}.md").write_text(render_md(payload))
     print(f"[live_run] wrote {RESULTS / (args.out_stem + '.json')}", file=sys.stderr)
@@ -1849,7 +2385,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: list[dict],
                   selection: str, modes_run: list[str], prices: dict, args: Any, model: str,
-                  total_wall: float, complete: bool) -> dict[str, Any]:
+                  total_wall: float, complete: bool,
+                  prior_meta: dict[str, Any] | None = None) -> dict[str, Any]:
     modes = {m: mode_report(raw.get(m) or [], prices) for m in modes_run}
 
     counterfactual = None
@@ -1898,6 +2435,11 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             "decision_deadline_s": {"reflex": ACTION_DECISION_DEADLINE_S,
                                     "deliberate": DELIBERATE_DECISION_DEADLINE_S},
             "action_to_incident_gate_s": ACTION_TO_INCIDENT_GATE_S,
+            # TWO commits, never one: `build_commit` is the SDK wheel that produced the DATA;
+            # `harness.harness_commit` / `harness.scorer_sha256` is the scorer that produced these
+            # NUMBERS. A re-scored artifact differs from its predecessor only in the second.
+            "harness": harness_provenance(),
+            "scoring": scoring_parameters(),
         },
         "modes_run": modes_run,
         "modes": modes,
@@ -1913,6 +2455,23 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             "drop_rate": "units lost WITHOUT a receipt / units received; deliberate suppression is NOT a drop",
             "occurrence_recall": "GT occurrences containing >=1 Incident / GT occurrences",
             "timely_recall_2s": "GT occurrences whose Incident arrived <2 s after ONSET / GT occurrences",
+            "precision_per_emission": "Incidents inside a (padded) GT occurrence / Incidents "
+                                      "emitted. UNIT: one Incident. This is the figure schema 1 "
+                                      "published under the name `occurrence_precision`.",
+            "precision_per_occurrence": "GT occurrences hit / (GT occurrences hit + NEGATIVE "
+                                        "intervals hit). UNIT: one interval of source, on both "
+                                        "sides, so it shares recall's denominator convention.",
+            "negative_interval": "a maximal stretch of media covered by no GT occurrence; the "
+                                 "false-positive unit for precision_per_occurrence",
+            "match_rule": "an Incident matches an occurrence when its MEDIA timestamp lies in "
+                          "[onset - match_tolerance_s, end + match_tolerance_s)",
+            "lateness_media_s": "first matching Incident's media ts - occurrence onset, per matched "
+                                "occurrence. Makes 'correct but 80 s into a 176 s occurrence' visible.",
+            "chance": "score of a rate-matched uniform-random detector: the same Incident count per "
+                      "case, placed uniformly at random on that case's media",
+            "lift": "(observed - chance) / (1 - chance); 0 = no skill over the null",
+            "saturated_case": f"a case whose GT covers >= {SATURATED_COVERAGE} of its media and "
+                              f"therefore cannot discriminate; named, never silently averaged",
         },
         "integrity": [
             f"Runtime verified at import: `build_info().git_commit == {bi.git_commit}` — this is the "
@@ -1931,6 +2490,26 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             "with NO receipt enter `drop_rate`.",
             "The pool is given NO `terminal_outcomes`, so `deadline`/`capacity`/`provider_error` are "
             "recorded as receipts and counted rather than raised.",
+            "Precision is published in BOTH units with each labelled. Recall's unit is one GT "
+            "occurrence; publishing only an emission-weighted precision beside it compared two "
+            "different denominators, and a single long occurrence drawing many Incidents moved one "
+            "of them and not the other.",
+            "Every precision and recall figure is printed next to the score a RATE-MATCHED "
+            "uniform-random detector achieves on the same annotations. Where the corpus cannot "
+            "discriminate the chance column says so, and the lift is withheld rather than rounded "
+            "to a flattering 1.000.",
+            "The matching tolerance defaults to the STRICTEST value (0 s, the rule every earlier "
+            "artifact used) and every looser value is published as a sensitivity table, so the "
+            "choice cannot be made silently after seeing the numbers.",
+            "Cases whose ground truth saturates their media are NAMED with their coverage and the "
+            "headline is republished without them, rather than averaged into a corpus figure that "
+            "hides them.",
+            "Every quality figure in this artifact was recomputed from `(gt_intervals, incident "
+            "media timestamps)` and cross-checked against the counters the RUN stamped while "
+            "measuring; the agreement is published per mode in `quality.cross_check_vs_run_counters`.",
+            "Two commits are stamped, not one: `meta.build_commit` is the SDK wheel that produced "
+            "the data and `meta.harness.harness_commit` is the harness that produced the numbers. "
+            "The corpus revision and its sha256 are stamped beside them.",
         ],
         "limits": [
             "A 0.95 recall bar is not statistically ratifiable on this corpus. An exact one-sided "
@@ -1953,6 +2532,30 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
     sidecar_path = getattr(args, "sidecar", "")
     if sidecar_path and os.path.exists(sidecar_path):
         payload.update(json.loads(Path(sidecar_path).read_text()))
+
+    # ---- re-scoring: measurement provenance is INHERITED, scoring provenance is CURRENT --------
+    # This is the whole point of the flag. The numbers below were computed by THIS scorer from data
+    # measured by THAT build, and an artifact that cannot distinguish the two is unciteable.
+    if getattr(args, "rescore", False) and prior_meta:
+        inherited = {k: prior_meta[k] for k in MEASUREMENT_META_KEYS if k in prior_meta}
+        superseded = {k: payload["meta"].get(k) for k in inherited
+                      if payload["meta"].get(k) != inherited[k]}
+        payload["meta"].update(inherited)
+        payload["meta"]["rescored"] = {
+            "note": "The data in this artifact was MEASURED by the run recorded above and was not "
+                    "re-measured. Only the scoring changed. Zero provider calls were made: "
+                    "--rescore aborts if any selected case is missing from the checkpoint.",
+            "rescored_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "scoring_harness": harness_provenance(),
+            "scoring_parameters": scoring_parameters(),
+            "prior_quality_schema": prior_meta.get("scoring", {}).get("quality_schema", "percept.quality/1-unlabelled"),
+            "inherited_measurement_keys": sorted(inherited),
+            # What this process WOULD have stamped had the provenance not been inherited. Published
+            # so the inheritance itself is auditable rather than invisible: if the wheel installed
+            # today differs from the one that measured, this is where a reader sees it.
+            "would_have_stamped": superseded,
+        }
+
     payload["meta"]["complete"] = complete
     payload["meta"]["cases_completed"] = {m: len(raw.get(m) or []) for m in modes_run}
     if not complete:
@@ -1961,6 +2564,87 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             + ", ".join(f"{m}: {len(raw.get(m) or [])}/{len(selected)}" for m in modes_run) + ")"
         )
     return payload
+
+
+def _sha256_file(path: Path) -> str | None:
+    try:
+        import hashlib
+
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+@functools.lru_cache(maxsize=1)
+def harness_provenance() -> dict[str, Any]:
+    """WHICH HARNESS produced these numbers, as distinct from which SDK produced the data.
+
+    Two different commits.  ``build_info().git_commit`` is the wheel under test; this is the scorer.
+    An artifact stamped with only the first cannot answer "was this scored before or after the
+    precision fix?", which is exactly the question a re-scored artifact exists to answer.
+    """
+    import subprocess
+
+    def _git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", *args], cwd=str(REPO), capture_output=True, text=True,
+                                  timeout=20, check=True).stdout.strip()
+        except (subprocess.SubprocessError, OSError):
+            return ""
+
+    dirty = _git("status", "--porcelain", "--", "eval/stage-validation")
+    corpus_path = SM.corpus_path()
+    try:
+        corpus_doc = json.loads(corpus_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        corpus_doc = {}
+    # v1.0 predates the explicit field and declares `version: 1`; every later revision carries
+    # `corpus_version` verbatim. Derived, never guessed, so no table can mix two revisions unlabelled.
+    corpus_version = str(corpus_doc.get("corpus_version")
+                         or ("1.0" if corpus_doc.get("version") == 1 else "unknown"))
+    return {
+        "harness_commit": _git("rev-parse", "HEAD") or None,
+        "harness_branch": _git("rev-parse", "--abbrev-ref", "HEAD") or None,
+        # The scorer's own bytes: the only stamp that survives a dirty tree, which is the state a
+        # measurement run is most often launched from.
+        "scorer_sha256": _sha256_file(Path(__file__)),
+        "scorer_tree_dirty": bool(dirty),
+        "scorer_dirty_paths": [ln[3:] for ln in dirty.splitlines()][:40],
+        "corpus_path": str(corpus_path.relative_to(REPO)),
+        "corpus_sha256": _sha256_file(corpus_path),
+        "corpus_version": corpus_version,
+        "corpus_n_cases": corpus_doc.get("n_cases"),
+        "corpus_selection_seed": corpus_doc.get("selection_seed"),
+    }
+
+
+def scoring_parameters() -> dict[str, Any]:
+    """Every knob the SCORE depends on, in one block, stamped into every artifact."""
+    return {
+        "quality_schema": QUALITY_SCHEMA,
+        "latency_schema": LATENCY_SCHEMA,
+        "verdict_schema": VERDICT_SCHEMA,
+        "match_tolerance_s": MATCH_TOLERANCE_S,
+        "match_tolerance_sensitivity_s": list(MATCH_TOLERANCE_SENSITIVITY_S),
+        "saturated_coverage_threshold": SATURATED_COVERAGE,
+        "action_to_incident_gate_s": ACTION_TO_INCIDENT_GATE_S,
+        "instant_tolerance_s": getattr(SM, "INSTANT_TOLERANCE_S", None),
+    }
+
+
+#: Keys in ``meta`` that describe the MEASUREMENT (what produced the data) rather than the SCORING
+#: (what produced the numbers).  On a ``--rescore`` these are carried forward from the artifact
+#: being re-scored: the run happened on a build this process may no longer have installed, and
+#: re-stamping the current build would attribute the data to a wheel that never saw it.
+#: ``harness`` and ``scoring`` are deliberately ABSENT: they describe the scorer, and inheriting
+#: them would let a re-scored artifact credit its new numbers to the harness that never computed
+#: them -- the exact confusion this split exists to prevent.
+MEASUREMENT_META_KEYS = (
+    "package_version", "build_commit", "contract_version", "interpreter", "backend", "model",
+    "transport", "transport_selection", "temporal_frames", "temporal_window_s", "max_dimension",
+    "media_resolution", "conductor_pin", "concurrency", "provider_deadline_s",
+    "decision_deadline_s", "generated", "tag", "total_wall_s",
+)
 
 
 def _coverage(selected: list[dict], raw: dict[str, list[dict]], modes_run: list[str]) -> dict:

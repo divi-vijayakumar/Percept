@@ -304,8 +304,24 @@ def probe_media(path: str) -> tuple[float, int]:
     return fps, n
 
 
+def corpus_path() -> Path:
+    """Which corpus revision this process scores against.
+
+    Defaults to ``corpus.json``, which IS revision v1.0 and is never edited in place: an artifact
+    scored against v1.0 must stay re-derivable from the exact bytes it was scored against, and
+    rewriting the file would break that for every result already on disk.  A later revision is a
+    NEW file selected explicitly through ``PERCEPT_SV_CORPUS``, and its version is stamped into
+    every artifact's ``meta.harness.corpus_version`` so no table can mix revisions unlabelled.
+    """
+    override = os.environ.get("PERCEPT_SV_CORPUS", "").strip()
+    if override:
+        p = Path(override)
+        return p if p.is_absolute() else (HERE / p)
+    return HERE / "corpus.json"
+
+
 def load_corpus() -> list[dict]:
-    cases = json.loads((HERE / "corpus.json").read_text())["cases"]
+    cases = json.loads(corpus_path().read_text())["cases"]
     for c in cases:
         c["video_path"] = str(REPO / c["video_path"]) if not os.path.isabs(c["video_path"]) else c["video_path"]
     return cases

@@ -867,7 +867,22 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
                     "wall": round(observed - t_start, 2),
                     "confidence": float(
                         getattr(getattr(inc, "verdict", None), "confidence", 0.0) or 0.0),
-                    "onset_to_incident_s": (
+                    # NOT an action-onset latency, and no longer named as one.
+                    #
+                    # `inc.ts` is the MEDIA timestamp of the frame this Incident was judged from —
+                    # the moment the pipeline ingested its evidence, not the moment the action
+                    # began. This leg is therefore `judged frame's media instant -> Incident
+                    # observed`: it measures what the pipeline added AFTER the evidence existed,
+                    # which is a real and useful number, but it is blind to how long the action had
+                    # already been running before a frame of it was admitted.
+                    #
+                    # It is also PER EMISSION and UNMATCHED. This source has no per-occurrence
+                    # ground truth at all, so there is nothing to anchor an onset against and no
+                    # occurrence over which to deduplicate. Calling it `onset_to_incident_s` put it
+                    # under the same key as `live_run.py`'s product-gate metric, which IS
+                    # onset-anchored and IS deduplicated to the earliest Incident per occurrence —
+                    # so the two were silently comparable in a report and are not comparable at all.
+                    "frame_media_to_incident_s": (
                         None if timing is None or ch.anchor_wall is None else round(
                             observed - (ch.anchor_wall
                                         + (float(getattr(inc, "ts", 0.0) or 0.0) - ch.anchor_media)),
@@ -1307,8 +1322,16 @@ def analyse(**k: Any) -> dict[str, Any]:
         "incidents": {
             "n": len(incidents),
             "distinct_goals": len({i.get("goal_id") for i in incidents}),
-            "onset_to_incident_s": dist([i["onset_to_incident_s"] for i in incidents
-                                         if i.get("onset_to_incident_s") is not None]),
+            "frame_media_to_incident_s": dist([i["frame_media_to_incident_s"] for i in incidents
+                                               if i.get("frame_media_to_incident_s") is not None]),
+            "frame_media_to_incident_s_unit": "incident_emission",
+            "frame_media_to_incident_s_note": (
+                "judged frame's media instant -> Incident observed. NOT the action-onset latency "
+                "live_run.py reports: this source carries no per-occurrence ground truth, so there "
+                "is no onset to anchor against and no occurrence to deduplicate over. Per emission "
+                "and unmatched. Do not place it in a table beside "
+                "`percept.latency/2-occurrence-anchored` figures."
+            ),
             "rows": incidents[:500],
         },
         "health_timeline": k["health_timeline"][:2000],
