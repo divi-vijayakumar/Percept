@@ -3650,6 +3650,10 @@ class Percept:
             focus_id=route_inputs.latch_key,
             timing=timing,
             evidence_seq=token.evidence_seq,
+            # The SOURCE timeline the judged path already gates on (``_fire_concern(t=job.source_t)``).
+            # It is what makes the gate's refractory window and the delivery merge measure real elapsed
+            # stream time on this path instead of nothing at all.
+            now=job.source_t,
         )
         self._queue_judgment_trace(
             job,
@@ -3688,6 +3692,10 @@ class Percept:
             judgment=fired.judgment,
             provenance=fired.provenance,
             modality=fired.modality,
+            # The gate's own typed reason, now that this path HAS a gate decision to report. It was
+            # dropped here (and hard-coded None upstream), so every transition Incident reached the
+            # wire with an empty ``reason`` while judged Incidents carried one.
+            reason=fired.reason,
         )
         if event.judgment is not None:
             self._queue_judgment_trace(
@@ -5589,11 +5597,19 @@ class Percept:
         if stale is not None and stale():
             return None  # goals changed while the from/to judges were in flight — apply nothing
         self._note_judge_ok((goal.id, latch_key))  # a well-formed from+to resets this key's degrade streak
-        # Perception (judging from/to) stays here; the seen_from/fired state machine + firing live in
-        # the executor, with that state ISOLATED in its per-concern context (never the gate). The
+        # Perception (judging from/to) stays here; the ORDERING WITNESS (seen_from) lives in the
+        # executor's isolated per-concern context, and the FIRE itself is the gate's — the executor
+        # routes this sense's rising and falling edges through ``Gate.decide`` on the SAME
+        # ``(goal, latch_key)`` key used for evidence-seq admission and the degrade streak above. The
         # executor hands back the tick facts so this method never reaches into that ctx.
         tick = self.executor.transition_decide(
             goal, from_v, to_v, focus_id=latch_key, timing=timing, evidence_seq=evidence_seq,
+            # The gate's clock for this tick: the SOURCE timeline when the caller supplied one (the
+            # same timeline ``_fire_concern`` gates the judged path on, and the one the observed
+            # duplicate cadence was measured against), else this frame's local observation time. A
+            # bring-your-own-capture caller that threads no ``t`` still gets a monotonic clock rather
+            # than a clockless gate.
+            now=t if t is not None else now,
         )
         transition_trace = (
             {
@@ -5635,6 +5651,10 @@ class Percept:
         ev = FireEvent(
             fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict,
             judgment=fired.judgment, provenance=fired.provenance, modality=fired.modality,
+            # The gate's own typed reason — see the twin construction in
+            # ``_reduce_transition_completion``. Dropping it here is what left every transition
+            # Incident on the wire with an empty ``reason`` beside a populated judged one.
+            reason=fired.reason,
         )
         # Materialize the audit action before any decision/event callback.
         # The frame-level aggregate calls _log_fires again, but that seam is

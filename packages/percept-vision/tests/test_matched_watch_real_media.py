@@ -94,6 +94,14 @@ async def _decoded_candidates(path: Path) -> list[dict[str, object]]:
     return result
 
 
+#: Which decoded frame a TWO-event case stages its first event on. At the fixture's 4fps replay,
+#: index 1 (t=0.25s) puts it 0.75s before the second event at index 4 (t=1.0s) — outside the shipped
+#: 0.7s delivery resolution, so the two events are separately resolvable notifications rather than
+#: one occurrence re-reported. See the note at the ``events`` block below for why the fixture moved
+#: and the calibrated window did not.
+_FIRST_EVENT_INDEX_TWO = 1
+
+
 def _write_real_case(
     root: Path,
     *,
@@ -209,12 +217,28 @@ def _write_real_case(
             "salience_stat": "block_max",
             "threshold": threshold,
         },
+        # Two-event cases stage event-1 one frame EARLIER (index 1, not 2). At the fixture's 4fps
+        # replay that puts the two events 0.75s apart instead of 0.5s.
+        #
+        # Why: 0.5s is INSIDE the shipped delivery resolution (percept.behavior
+        # INCIDENT_MERGE_WINDOW_S = 0.7s), so the fixture was asserting that the product resolves two
+        # separate notifications closer together than the product claims to. Nothing downstream ever
+        # noticed, because the transition route used to return its fire around the delivery seam
+        # entirely; now that it goes through the same seam as every other sense, the fixture's own
+        # spacing is what fails. The window is NOT the thing to change here — 0.7s is calibrated
+        # (it clears a measured rep-to-rep floor and catches the judgment strides, see the constant's
+        # docstring) whereas transition event spacing has never been measured, so widening a
+        # calibrated constant to fit an arbitrary fixture would trade a real number for an invented
+        # one. The fixture moves instead. Single-event cases are untouched (index 2), and the
+        # adaptive arm's admitted frames and incident count are unchanged either way.
         "events": [
             {
                 "id": f"{case_id}/event-1",
-                "eligible_at_s": decoded[2]["t"],
-                "window_start_s": decoded[2]["t"],
-                "window_end_s": decoded[2]["t"] if two_events else decoded[3]["t"],
+                "eligible_at_s": decoded[_FIRST_EVENT_INDEX_TWO if two_events else 2]["t"],
+                "window_start_s": decoded[_FIRST_EVENT_INDEX_TWO if two_events else 2]["t"],
+                "window_end_s": (
+                    decoded[_FIRST_EVENT_INDEX_TWO]["t"] if two_events else decoded[3]["t"]
+                ),
                 "review_authority": "generated-fixture-author",
                 "label_digest": _sha(b"mechanics-only positive interval"),
             }
@@ -322,6 +346,48 @@ def test_real_transition_decodes_actual_mp4_and_executes_both_arms(tmp_path):
     persisted.write_text(receipt.to_json(), encoding="utf-8")
     loaded = load_matched_watch_receipt(persisted)
     assert loaded.receipt.to_dict() == receipt.to_dict()
+
+
+def test_real_transition_does_not_renotify_a_flickering_held_state(tmp_path):
+    """One continuous action, judged off real decoded media, delivers ONE notification.
+
+    The oracle script here is the defect shape: the judge reads B at t=0.5s, flickers back to A at
+    t=0.75s, and reads B again at t=1.0s and t=1.25s. Nothing about the world changed — only the
+    judge's mind did. The runtime used to treat that flicker as a fresh ordering edge and emit a
+    second Incident 0.5s after the first, because the transition route returned its fire without
+    ever passing the delivery seam.
+
+    The re-notification lands INSIDE the shipped 0.7s delivery resolution, so it is a re-report of
+    the occurrence already delivered. It is the counterpart of
+    ``test_real_receipts_feed_existing_measured_frontier_without_qualification``, whose two events
+    are deliberately staged 0.75s apart — OUTSIDE that resolution — and are both delivered. Together
+    they pin both sides of the boundary on real media, and this one is what keeps the oracle's
+    ``merged_duplicate`` branch live rather than dead.
+    """
+    manifest_path = _write_real_case(
+        tmp_path,
+        frame_values=(9, 31, 229, 41, 219, 221),
+        states=(False, False, True, False, True, True),
+    )
+
+    receipt = run_matched_watch(manifest_path)
+    derive_viability_rows(receipt)  # the reconstruction oracle must accept this trace
+
+    outcomes = [
+        item["data"]["outcome"]
+        for item in receipt.baseline.traces
+        if item["stage"] == "transition.decision"
+    ]
+    assert outcomes == [
+        "armed",
+        "rearmed",
+        "fire",
+        "rearmed",          # the judge flickers back to A — a re-arm, not a new occurrence
+        "merged_duplicate",  # ...so the edge it re-opens is withheld at the delivery seam
+        "suppressed_latched",
+    ]
+    assert len(receipt.baseline.incidents) == 1
+    assert [incident["reason"] for incident in receipt.baseline.incidents] == ["rising_edge"]
 
 
 def test_real_ordinary_template_uses_one_executed_judgment_per_dispatch(tmp_path):
@@ -1234,7 +1300,11 @@ def test_real_receipts_feed_existing_measured_frontier_without_qualification(tmp
                     220 - case_number,
                     222 - case_number,
                 ),
-                states=(False, False, True, False, True, True),
+                # The first positive moves to index 1 (t=0.25s), so the two staged events sit 0.75s
+                # apart instead of 0.5s — outside the shipped 0.7s delivery resolution. Same two
+                # events, same frame_values (so admission and the adaptive arm are untouched); only
+                # the spacing now matches a separation the product actually claims to resolve.
+                states=(False, True, False, False, True, True),
                 two_events=True,
             )
             receipt = run_matched_watch(manifest_path)

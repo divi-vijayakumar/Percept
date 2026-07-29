@@ -222,14 +222,30 @@ _N = _NoFire()
 # --------------------------------------------------------------------------------------------------
 class TestStateIsolation(unittest.TestCase):
     def test_transition_state_never_pollutes_the_gate(self):
+        """Constraint 1, sharpened: the transition sense's STATEFUL PRIMITIVE memory stays in the
+        isolated per-concern ctx, and what it puts in the gate is ONE key holding ONE bit.
+
+        This assertion used to read ``gate._armed == {}`` — "transition never calls the gate at all".
+        That was not isolation, it was the BYPASS: it is precisely why the transition sense had no
+        rising edge of its own, no refractory, no dwell and no delivery merge, and why its fires
+        carried ``reason=None``. Constraint 1 was never "this sense may not use the gate"; it is "the
+        gate stays one bit per key and stateful primitives keep their own memory elsewhere" (see the
+        ConcernContext re-arm-discriminator note in behavior.py). Both halves are asserted below, and
+        the key-count assertion is what would catch a regression to per-tick / per-bucket gate keys.
+        """
         gate, ex = _ex()
         g = Goal(id="wake", condition="awake", say="up")
         for fr, to in [(NO, YES), (YES, NO), (NO, YES)]:
             ex.fire_transition(g, fr, to)
-        # transition state lives in the executor's isolated per-concern context...
+        # The ORDERING WITNESS (has A been seen?) is executor-isolated ctx state — the gate has no
+        # vocabulary for it and never sees it. ``fired`` is now only a mirror of the gate's edge.
         self.assertEqual(ex.ctx("wake").transitions["scene"], {"seen_from": True, "fired": True})
-        # ...and NOTHING leaked into the gate (transition never calls gate.evaluate)
-        self.assertEqual(gate._armed, {})
+        # ...and the gate holds EXACTLY the one mechanical armed/disarmed bit for this concern's own
+        # latch key — no per-tick, per-focus or per-bucket key leak, and nothing for any other goal.
+        self.assertEqual(gate._armed, {("wake", "scene"): False})
+        # The two ctx bits and the one gate bit agree: the edge is spent, and only a re-established
+        # 'from' (a confident-false to the gate) can re-open it.
+        self.assertIs(gate._armed[("wake", "scene")], False)
 
     def test_each_concern_has_its_own_context(self):
         _, ex = _ex()

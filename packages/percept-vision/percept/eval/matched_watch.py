@@ -35,6 +35,7 @@ from percept._safe_json import (
     load_json_file,
 )
 from percept.adapters import Verdict
+from percept.behavior import INCIDENT_MERGE_WINDOW_S
 from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
 from percept.domain_pack import DomainPack, get_domain_pack, watch_template
@@ -3624,11 +3625,34 @@ def _validate_v2_arm_reconstruction(
         f"{arm.arm} source-frame trace identity does not reconstruct from dispatches",
     )
     if route == "transition":
+        # ---------------------------------------------------------------------------------------
+        # WHY THIS BLOCK DRIFTED, recorded at the site so the next reader does not repeat it.
+        #
+        # This is a REPLICA ORACLE: a second, line-for-line copy of the runtime's transition state
+        # machine, used to "reconstruct" the trace the runtime emitted. Until this rewrite it
+        # carried the runtime's own defect verbatim — `if from_truth == "yes": armed, fired_latch =
+        # True, False`, the re-arm-on-every-confident-from that re-notified a held action at the
+        # judge cadence. It reconstructed those traces perfectly, because a copy of the logic
+        # necessarily agrees with the logic. An oracle that reimplements the implementation cannot
+        # catch a bug in the implementation; it only ever proves that two copies of the same rules
+        # agree, and it goes on agreeing for exactly as long as the rules are wrong.
+        #
+        # It is REPAIRED here rather than replaced: it now models what actually ships — an ordering
+        # witness in the executor's context plus a gate-mediated edge, and the delivery merge that
+        # decides whether a decided fire becomes a notification. That keeps the reconstruction
+        # honest today, but it does not fix the shape. See the A1 report: the durable fix is to make
+        # this contract-shaped (assert the INVARIANTS a transition trace must satisfy — an edge is
+        # never reported without a prior witness, a spent edge never re-fires without a re-arm, no
+        # two notifications land closer than the delivery resolution) instead of recomputing the
+        # expected row and diffing it.
+        # ---------------------------------------------------------------------------------------
         transition_by_t = {
             float(item["t"]): item for item in arm.traces if item["stage"] == "transition.decision"
         }
-        armed = False
-        fired_latch = False
+        seen_from = False        # the ordering witness (executor ctx) — "has A been observed?"
+        gate_armed = True        # the gate's edge bit; a key it has not seen defaults to ARMED
+        edge_spent = False       # mirror of the gate edge, reported as ``fired_latch``
+        last_delivery_t = None   # the delivery-merge anchor for this latch key
         for candidate in dispatched:
             trace = _thaw(transition_by_t[candidate.t])
             trace_data = trace["data"]
@@ -3687,17 +3711,37 @@ def _validate_v2_arm_reconstruction(
                 threshold,
                 0.5,
             )
-            prior_armed, prior_fired = armed, fired_latch
-            if from_truth == "yes":
-                armed, fired_latch = True, False
-            did_fire = armed and not fired_latch and to_truth == "yes"
-            if did_fire:
-                fired_latch = True
-                outcome = "fire"
-            elif from_truth == "yes":
-                outcome = "rearmed" if (prior_armed or prior_fired) else "armed"
-            elif armed and fired_latch and to_truth == "yes":
-                outcome = "suppressed_latched"
+            prior_seen, prior_spent = seen_from, edge_spent
+            # A tick confident in BOTH states cannot establish an ordering, so it takes neither
+            # branch and leaves every latch exactly as it found it. The replica used to ignore this
+            # case entirely and would have claimed a fire on it.
+            contradictory = from_truth == "yes" and to_truth == "yes"
+            if from_truth == "yes" and not contradictory:
+                # The falling edge: A re-established. It sets the ordering witness AND submits the
+                # confident-false that is the only thing re-arming the gate's edge.
+                seen_from = True
+                gate_armed = True
+                edge_spent = False
+                outcome = "rearmed" if (prior_seen or prior_spent) else "armed"
+            elif not contradictory and prior_seen and to_truth == "yes":
+                # The rising edge, on a witnessed latch. Whether it NOTIFIES is then the delivery
+                # merge's call — a decided fire landing inside the window is a re-report of the
+                # occurrence already delivered, not a second occurrence.
+                if not gate_armed:
+                    outcome = "suppressed_latched"
+                else:
+                    gate_armed, edge_spent = False, True
+                    merged = (
+                        last_delivery_t is not None
+                        and 0.0 <= candidate.t - last_delivery_t < INCIDENT_MERGE_WINDOW_S
+                    )
+                    if merged:
+                        outcome = "merged_duplicate"
+                    else:
+                        last_delivery_t = candidate.t
+                        outcome = "fire"
+            elif contradictory:
+                outcome = "suppressed_latched" if prior_seen and prior_spent else "idle"
             else:
                 outcome = "idle"
             _require(
@@ -3706,8 +3750,8 @@ def _validate_v2_arm_reconstruction(
                     "entity_id": "scene",
                     "from_truth": from_truth,
                     "to_truth": to_truth,
-                    "armed": armed,
-                    "fired_latch": fired_latch,
+                    "armed": seen_from,
+                    "fired_latch": edge_spent,
                     "outcome": outcome,
                     "strip_len": 0,
                     "enriched": False,
@@ -3967,7 +4011,17 @@ def _validate_v2_arm_reconstruction(
             expected_entity = "scene" if route == "transition" else None
             expected_incident_origin = "transition" if route == "transition" else None
             expected_trace_origin = "transition" if route == "transition" else "judged"
-            expected_reason = None if route == "transition" else "rising_edge"
+            # CORRECTING AN ORACLE THAT ENCODED A BUG — not relaxing a check to fit a change.
+            #
+            # This read ``None if route == "transition" else "rising_edge"``: it asserted that a
+            # transition Incident reaches the wire with NO gate reason. That was true of the shipped
+            # runtime, but only because the transition route decided on its own latch bits and
+            # returned its fire without ever calling the gate — so there was no decision to report a
+            # reason for. The bypass was the defect; ``reason=None`` was its symptom, and pinning the
+            # symptom here made the oracle agree with the runtime precisely while both were wrong.
+            # Every route now fires through ``Gate.decide``, so every route reports the gate's own
+            # typed reason and this expectation is route-independent.
+            expected_reason = "rising_edge"
             expected_judgment_id = judgment_event_id(
                 goal_id,
                 expected_entity,

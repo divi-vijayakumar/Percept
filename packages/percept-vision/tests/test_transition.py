@@ -42,7 +42,14 @@ def _wake_goal():
 
 
 def _run(frames):
-    """frames: list of (token, (from_sat, from_conf), (to_sat, to_conf)). Returns (fires, agent)."""
+    """frames: list of (token, (from_sat, from_conf), (to_sat, to_conf)). Returns (fires, agent).
+
+    Each frame advances the source clock by one second. This used to pin every frame to ``t=0.0``,
+    which is not a stream — it is the same instant reported N times, and the delivery seam reads two
+    notifications at an identical timestamp as a re-report of one occurrence (it is half-open
+    ``[0, window)``, see ``INCIDENT_MERGE_WINDOW_S``). No assertion below changed; the timeline
+    simply moves, as a real source's does.
+    """
     script = {}
     for tok, fv, tv in frames:
         script[(FROM, tok)] = fv
@@ -52,8 +59,8 @@ def _run(frames):
     fires = []
 
     async def go():
-        for tok, _, _ in frames:
-            evs = await a.perceive_judged(tok, t=0.0)
+        for i, (tok, _, _) in enumerate(frames):
+            evs = await a.perceive_judged(tok, t=float(i))
             fires.extend(e for e in evs if e.action == FIRE)
 
     asyncio.run(go())

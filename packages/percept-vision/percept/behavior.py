@@ -51,6 +51,7 @@ from .contracts import (
 from .episodes import EPISODE_POLICIES, ContinuationDecision
 from .duration_routes import duration_policy
 from .gate import ASK, FIRE, Gate, GateOutcome, classify
+from .identity_policy import SCENE_IDENTITY
 from .observability import get_logger
 
 # --------------------------------------------------------------------------------------------------
@@ -366,11 +367,13 @@ class TransitionTick:
 
     ``from_truth``/``to_truth`` are the :func:`~percept.gate.classify` outputs for this tick; ``armed``
     is the post-tick ``seen_from`` latch (the goal has witnessed its ``from`` state on an earlier,
-    non-contradictory tick and is waiting for ``to``); ``fired_latch`` is the post-tick ``fired``
-    latch (this focus already fired and will not re-fire until re-armed); ``outcome`` is the typed
-    WHY, one of ``fire`` / ``armed`` / ``rearmed`` / ``suppressed_latched`` / ``idle``. ``fired`` is
-    the historical ``Fired | None`` the legacy :meth:`BehaviorExecutor.fire_transition` facade
-    returns directly."""
+    non-contradictory tick and is waiting for ``to``); ``fired_latch`` MIRRORS the gate's edge for this
+    latch key (the edge is spent and will not re-fire until the ``from`` state is re-established);
+    ``outcome`` is the typed WHY, one of ``fire`` / ``armed`` / ``rearmed`` / ``suppressed_latched`` /
+    ``idle`` — plus ``merged_duplicate`` / ``suppressed_refractory`` / ``dwell_pending``, the three
+    decision paths routing this sense through :meth:`percept.gate.Gate.decide` made reachable.
+    ``fired`` is the historical ``Fired | None`` the legacy
+    :meth:`BehaviorExecutor.fire_transition` facade returns directly."""
 
     fired: Fired | None
     from_truth: str
@@ -1469,22 +1472,28 @@ class BehaviorExecutor:
     def fire_transition(
         self, goal, from_v: Verdict, to_v: Verdict, *, focus_id: Hashable = "scene",
         timing: JudgmentTimingBuilder | None = None, evidence_seq: int | None = None,
+        now: float | None = None, hold_s: float | None = None,
+        max_support_gap_s: float | None = None,
     ) -> Fired | None:
         """LEGACY FACADE — the historical ``Fired | None`` return every positional caller relies on.
 
         Delegates to :meth:`transition_decide` (which also carries the per-tick facts the agent's
-        ``transition.decision`` trace needs) and hands back only its ``.fired``. The two keyword-only
+        ``transition.decision`` trace needs) and hands back only its ``.fired``. The keyword-only
         params are additive and defaulted: a caller that threads no ``timing`` gets a ``Fired`` whose
         ``.judgment`` is ``None`` (the transition path took no judge-funnel stamps), byte-for-byte the
-        pre-1.9 behaviour.
+        pre-1.9 behaviour, and a caller that threads no ``now`` gets the clockless gate (rising edge
+        only — no refractory, no dwell, no delivery merge).
         """
         return self.transition_decide(
             goal, from_v, to_v, focus_id=focus_id, timing=timing, evidence_seq=evidence_seq,
+            now=now, hold_s=hold_s, max_support_gap_s=max_support_gap_s,
         ).fired
 
     def transition_decide(
         self, goal, from_v: Verdict, to_v: Verdict, *, focus_id: Hashable = "scene",
         timing: JudgmentTimingBuilder | None = None, evidence_seq: int | None = None,
+        now: float | None = None, hold_s: float | None = None,
+        max_support_gap_s: float | None = None,
     ) -> "TransitionTick":
         """Run one A→B transition tick and return BOTH the fire (if any) and the tick facts.
 
@@ -1496,8 +1505,47 @@ class BehaviorExecutor:
         :class:`~percept.contracts.JudgmentEvent` through the ONE construction site (:meth:`_judgment`)
         with ``evidence_origin="transition"`` — so the transition path, which historically emitted no
         judgment record at all, now correlates to a delivered Incident exactly like the judged path.
-        The gate never ran here, so ``reason`` stays ``None`` (the frozen ``GateReason`` vocabulary is
-        not stretched to name a path it never decided).
+
+        THE FIRE IS THE GATE'S (invariant 3: one firing path, one gate)
+        ----------------------------------------------------------------
+        This method used to decide entirely on its own two ctx bits and return a ``Fired`` directly —
+        the only sense that never consulted :class:`~percept.gate.Gate`, and therefore the only one
+        where ``reason`` was hard-coded ``None``, where ``refractory_s``/``hold_s`` could not apply,
+        and where the delivery merge (:data:`INCIDENT_MERGE_WINDOW_S`) never ran. Because
+        ``st["fired"]`` was reset to ``False`` on EVERY confident ``from`` tick, one judge flicker back
+        to A mid-episode re-opened the edge, and the same ongoing action re-notified at the judge
+        cadence for as long as it held. The two roles that bit was carrying are now separated:
+
+        * ``st["seen_from"]`` — the ORDERING WITNESS ("A has been observed under this latch key").
+          Still here, still isolated per concern, because the gate has no vocabulary for it: the gate
+          cannot express "B only counts after A", and it cannot express the CONTRADICTORY tick (A and
+          B both confidently true), which must leave every latch exactly as it found it.
+        * ``st["fired"]`` — the RE-FIRE GUARD. **Replaced** by the gate's own armed bit. It survives
+          only as a REPORTED MIRROR of the gate's edge for ``TransitionTick.fired_latch`` /
+          ``outcome``; it no longer suppresses anything. Keeping it as a suppressor would be a DOUBLE
+          LATCH: the second, third… ``to`` tick of a held state would never reach the gate, so
+          ``already_fired`` could never be observed, a pending dwell could never complete, and a
+          merged delivery would wrongly disarm this path for good.
+
+        The two gate calls (at most ONE per tick — they are mutually exclusive, since a tick that is
+        confidently in A and confidently in B is contradictory and takes neither branch):
+
+        * **falling edge** — a confident, non-contradictory ``from`` tick submits a confident-FALSE
+          verdict. :meth:`Gate.decide` re-arms only on confident-false, so this is the ONLY thing that
+          translates "A was re-established" into a live edge; without it the first fire would latch the
+          key permanently and a genuine second transition could never be reported.
+        * **rising edge** — a ``to`` tick on a witnessed latch submits a confident-TRUE verdict, and
+          the gate answers with the typed :class:`~percept.gate.GateOutcome`. Its ``reason`` is what
+          now rides out on ``Fired.reason`` (``rising_edge`` / ``dwell_satisfied``), so a transition
+          incident carries the same populated ``GateReason`` a judged incident does.
+
+        ``now`` is the frame's stream time. ``None`` (the default, and every bare-executor caller) is
+        the clockless gate: rising edge only, no refractory, no dwell, no delivery merge, no eviction
+        stamping — byte-for-byte the historical decision for a caller that has no timeline.
+        ``hold_s``/``max_support_gap_s`` are threaded straight to the gate; the shipped duration
+        contract (:func:`percept.duration_routes.duration_policy`) admits ``hold_s`` only on an
+        ordinary frame Watch, so the production transition route passes ``None`` and dwell stays a
+        reachable seam rather than an active default.
 
         The returned :class:`TransitionTick` carries the classify outputs, the post-tick latch state,
         and a typed ``outcome`` so the agent can emit ``transition.decision`` WITHOUT reaching into this
@@ -1505,48 +1553,119 @@ class BehaviorExecutor:
         """
         thr, fresh_min = self.gate.threshold, self.gate.fresh_min
         ctx = self.ctx(goal.id)
-        st = ctx.transitions.setdefault(focus_id, {"seen_from": False, "fired": False})  # NOT gate._armed
+        st = ctx.transitions.setdefault(focus_id, {"seen_from": False, "fired": False})
         from_truth = classify(from_v, 1.0, thr, fresh_min)
         to_truth = classify(to_v, 1.0, thr, fresh_min)
         prior_seen, prior_fired = st["seen_from"], st["fired"]
         ctx.confusion.record(to_v, to_truth)
         contradictory = from_truth == "yes" and to_truth == "yes"
+        # ONE key for the whole transition path: the same ``(goal, latch_key)`` the agent already uses
+        # for evidence-seq admission, the degrade streak and ``judgment_event_id``. Under the default /
+        # declared-scene identity policy that is the literal stable :data:`SCENE_IDENTITY` — ONE key per
+        # goal, which entity churn cannot multiply. Under a declared per-entity policy it is the
+        # in-focus entity, so each entity gets its own edge; a freshly-minted entity id starts with NO
+        # ordering witness, so it cannot fire on its first tick and never even mints a gate key until it
+        # has witnessed A under its OWN key.
+        key = (goal.id, focus_id)
+        # The scene latch is a PER-GOAL SINGLETON, so it is TTL/LRU-exempt for the same reason
+        # ``fire_absence``'s ``__overdue__`` and ``fire_episode``'s ``__episode__`` keys are: a
+        # bound-driven drop silently RE-ARMS the edge (a fresh key defaults to armed, gate.py), which
+        # would let a held ``to`` state re-notify the moment the key aged out — the very defect this
+        # routing exists to close, re-entering through the eviction door. One key per goal cannot leak.
+        # A per-entity latch is deliberately NOT exempt: pinning one key per entity forever is exactly
+        # the unbounded growth the gate's bounds exist to stop, those keys are legitimately transient,
+        # :meth:`Gate.reset_entity` reaches them when an entity dies, and a re-armed one still has to
+        # clear the delivery merge before it can notify again.
+        no_evict = focus_id == SCENE_IDENTITY
+        gate_reason: str | None = None
+        merged = False
         if from_truth == "yes" and not contradictory:
-            st["seen_from"], st["fired"] = True, False  # in 'from' -> arm (and re-arm)
+            st["seen_from"] = True  # the ordering witness — the gate has no vocabulary for this
+            # The falling edge. ``Gate.decide`` re-arms ONLY on a confident-false (gate.py), so this is
+            # how "A is re-established" becomes a live edge again instead of a latch spent forever.
+            outcome = self.gate.decide(
+                key,
+                Verdict(satisfied=False, confidence=1.0,
+                        evidence="transition: 'from' state re-established"),
+                hold_s=hold_s, max_support_gap_s=max_support_gap_s, now=now, no_evict=no_evict,
+            )
+            gate_reason = outcome.reason
+            st["fired"] = False  # mirror: the gate's edge is live again
+            self.metrics.incr(f"transition.gate.{outcome.action}")
+            # NOTE — and this is the one place this path deliberately does NOT mirror ``fire_judged``.
+            # There, a confident-false POPS the delivery anchor, because the gate key and the merge
+            # dedupe the SAME proposition: the condition was observed to stop holding, so the
+            # occurrence provably ended and whatever comes next is a new one. Here the two
+            # propositions differ. The merge dedupes "an A→B transition was notified", which is a
+            # POINT event — it has no duration and therefore no observable end. A confident A one tick
+            # after that notification is not testimony that the reported transition finished; it is
+            # the judge oscillating, which is exactly the flicker that re-notified this path at the
+            # judge cadence. Popping the anchor here would hand the duplicate generator a bypass
+            # around the very seam this sense is being routed through, so the anchor SURVIVES the
+            # re-arm and time alone decides whether the next edge is a distinct occurrence.
         fired: Fired | None = None
-        if (
-            not contradictory
-            and prior_seen
-            and not prior_fired
-            and to_truth == "yes"
-        ):
-            st["fired"] = True
-            ctx.count += 1
-            # env: the transition path is a DIRECT visual observation, but the gate never ran — reason
-            # stays None (GateReason is frozen) and evidence_origin marks WHICH path produced it.
-            env = dict(reason=None, modality="vision", roi=None, provenance="observed",
-                       evidence_origin="transition")
-            judgment = self._judgment((goal.id, focus_id), evidence_seq, FIRE, timing, env)
-            fired = Fired(goal.id, FIRE, goal.say, focus_id, to_v, judgment,
-                          reason=None, modality="vision", provenance="observed")
+        if not contradictory and prior_seen and to_truth == "yes":
+            # The rising edge. Note there is no ``not prior_fired`` term any more: the re-fire guard is
+            # the GATE's armed bit, so a held ``to`` state keeps reaching the gate and keeps getting
+            # ``already_fired`` — which is what makes suppression observable instead of invisible.
+            outcome = self.gate.decide(
+                key,
+                Verdict(satisfied=True, confidence=1.0,
+                        evidence="transition: 'to' state reached after 'from'"),
+                hold_s=hold_s, max_support_gap_s=max_support_gap_s, now=now, no_evict=no_evict,
+            )
+            gate_reason = outcome.reason
+            self.metrics.incr(f"transition.gate.{outcome.action}")
+            if outcome.action == FIRE:
+                st["fired"] = True  # mirror: the gate spent this edge
+                if now is not None and self._merges_into_prior_delivery(key, now):
+                    # DELIVERY MERGE (see INCIDENT_MERGE_WINDOW_S). The gate has decided and its edge
+                    # is spent; nothing below rolls that back. This drops only the second
+                    # NOTIFICATION of an occurrence this key already notified about inside the
+                    # window — a judge flicker back to A and straight out again, or an edge re-armed
+                    # by an entity-eviction reset / TTL drop / explicit rearm, none of which are
+                    # evidence that the reported transition was a distinct second event.
+                    merged = True
+                    self.metrics.incr("transition.gate.merged_duplicate")
+                else:
+                    if now is not None:
+                        self._note_merge_anchor(key, now)
+                    ctx.count += 1
+                    # env: the transition path is a DIRECT visual observation, and the gate DID run —
+                    # ``reason`` is the gate's own typed code, and evidence_origin marks WHICH path
+                    # produced it.
+                    env = dict(reason=outcome.reason, modality="vision", roi=None,
+                               provenance="observed", evidence_origin="transition")
+                    judgment = self._judgment(key, evidence_seq, FIRE, timing, env)
+                    fired = Fired(goal.id, FIRE, goal.say, focus_id, to_v, judgment,
+                                  reason=outcome.reason, modality="vision", provenance="observed")
+            elif outcome.reason in ("already_fired", "refractory"):
+                st["fired"] = True  # mirror: the edge is spent, whether or not it fired this episode
         # The typed WHY of this tick, for transition.decision. Priority: a fire dominates; else an
         # arming tick reports armed (first) vs rearmed (A re-seen while already armed/latched); else a
-        # to==yes while the latch is spent is a suppressed re-fire; else idle.
+        # to==yes while the latch is spent is a suppressed re-fire; else idle. The three codes below
+        # the historical five are new decision paths the gate made reachable, never renames.
         if fired is not None:
-            outcome = "fire"
+            outcome_code = "fire"
         elif contradictory:
             # Contradictory evidence is not an ordering edge. Preserve an existing latch exactly;
             # in particular, a spent latch must stay spent so repeated contradictions cannot refire.
-            outcome = "suppressed_latched" if prior_seen and prior_fired else "idle"
+            outcome_code = "suppressed_latched" if prior_seen and prior_fired else "idle"
         elif from_truth == "yes":
-            outcome = "rearmed" if (prior_seen or prior_fired) else "armed"
-        elif st["seen_from"] and st["fired"] and to_truth == "yes":
-            outcome = "suppressed_latched"
+            outcome_code = "rearmed" if (prior_seen or prior_fired) else "armed"
+        elif merged:
+            outcome_code = "merged_duplicate"
+        elif gate_reason == "already_fired":
+            outcome_code = "suppressed_latched"
+        elif gate_reason == "refractory":
+            outcome_code = "suppressed_refractory"
+        elif gate_reason == "dwell_pending":
+            outcome_code = "dwell_pending"
         else:
-            outcome = "idle"
+            outcome_code = "idle"
         return TransitionTick(
             fired=fired, from_truth=from_truth, to_truth=to_truth,
-            armed=st["seen_from"], fired_latch=st["fired"], outcome=outcome,
+            armed=st["seen_from"], fired_latch=st["fired"], outcome=outcome_code,
         )
 
     # -- absence sense: replicates agent.check_deadlines firing for one concern -----------------
