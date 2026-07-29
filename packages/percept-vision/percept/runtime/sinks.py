@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -236,7 +237,41 @@ class WebhookSink:
             headers["X-Percept-Signature"] = f"sha256={digest}"
         return headers
 
-    def __call__(self, incident: Any) -> None:
+    def __call__(self, incident: Any) -> Any:
+        """Deliver ``incident`` — **never on the event-loop thread**.
+
+        A webhook POST is blocking by construction: stdlib ``urllib`` has no async form, and the
+        retry backoff is a ``time.sleep``. Run on the event loop that made delivery part of the
+        perception critical path — one unreachable subscriber stalled gate evaluation, the audio
+        pump and decode consumption, and the bounded capture queue then dropped frames for it.
+
+        So the blocking work lives in :meth:`_deliver_blocking` and this method only chooses how to
+        get there:
+
+        * **inside a running event loop** — returns an AWAITABLE that runs ``_deliver_blocking`` on a
+          worker thread (``asyncio.to_thread``). The loop thread never encodes the payload, never
+          waits on the socket, and never sleeps for the backoff. The runtime's ``_call_sink`` awaits
+          any awaitable a sink returns, so this is drop-in there; so are
+          :class:`IdempotentSink`/:class:`SupersessionSink`, which both already forward an awaitable
+          result. The awaited result raises exactly what the blocking call would have raised, so
+          retry/DLQ/error semantics are byte-for-byte unchanged.
+        * **no running loop** (a plain thread, a script, a synchronous test) — calls
+          ``_deliver_blocking`` directly and returns ``None``: byte-for-byte today's behavior,
+          because blocking the caller's own thread is exactly what that caller asked for.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return self._deliver_blocking(incident)
+        return asyncio.to_thread(self._deliver_blocking, incident)
+
+    def _deliver_blocking(self, incident: Any) -> None:
+        """The whole blocking delivery: encode, POST, retry-with-backoff, dead-letter.
+
+        MUST NOT run on the event-loop thread — it makes a synchronous socket call and calls
+        ``time.sleep`` for the retry backoff. :meth:`__call__` is the only caller and is responsible
+        for putting it on a worker thread whenever a loop is running.
+        """
         body = json.dumps(incident_payload(incident, include_media=self.include_media)).encode("utf-8")
         last_exc: Exception | None = None
         start = time.monotonic()
@@ -268,6 +303,9 @@ class WebhookSink:
             except Exception as exc:
                 last_exc = exc
                 if attempt < self.retries:
+                    # The ONLY time.sleep in this module, and it is unreachable from the event-loop
+                    # thread: __call__ hands this whole method to a worker thread whenever a loop is
+                    # running (tests/test_delivery_off_critical_path.py asserts both halves).
                     time.sleep(self.retry_backoff_s)
         if self.dead_letter is not None:
             # REDACTED: never persist the raw body, the signing HMAC, or auth headers in a DLQ record.

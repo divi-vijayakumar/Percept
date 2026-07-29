@@ -241,6 +241,10 @@ class RuntimeStats:
     asks: int = 0
     incidents: int = 0
     sink_errors: int = 0
+    # Deliveries evicted by the bounded delivery lane's drop-oldest bound (_DeliverySpool) because a
+    # subscriber fell more than a full queue behind. Never a silent counter: each one also emits a
+    # `delivery_dropped` health receipt naming the sink, and an evicted INCIDENT is dead-lettered.
+    deliveries_dropped: int = 0
     audio_chunks: int = 0  # audio chunks pumped into the AudioWindow (fused/acoustic perception)
     audio_wakes: int = 0  # audio onsets that admitted a frame the visual gate would have skipped
     # Admission partition (each admitted frame lands in EXACTLY one bucket, so the totals sum cleanly):
@@ -266,6 +270,10 @@ class RuntimeStats:
     # judge_revision_dropped == admitted escalations`` once drained. A discontinuity additionally
     # reports active/pending drops below; an active drop already spent a judge call, while a pending
     # drop did not, so the split is retained rather than hiding that distinction.
+    # Observation (detection) lane accounting, the twin of judge_superseded below: the observation
+    # provider call is single-flight + one latest-pending too, so under overload a pending
+    # observation may be replaced before it launches. Traced as `observation_superseded`.
+    observations_superseded: int = 0
     judge_superseded: int = 0  # pending judge candidate replaced by a newer admitted frame
     judge_revision_dropped: int = 0  # pending candidate dropped: goals.revision moved after admission
     judge_deadline_dropped: int = 0  # pending candidate aged past its absolute decision deadline
@@ -368,6 +376,392 @@ class _OwnerCommandQueue:
         rows = tuple(self._items)
         self._items.clear()
         return rows
+
+
+# The bounded delivery lane's depth. Deliberately the SAME 64 as the capture queue
+# (``run(source_queue_size=64)``, percept/runtime/source.py): one capture-queue's worth of pending
+# subscriber work. Sized to a STRUCTURE, not tuned to a metric — a subscriber more than a full
+# capture queue behind is not "momentarily slow", it is not keeping up, and drop-oldest-with-a-receipt
+# is the honest answer. Note this is a per-run retention bound too: an ``on_frame`` subscriber that
+# falls behind parks up to this many frames alongside the capture queue's own.
+_DELIVERY_QUEUE_MAX = 64
+
+# Drop RECEIPTS are bounded independently of the deliveries they report, and far more generously: a
+# receipt is a small dict, and tying its bound to the delivery bound meant a deep outage behind a
+# shallow lane lost the very evidence of itself. Overflow here is still counted (`receipts_dropped`)
+# and every receipt carries the running `dropped_total`, so the true count always reconciles.
+_DELIVERY_RECEIPT_MAX = 1024
+
+
+@dataclass(frozen=True)
+class _DeliveryItem:
+    """One queued subscriber callback: everything needed to run it, and to receipt losing it."""
+
+    fn: Callable          # the REAL sink (an IdempotentSink/SupersessionSink chain, or a bare callable)
+    args: tuple
+    channel: str          # "incident" | "ask" | "frame" | "health"
+    sink: str             # the sink's NAME — a drop receipt must say WHOSE delivery it dropped
+    errors: str           # "raise" | "ignore", the run's `sink_errors` policy for this channel
+    health_kind: str      # the health event kind a raising sink reports under
+    incident: Any = None  # channel == "incident" only: what a drop has to dead-letter
+    # An already-started delivery that SUSPENDED: the sink was entered on the frame loop, returned an
+    # awaitable, and the lane took ownership of finishing it. `fn`/`args` are retained for the
+    # receipt only; the lane awaits this instead of calling the sink a second time.
+    awaitable: Any = None
+
+
+class _DeliverySpool:
+    """Bounded, drop-oldest delivery lane between ``_materialize`` and the notification sinks.
+
+    THE DEFECT THIS CLOSES. Sinks used to be awaited INLINE in the frame loop
+    (``_deliver_materialized``, the ``on_frame`` hook, every ``on_health`` emission). For a product
+    whose claim is "the cheap loop never stops" that put delivery and observation on the perception
+    critical path: one slow subscriber stalled gate evaluation, the audio pump and decode
+    consumption, and the 64-deep capture queue then discarded frames — attributing the loss to a
+    generic ``frames_dropped`` counter that named no cause and produced no receipt.
+
+    THE LANE. Offers are synchronous and never block. A single drain task — the only thing that ever
+    calls a subscriber — runs the queue in FIFO order, so relative delivery order across every
+    channel is exactly what it was inline. When the queue is full the OLDEST pending delivery is
+    evicted (the house drop-oldest pattern, same as the capture queue and
+    :class:`~percept.runtime.sinks.BoundedDeadLetterQueue`) and every eviction produces a typed
+    ``delivery_dropped`` health receipt NAMING THE SINK — never a silent counter bump.
+
+    AN INCIDENT IS NEVER JUST DROPPED. Frames and health events are best-effort by nature; an
+    Incident is the product. Evicting one writes a dead-letter record (the run's
+    ``delivery_dead_letter``, which defaults to the sink's own DLQ when it has one) carrying the
+    incident id and an explicit ``delivery_queue_overflow`` reason, so a dropped delivery is
+    RECOVERABLE, not merely observable. The record is written on the offer path, synchronously, so it
+    cannot itself be lost to a later overflow.
+
+    FAST SINKS STAY FAST. With the lane idle, :meth:`deliver` enters the sink on the frame loop's own
+    stack, so a sink that does not actually suspend (the common case: a list append, a log line, a
+    coroutine with no real await) finishes exactly where it used to, on the same frame, without even
+    costing a scheduling turn. Only a sink that genuinely suspends hands its awaitable to the drain
+    task and lets the loop move on — and from that moment everything queues behind it, in order.
+
+    FAIL-LOUD SURVIVES. ``sink_errors="raise"`` cannot propagate from a drain task, so the first
+    raising delivery is latched and re-raised on the frame loop at its next sink call (and at the
+    end-of-source flush) — the same ``runtime_error`` health path an inline raise took, at most one
+    tick later. ``sink_errors="ignore"`` counts ``stats.sink_errors`` and emits the channel's
+    ``*_sink_error`` health event, exactly as before.
+    """
+
+    def __init__(
+        self,
+        *,
+        on_health: Callable | None,
+        stats: RuntimeStats | None = None,
+        dead_letter: Any = None,
+        maxsize: int = _DELIVERY_QUEUE_MAX,
+    ) -> None:
+        if type(maxsize) is not int or maxsize < 1:
+            raise ValueError("delivery queue maxsize must be a positive integer")
+        self.maxsize = maxsize
+        # The RAW health sink. Receipts are emitted straight from the drain task and NEVER re-enter
+        # the queue: a receipt that could itself be evicted (or evict the delivery it is reporting)
+        # would make the bound self-defeating.
+        self._on_health = on_health
+        self._stats = stats
+        self._dead_letter = dead_letter
+        self._items: deque[_DeliveryItem] = deque()
+        # A delivery that was ENTERED on the frame loop and suspended. It is already running inside
+        # the subscriber, so it is never a drop candidate — evicting it would mean tearing down a
+        # half-executed callback. At most one can exist: the moment it is here the lane is no longer
+        # idle, so no further delivery is entered inline.
+        self._entered: deque[_DeliveryItem] = deque()
+        # Receipts are bounded too, and drop-oldest — but every receipt carries the running
+        # `dropped_total`, so an operator can always reconcile the true count from the newest one.
+        self._receipts: deque = deque(maxlen=_DELIVERY_RECEIPT_MAX)
+        self._wake = asyncio.Event()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._task: asyncio.Task | None = None
+        self._closing = False
+        self._busy = False
+        self._fatal: BaseException | None = None
+        self.delivered = 0
+        self.dropped = 0
+        self.receipts_dropped = 0
+        self.max_depth = 0
+
+    # ---- producer side (runs on the frame loop; never blocks) --------------------------------
+    def offer(self, item: _DeliveryItem) -> None:
+        """Queue one delivery, evicting the oldest (with a receipt) if the bound is reached."""
+        while len(self._items) >= self.maxsize:
+            self._drop(self._items.popleft())
+        self._items.append(item)
+        if len(self._items) > self.max_depth:
+            self.max_depth = len(self._items)
+        self._idle.clear()
+        self._wake.set()
+
+    async def deliver(self, item: _DeliveryItem) -> None:
+        """Hand one delivery to the lane. Returned by :class:`_SpooledSink`, so every existing
+        ``_call_sink`` / ``_call_sink_with_policy`` call site keeps working untouched.
+
+        IDLE LANE -> INLINE ENTRY. With nothing queued and nothing in flight, the sink is entered on
+        this stack. A sink that does not suspend (a list append, a log line, a coroutine with no real
+        await) therefore finishes exactly where it used to, on the same frame, costing not even a
+        scheduling turn — the old inline path, byte for byte. That matters beyond tidiness: a spare
+        `await` here is not free, it re-orders the single-flight judge lane against the frame loop.
+
+        SUSPENDED OR BACKLOGGED -> THE LANE. The moment a sink actually suspends, its awaitable is
+        handed to the drain task and the frame loop moves on; everything offered after that queues
+        behind it, so FIFO order across channels is preserved.
+        """
+        self.raise_if_fatal()
+        if not (self._items or self._entered or self._receipts or self._busy):
+            try:
+                result = item.fn(*item.args)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the run's sink_errors policy decides
+                await self._fail(item, exc)
+                self.raise_if_fatal()
+                return
+            if not inspect.isawaitable(result):
+                self.delivered += 1
+                return
+            # Entered and suspended: hand the running callback to the lane, on the un-droppable
+            # slot, and let the frame loop go.
+            self.start()
+            self._entered.append(replace(item, awaitable=result))
+            self._idle.clear()
+            self._wake.set()
+            self.raise_if_fatal()
+            return
+        self.start()
+        self.offer(item)
+        self.raise_if_fatal()
+
+    def _drop(self, item: _DeliveryItem) -> None:
+        reason = "delivery_queue_overflow"
+        self.dropped += 1
+        if item.awaitable is not None:
+            # A delivery that had already been entered and suspended: close the coroutine so it is
+            # torn down deterministically here rather than surfacing later as a never-awaited warning.
+            close = getattr(item.awaitable, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - teardown of an abandoned delivery
+                    pass
+        if self._stats is not None:
+            self._stats.deliveries_dropped += 1
+        incident_id = getattr(item.incident, "id", None)
+        if item.channel == "incident" and self._dead_letter is not None:
+            # Recoverable, not merely observable: an Incident evicted before delivery lands in the
+            # same dead-letter queue a terminally-failed webhook POST does, with its own reason.
+            try:
+                self._dead_letter.append(
+                    {
+                        "url": item.sink,
+                        "body_sha256": None,
+                        "error": f"dropped before delivery: {reason}",
+                        "attempts": 0,
+                        "reason": reason,
+                        "sink": item.sink,
+                        "channel": item.channel,
+                        "incident_id": incident_id,
+                    }
+                )
+            except Exception:  # noqa: BLE001 - a DLQ write must never break the frame loop
+                _log.warning("delivery_dead_letter_write_failed sink=%s", item.sink)
+        if len(self._receipts) == self._receipts.maxlen:
+            self.receipts_dropped += 1
+        self._receipts.append(
+            RuntimeHealthEvent(
+                "delivery_dropped",
+                data={
+                    "sink": item.sink,
+                    "channel": item.channel,
+                    "reason": reason,
+                    "incident_id": incident_id,
+                    "dead_lettered": item.channel == "incident" and self._dead_letter is not None,
+                    "queue_max": self.maxsize,
+                    "dropped_total": self.dropped,
+                    "receipts_dropped": self.receipts_dropped,
+                },
+            )
+        )
+        self._idle.clear()
+        self._wake.set()
+
+    def raise_if_fatal(self) -> None:
+        """Re-raise the first ``sink_errors='raise'`` failure the drain task latched."""
+        exc = self._fatal
+        if exc is not None:
+            self._fatal = None
+            raise exc
+
+    # ---- lane side (the only thing that calls a subscriber) ----------------------------------
+    def start(self) -> None:
+        if self._task is None and not self._closing:
+            self._task = asyncio.create_task(self._run())
+
+    async def _run(self) -> None:
+        while True:
+            while self._receipts:
+                await self._emit(self._receipts.popleft())
+            if self._entered or self._items:
+                item = (
+                    self._entered.popleft() if self._entered else self._items.popleft()
+                )
+                self._busy = True
+                try:
+                    await self._deliver_one(item)
+                finally:
+                    self._busy = False
+                continue
+            self._wake.clear()
+            self._idle.set()
+            if self._closing:
+                return
+            await self._wake.wait()
+
+    async def _deliver_one(self, item: _DeliveryItem) -> None:
+        try:
+            if item.awaitable is not None:
+                await item.awaitable  # already entered on the frame loop; just finish it
+            else:
+                result = item.fn(*item.args)
+                if inspect.isawaitable(result):
+                    await result
+            self.delivered += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the run's sink_errors policy decides, not us
+            await self._fail(item, exc)
+
+    async def _fail(self, item: _DeliveryItem, exc: BaseException) -> None:
+        """One failure policy for both entry points: count it, receipt it, latch a fail-loud raise."""
+        if self._stats is not None:
+            self._stats.sink_errors += 1
+        await self._emit(
+            RuntimeHealthEvent(
+                item.health_kind, data={"error": repr(exc), "sink": item.sink}
+            )
+        )
+        if item.errors != "ignore" and self._fatal is None:
+            self._fatal = exc
+
+    async def _emit(self, event: RuntimeHealthEvent) -> None:
+        if self._on_health is None:
+            return
+        try:
+            result = self._on_health(event)
+            if inspect.isawaitable(result):
+                await result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a receipt must never take the lane down
+            _log.warning("delivery_health_receipt_failed kind=%s error=%r", event.kind, exc)
+
+    # ---- lifecycle -------------------------------------------------------------------------
+    async def flush(self) -> None:
+        """Block until every queued delivery and receipt has been handed to its sink.
+
+        Unbounded on purpose: a sink that never returns held the run open before this change too
+        (it was awaited inline), so flushing here is not a new way to wedge — it is the same
+        promise, kept at end-of-source instead of per-frame.
+        """
+        if self._task is None and not (self._items or self._entered or self._receipts):
+            return
+        self.start()
+        while self._items or self._entered or self._receipts or self._busy:
+            self._idle.clear()
+            self._wake.set()
+            await self._idle.wait()
+
+    async def close(self) -> None:
+        """Drain the lane and retire the drain task, then re-raise a still-latched fail-loud error.
+
+        The re-raise matters at teardown specifically: the last two health events of a run
+        (``zero_admission_coverage``/``runtime_ended``) are emitted from the worker's ``finally``,
+        after the last place the frame loop could check. A subscriber that fails on those used to
+        take the run down from inside that ``finally``; latching it and dropping it here would have
+        quietly downgraded a fail-loud sink to a silent one.
+        """
+        await self.flush()
+        self._closing = True
+        self._wake.set()
+        task, self._task = self._task, None
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:  # pragma: no cover - shutdown race
+                pass
+        self.raise_if_fatal()
+
+
+class _SpooledSink:
+    """A sink CALLABLE that queues onto a :class:`_DeliverySpool` instead of running inline.
+
+    Drop-in for the raw ``on_incident`` / ``on_ask`` / ``on_frame`` / ``on_health`` callable: calling
+    it returns an awaitable (which is what every ``_call_sink`` / ``_call_sink_with_policy`` site
+    already handles), resolving once the payload is QUEUED and the lane has had one scheduling turn.
+    Wrapping happens OUTSIDE :class:`~percept.runtime.sinks.IdempotentSink`, so the idempotency
+    ledger still records a delivery only when the real sink actually completed — an evicted delivery
+    stays eligible for redelivery rather than being remembered as delivered.
+    """
+
+    def __init__(
+        self,
+        spool: _DeliverySpool,
+        sink: Callable,
+        *,
+        channel: str,
+        errors: str = "ignore",
+        health_kind: str = "sink_error",
+    ) -> None:
+        self._spool = spool
+        self._sink = sink
+        self._channel = channel
+        self._errors = errors
+        self._health_kind = health_kind
+        self.name = _sink_name(sink)
+
+    def __call__(self, *args) -> Any:
+        return self._spool.deliver(
+            _DeliveryItem(
+                fn=self._sink,
+                args=args,
+                channel=self._channel,
+                sink=self.name,
+                errors=self._errors,
+                health_kind=self._health_kind,
+                incident=args[0] if self._channel == "incident" and args else None,
+            )
+        )
+
+
+def _unwrap_sink(sink: Any) -> Any:
+    """The innermost user sink behind the delivery wrappers (``IdempotentSink``/``SupersessionSink``
+    both keep theirs on ``_sink``). Depth-bounded so a cyclic wrapper cannot spin."""
+    inner = sink
+    for _ in range(8):
+        nxt = getattr(inner, "_sink", None)
+        if nxt is None:
+            return inner
+        inner = nxt
+    return inner
+
+
+def _sink_name(sink: Any) -> str:
+    """The name a drop receipt reports. Never a wrapper's name — the operator needs THEIR sink."""
+    inner = _unwrap_sink(sink)
+    return getattr(inner, "__name__", None) or type(inner).__name__
+
+
+def _sink_dead_letter(sink: Any) -> Any:
+    """The sink's own dead-letter queue (``WebhookSink(dead_letter=...)``), or ``None``.
+
+    Preferred over a runtime-private queue so an evicted delivery lands where the operator is
+    already looking for failed ones.
+    """
+    dlq = getattr(_unwrap_sink(sink), "dead_letter", None)
+    return dlq if callable(getattr(dlq, "append", None)) else None
 
 
 @dataclass(frozen=True)
@@ -2238,6 +2632,165 @@ class _JudgeScheduler:
 _ProviderScheduler = _JudgeScheduler
 
 
+class _ObservationLane:
+    """Single-flight, latest-pending transport lane for the OBSERVATION provider call.
+
+    THE DEFECT THIS CLOSES. Split-protocol judging makes TWO provider round trips per admitted
+    frame: an observation/detection call, then the judgment. ``judge_dispatch="async"`` moved the
+    second one off the frame loop and left the first one inline — ``_prepare_split_jobs`` awaited
+    ``core.dispatch_observation_candidate(...)`` on the loop, in the very mode whose promise is that
+    provider latency does not become capture latency.
+
+    THE SHAPE is the one :class:`_JudgeScheduler` already uses, because the observation protocol was
+    built for it: ``prepare``/``launch``/``reduce`` are owner-only and synchronous, only ``dispatch``
+    is the provider await, and ``reduce_observation_completion`` already carries a ``stale_reason``
+    for a completion that outlived its goals revision or source generation. So the lane owns exactly
+    one thing — the dispatch task — while every owner phase stays where it was, on the frame loop.
+
+    BOUNDED, and traced when the bound bites: one in flight plus one latest-pending. A newer
+    admission replacing the pending one emits ``observation_superseded``; a completion the owner
+    rejects at reduce time emits ``observation_stale``. Neither is a silent drop. The single-flight
+    bound is not a new invention either — ``launch_observation_candidate`` already refuses a second
+    launch on the same source while one is outstanding.
+    """
+
+    def __init__(self, core: Any, source: str, stats: "RuntimeStats | None" = None) -> None:
+        self._core = core
+        self._source = source
+        self._stats = stats
+        self._active: asyncio.Task | None = None
+        self._active_meta: tuple | None = None  # (t, goal_ids, temporal_window)
+        self._pending: tuple | None = None      # (t, frame, goal_ids, revision, temporal_window)
+        self._results: deque = deque()
+        self._trace: list[tuple[str, dict]] = []
+        self._fatal: BaseException | None = None
+        self._closing = False
+
+    @property
+    def active(self) -> int:
+        return int(self._active is not None)
+
+    @property
+    def pending(self) -> int:
+        return 0 if self._pending is None else 1
+
+    def submit(self, t: float, frame: Any, goal_ids: tuple, revision: Any, temporal_window: tuple) -> bool:
+        """Accept one admitted frame for observation. Never awaits, never blocks the caller."""
+        if self._closing or self._fatal is not None:
+            return False
+        if self._active is None:
+            return self._launch(t, frame, goal_ids, revision, temporal_window)
+        if self._pending is not None:
+            dropped_t, _frame, dropped_goals, _rev, _win = self._pending
+            if self._stats is not None:
+                self._stats.observations_superseded += 1
+            self._trace.append(
+                (
+                    "observation_superseded",
+                    {
+                        "source": self._source,
+                        "reason": "superseded_by_newer_admission",
+                        "dropped_t": dropped_t,
+                        "admitted_t": t,
+                        "goal_ids": tuple(dropped_goals),
+                        "slot": "pending",
+                    },
+                )
+            )
+        self._pending = (t, frame, tuple(goal_ids), revision, temporal_window)
+        return True
+
+    def _launch(self, t, frame, goal_ids, revision, temporal_window) -> bool:
+        candidate = self._core.prepare_observation_candidate(
+            frame,
+            self._source,
+            t=t,
+            expected_goals_revision=revision,
+            expected_source_generation=self._core.source_continuity_generation(self._source),
+            goal_ids=goal_ids,
+        )
+        if candidate is None or not self._core.launch_observation_candidate(
+            candidate, runtime_trace=True
+        ):
+            return False
+        self._active_meta = (t, tuple(goal_ids), temporal_window)
+        self._active = asyncio.create_task(
+            self._core.dispatch_observation_candidate(candidate)
+        )
+        self._active.add_done_callback(self._on_done)
+        return True
+
+    def _on_done(self, task: "asyncio.Task") -> None:
+        meta, self._active_meta, self._active = self._active_meta, None, None
+        if task.cancelled():
+            if not self._closing:
+                self._launch_pending()
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._fatal = exc  # never launch pending behind a provider failure
+            self._pending = None
+            return
+        if meta is not None:
+            t, goal_ids, temporal_window = meta
+            self._results.append((t, task.result(), goal_ids, temporal_window))
+        if not self._closing:
+            self._launch_pending()
+
+    def _launch_pending(self) -> None:
+        if self._pending is None:
+            return
+        t, frame, goal_ids, revision, temporal_window = self._pending
+        self._pending = None
+        if not self._launch(t, frame, goal_ids, revision, temporal_window):
+            # The owner refused the launch (goals moved, source generation advanced, adapter
+            # rebound). Traced, never a silent disappearance.
+            self._trace.append(
+                (
+                    "observation_stale",
+                    {
+                        "source": self._source,
+                        "reason": "not_launchable",
+                        "dropped_t": t,
+                        "goal_ids": tuple(goal_ids),
+                        "slot": "pending",
+                    },
+                )
+            )
+
+    def drain(self) -> tuple:
+        """Hand back every finished observation. Re-raises a held provider failure, fail-loud."""
+        if self._fatal is not None:
+            exc, self._fatal = self._fatal, None
+            raise exc
+        out = tuple(self._results)
+        self._results.clear()
+        return out
+
+    def drain_trace(self) -> list[tuple[str, dict]]:
+        rows, self._trace = self._trace, []
+        return rows
+
+    async def flush(self) -> None:
+        """Await the in-flight dispatch (and the one it may launch behind it) to quiescence."""
+        while self._fatal is None and self._active is not None:
+            task = self._active
+            await asyncio.wait({task})
+            await asyncio.sleep(0)  # let the done-callback run before re-reading _active
+
+    async def close(self) -> None:
+        """Stop accepting work and cancel anything still in flight (shutdown / consumer break)."""
+        self._closing = True
+        self._pending = None
+        task, self._active = self._active, None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - teardown
+                pass
+
+
 # Per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
 # clock; a divergence past the path's tolerance means the two timelines have come apart (a live source
 # left on "media", or a wedged pump replaying stale timestamps). Per-path because the two capture queues
@@ -3506,6 +4059,9 @@ async def _run_worker(
     on_trace: Callable | None = None,
     fps: float = 4.0,
     source_queue_size: int = 64,
+    delivery_queue_size: int = _DELIVERY_QUEUE_MAX,
+    delivery_dead_letter: Any = None,
+    observation_dispatch: str = "inline",
     source_reconnects: int = 0,
     source_reconnect_backoff_s: float = 0.5,
     source_rtsp_tcp: bool = True,
@@ -3595,6 +4151,41 @@ async def _run_worker(
       ``stats.preroll_frames_dropped`` — a shorter snippet, announced, never silently shorter.
     - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
     - ``sink_errors`` — ``"raise"`` (default) or ``"ignore"`` for notification/feed hook failures.
+    - ``delivery_queue_size`` — depth of the BOUNDED DELIVERY LANE every notification sink
+      (``on_incident``/``on_ask``/``on_frame``/``on_health``) now goes through instead of being
+      awaited inline in the frame loop. Delivery is not on the perception critical path: a slow or
+      dead subscriber no longer stalls gate evaluation, the audio pump, or decode consumption, and no
+      longer makes the capture queue shed frames on its behalf. Default 64 — deliberately the same
+      depth as ``source_queue_size``, i.e. one capture queue's worth of pending subscriber work. A
+      sink that falls further behind loses its OLDEST pending delivery, which emits a typed
+      ``delivery_dropped`` health event NAMING THE SINK and bumps ``stats.deliveries_dropped``.
+      A sink that does not actually suspend still completes before the loop advances, so ordering is
+      unchanged for the ordinary case.
+    - ``observation_dispatch`` — the split protocol makes TWO provider round trips per admitted
+      frame: an observation/detection call, then the judgment. ``judge_dispatch="async"`` takes only
+      the second off the frame loop; ``_prepare_split_jobs`` still awaits the DETECTOR at the admit
+      site, so a slow detector stalls capture in the very mode whose promise is that provider latency
+      does not. ``"async"`` here puts that call on its own single-flight
+      :class:`_ObservationLane` (one in flight + one latest-pending, the shape ``_JudgeScheduler``
+      already uses and the observation protocol was built for), so neither provider call is awaited
+      on the loop; a pending observation replaced by a newer admission traces
+      ``observation_superseded`` and bumps ``stats.observations_superseded``, and a completion the
+      owner refuses at reduce time traces ``observation_stale``. Requires
+      ``judge_dispatch="async"`` (inline mode awaits both providers on purpose).
+
+      DEFAULT ``"inline"``, deliberately, and this is a decision someone has to make rather than a
+      preference: scheduling the detector changes the frame loop's await structure, which re-prices
+      how often the single-flight judge lane supersedes a pending judgment — on the shipped
+      native-video fixture it moves ``judge_calls`` 2->3, ``judge_superseded`` 1->0 and, through the
+      occurrence fold, ``fires`` 2->1. That is a cognition-side consequence
+      (occurrence/overlap suppression), not a runtime one, so flipping the default is not this
+      seam's call to make. The mechanism ships enabled-on-request; the default stays byte-for-byte.
+    - ``delivery_dead_letter`` — where an Incident evicted by that bound is recorded. A frame or a
+      health event is best-effort; an Incident is the product, so it is never merely counted. Default
+      ``None`` → the incident sink's own dead-letter queue when it has one (a
+      :class:`~percept.runtime.sinks.WebhookSink` does), else a runtime-private
+      :class:`~percept.runtime.sinks.BoundedDeadLetterQueue`. Records carry ``incident_id``,
+      ``sink`` and ``reason="delivery_queue_overflow"``. Pass any object with ``.append(record)``.
     - ``stats`` — optional mutable :class:`RuntimeStats` counters for health dashboards.
     - ``audio_source`` — optional mic/wav/video-container URI (``"mic:0"``, ``"clip.wav"``,
       ``"clip.mp4"``) **or** an (async) iterable of ``(t, chunk, energy)`` (see
@@ -3865,6 +4456,37 @@ async def _run_worker(
         previous_trace = getattr(core, "on_trace", None)
         if on_trace is not None:
             core.on_trace = on_trace
+        # Same defect, same fix, on the audio-only lane: a slow subscriber must not stall the audio
+        # pump either. This branch returns before the video path's wiring below, so it builds its own
+        # bounded delivery lane over the same class.
+        _audio_only_dlq = delivery_dead_letter
+        if _audio_only_dlq is None and on_incident is not None:
+            _audio_only_dlq = _sink_dead_letter(on_incident)
+        if _audio_only_dlq is None:
+            from percept.runtime.sinks import BoundedDeadLetterQueue
+
+            _audio_only_dlq = BoundedDeadLetterQueue()
+        _audio_only_spool = _DeliverySpool(
+            on_health=on_health,
+            stats=stats,
+            dead_letter=_audio_only_dlq,
+            maxsize=delivery_queue_size,
+        )
+        if on_incident is not None:
+            on_incident = _SpooledSink(
+                _audio_only_spool, on_incident, channel="incident",
+                errors=sink_errors, health_kind="incident_sink_error",
+            )
+        if on_ask is not None:
+            on_ask = _SpooledSink(
+                _audio_only_spool, on_ask, channel="ask",
+                errors=sink_errors, health_kind="ask_sink_error",
+            )
+        if on_health is not None:
+            on_health = _SpooledSink(
+                _audio_only_spool, on_health, channel="health",
+                errors="raise", health_kind="health_sink_error",
+            )
         try:
             async for incident in _run_audio_only(
                 core,
@@ -3896,6 +4518,7 @@ async def _run_worker(
                 yield incident
         finally:
             core.on_trace = previous_trace
+            await _audio_only_spool.close()
         return
 
     settings = getattr(core, "settings", None) or load_settings()
@@ -4093,6 +4716,24 @@ async def _run_worker(
         )
         if judge_dispatch == "async" else None
     )
+    # The OBSERVATION provider call rides its own single-flight lane when asked to, so "async
+    # dispatch" can mean what it says: neither of the split protocol's two provider round trips
+    # awaited on the frame loop. OPT-IN (see ``observation_dispatch`` in run's docstring) — the
+    # default keeps the detector inline, byte-for-byte.
+    if observation_dispatch not in ("inline", "async"):
+        raise ValueError(
+            "observation_dispatch must be 'inline' or 'async', got "
+            f"{observation_dispatch!r}"
+        )
+    _obs_lane = (
+        _ObservationLane(core, gate_source, _cov)
+        if judge_dispatch == "async" and observation_dispatch == "async"
+        else None
+    )
+    # Owner-side observation traces (a completion the reducer refused as stale), queued by the
+    # synchronous reduce and drained on the frame cadence — the same pattern the judge/gate health
+    # queues already use, so a refusal is never discovered as a fire that simply never came.
+    _observation_health: list[tuple[str, dict]] = []
     _audio_judge_sched = None
     # The standard telemetry funnel (seen->gated->judged->refused->fired,
     # percept.observability.Funnel), bound to THIS core's Metrics when it exposes one (the Percept
@@ -4147,6 +4788,50 @@ async def _run_worker(
             pass
     if on_incident is not None:
         on_incident = IdempotentSink(on_incident, _idem_ledger, clock=wall_clock)
+
+    # DELIVERY OFF THE PERCEPTION CRITICAL PATH. Every notification sink now goes through one
+    # bounded, drop-oldest, receipted lane (:class:`_DeliverySpool`) instead of being awaited inline
+    # in the frame loop. The wrappers below are the ONLY wiring needed: `_SpooledSink` is callable
+    # and returns an awaitable, so every existing `_call_sink` / `_call_sink_with_policy` site keeps
+    # working unchanged. Wrapping happens AFTER the IdempotentSink above so the ledger still records
+    # only real deliveries. Dead-letter target: the caller's explicit queue, else the incident sink's
+    # own (a WebhookSink already has one), else a runtime-private bounded queue — an evicted Incident
+    # is always recorded somewhere, and always receipted through on_health regardless.
+    _delivery_dlq = delivery_dead_letter
+    if _delivery_dlq is None and on_incident is not None:
+        _delivery_dlq = _sink_dead_letter(on_incident)
+    if _delivery_dlq is None:
+        from percept.runtime.sinks import BoundedDeadLetterQueue
+
+        _delivery_dlq = BoundedDeadLetterQueue()
+    _spool = _DeliverySpool(
+        on_health=on_health,
+        stats=_cov,
+        dead_letter=_delivery_dlq,
+        maxsize=delivery_queue_size,
+    )
+    if on_incident is not None:
+        on_incident = _SpooledSink(
+            _spool, on_incident, channel="incident",
+            errors=sink_errors, health_kind="incident_sink_error",
+        )
+    if on_ask is not None:
+        on_ask = _SpooledSink(
+            _spool, on_ask, channel="ask",
+            errors=sink_errors, health_kind="ask_sink_error",
+        )
+    if on_frame is not None:
+        on_frame = _SpooledSink(
+            _spool, on_frame, channel="frame",
+            errors=sink_errors, health_kind="frame_sink_error",
+        )
+    if on_health is not None:
+        # `on_health` was never covered by `sink_errors` — a raising health hook took the run down.
+        # Preserved: errors="raise" latches it and the frame loop re-raises at its next sink call.
+        on_health = _SpooledSink(
+            _spool, on_health, channel="health",
+            errors="raise", health_kind="health_sink_error",
+        )
 
     def _require_source_scoped_callbacks() -> None:
         """Reject a legacy duck core before it can spend or mutate across source boundaries."""
@@ -5969,6 +6654,11 @@ async def _run_worker(
             ``prepare_transition_judgment`` and ``prepare_process_judgment``
             are reached through ``prepare_judgment``; provider dispatch and
             ``reduce_judgment_completion`` remain separate owner phases.
+
+            INLINE MODE ONLY. ``judge_dispatch="async"`` schedules the same
+            work through :class:`_ObservationLane` instead of awaiting the
+            detector here; awaiting a provider on the frame loop is what
+            ``"inline"`` means and the only thing it is still kept for.
             """
             generation = core.source_continuity_generation(gate_source)
             candidate = core.prepare_observation_candidate(
@@ -5985,13 +6675,37 @@ async def _run_worker(
             ):
                 return ()
             observation = await core.dispatch_observation_candidate(candidate)
-            reduction = core.reduce_observation_completion(observation)
+            return _jobs_from_observation(
+                observation, goal_ids, tuple(clips.frames())
+            )
+
+        def _jobs_from_observation(completion, goal_ids, temporal_window):
+            """Owner phase: reduce one observation completion into prepared judgment jobs.
+
+            Synchronous and owner-only by construction, so it runs on the frame loop in BOTH
+            dispatch modes — inline right after the awaited dispatch, or in the next tick's drain
+            when :class:`_ObservationLane` carried the dispatch off the loop.
+            """
+            reduction = core.reduce_observation_completion(completion)
             if reduction.failure is not None:
                 raise RuntimeError(
                     "observation provider failed: "
                     f"{reduction.failure.exception_type}"
                 )
             if reduction.stale_reason is not None:
+                # The owner refused a completion that outlived its admission. TRACED, not silent —
+                # the inline path could only ever have discarded it without a word.
+                _observation_health.append(
+                    (
+                        "observation_stale",
+                        {
+                            "source": gate_source,
+                            "reason": reduction.stale_reason,
+                            "goal_ids": tuple(goal_ids),
+                            "slot": "active",
+                        },
+                    )
+                )
                 return ()
             return tuple(
                 job
@@ -6000,11 +6714,32 @@ async def _run_worker(
                     job := core.prepare_judgment(
                         reduction,
                         goal_id=goal_id,
-                        temporal_window=tuple(clips.frames()),
+                        temporal_window=temporal_window,
                     )
                 )
                 is not None
             )
+
+        async def _drain_observation_lane(at):
+            """Owner phase for the observation lane: surface its traces, then hand every finished
+            observation's prepared jobs to the judge lane. Runs on the frame loop, every tick."""
+            if _obs_lane is None:
+                return
+            for _hk, _hd in _obs_lane.drain_trace():
+                if on_health is not None:
+                    await _call_sink(
+                        on_health, RuntimeHealthEvent(_hk, ts=at, data=_hd)
+                    )
+            for _ot, _completion, _goal_ids, _window in _obs_lane.drain():
+                jobs = _jobs_from_observation(_completion, _goal_ids, _window)
+                if jobs and _judge_sched is not None:
+                    _judge_sched.submit(_ot, jobs)
+            while _observation_health:
+                _hk, _hd = _observation_health.pop(0)
+                if on_health is not None:
+                    await _call_sink(
+                        on_health, RuntimeHealthEvent(_hk, ts=at, data=_hd)
+                    )
 
         async def _emit_judgment_completions(
             completions,
@@ -6228,6 +6963,9 @@ async def _run_worker(
             # (incident.ts is the admitting frame, not the completion time). drain() also re-raises a
             # held judge failure here, so the fail-loud runtime_error path below is preserved. Runs
             # FIRST (before the paused check): these judgments were spent before any pause.
+            # Observation completions land first: an admission whose detection finished between
+            # ticks becomes a judge job on THIS tick rather than waiting for the next admission.
+            await _drain_observation_lane(t)
             if _judge_sched is not None:
                 # ADR-001 §9: surface every TRACED bound-driven drop (superseded / revision-dropped
                 # pending) as its own health event BEFORE draining results, so a drop is observable
@@ -6883,7 +7621,30 @@ async def _run_worker(
                     async for incident in _emit_fires(fires, at=t):
                         yield incident
             if _judge_sched is not None:
-                if ordinary_goal_ids:
+                if ordinary_goal_ids and _obs_lane is not None:
+                    # observation_dispatch="async": SCHEDULED, not awaited. The observation provider
+                    # call goes to its own lane and the loop takes its next tick immediately. The
+                    # temporal window is captured HERE, at admission, so a completion reduced a tick
+                    # later still carries the evidence the admitting frame saw, not a later one's.
+                    _obs_lane.submit(
+                        t,
+                        judge_frame,
+                        ordinary_goal_ids,
+                        goals_revision,
+                        tuple(clips.frames()),
+                    )
+                    # Two turns per lane: one for the task, one for its completion callback. Then
+                    # reduce whatever the observation lane settled and give the judgment it
+                    # submitted the same courtesy — the within-tick settling the inline-awaited
+                    # version got for free, now without the loop waiting on either provider.
+                    await asyncio.sleep(0)
+                    await asyncio.sleep(0)
+                    await _drain_observation_lane(t)
+                    await asyncio.sleep(0)
+                    await asyncio.sleep(0)
+                elif ordinary_goal_ids:
+                    # observation_dispatch="inline" (the default): the detector is awaited at the
+                    # admit site, byte-for-byte the historical loop.
                     jobs = await _prepare_split_jobs(
                         judge_frame,
                         ordinary_goal_ids,
@@ -6944,6 +7705,40 @@ async def _run_worker(
                 pass
         await _drain_owner_commands()
         await asyncio.sleep(0)
+        # Source exhausted: the observation lane may still hold an in-flight detection (and one
+        # pending behind it) whose judgments have not been submitted yet. Flush it to quiescence
+        # FIRST, so its jobs are in the judge lane before the judge lanes below are flushed — a
+        # finite stream must not lose the last admitted frame's fire to lane ordering. Bounded by
+        # the same end-of-stream deadline the judge lanes use; expiry is a LOUD event, not a hang.
+        if _obs_lane is not None:
+            _obs_eos_timeout_s = max(0.01, float(judge_stall_after_s))
+            try:
+                async def _flush_observation_lane():
+                    while _obs_lane.active or _obs_lane.pending:
+                        await _obs_lane.flush()
+                        await _drain_observation_lane(_last_t)
+
+                await asyncio.wait_for(
+                    _flush_observation_lane(), timeout=_obs_eos_timeout_s
+                )
+            except (TimeoutError, asyncio.TimeoutError):
+                if on_health is not None:
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "observation_eos_timeout",
+                            ts=_last_t,
+                            data={
+                                "lane": "observation",
+                                "reason": "end_of_stream_deadline",
+                                "active": _obs_lane.active,
+                                "pending": _obs_lane.pending,
+                            },
+                        ),
+                    )
+                await _obs_lane.close()
+            else:
+                await _drain_observation_lane(_last_t)
         for goal_id, synchronizer in (_fused_syncs or {}).items():
             for final_bundle in synchronizer.close():
                 _queue_fused_bundle(goal_id, final_bundle)
@@ -7134,6 +7929,12 @@ async def _run_worker(
         # otherwise die with the queue — drain once more so a finite stream reports every suppression
         # it earned, not all-but-the-final-tick's.
         await _drain_gate_health(core, on_health, _last_t)
+        # End of source: hand every still-queued delivery to its sink before the run reports done,
+        # so a finite stream's subscribers see exactly what an inline-awaited run showed them. Then
+        # re-raise a latched sink_errors="raise" failure HERE, inside the try, so it takes the same
+        # fail-loud `runtime_error` path an inline raise always took.
+        await _spool.flush()
+        _spool.raise_if_fatal()
     except Exception as exc:
         if _fused_syncs:
             _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
@@ -7150,6 +7951,8 @@ async def _run_worker(
         # Async judge dispatch: never start new work past this point; cancel an in-flight judgment and
         # swallow its CancelledError (live shutdown / consumer break / cancellation). The normal
         # end-of-source path already flushed to quiescence above, so this is a no-op there.
+        if _obs_lane is not None:
+            await _obs_lane.close()
         if _judge_sched is not None:
             await _judge_sched.close(drain=False)
         if _audio_judge_sched is not None:
@@ -7224,6 +8027,11 @@ async def _run_worker(
                 _zero["floor_unmet"] = coverage_floor is not None and _cov.escalations < coverage_floor
                 await _call_sink(on_health, RuntimeHealthEvent("zero_admission_coverage", data=_zero))
             await _call_sink(on_health, RuntimeHealthEvent("runtime_ended", data=_cov_data))
+        # LAST: the teardown health events above are themselves queued on the lane, so the lane is
+        # drained and its drain task retired only once nothing else will be offered. Runs on every
+        # exit path (end of source, worker error, consumer break) — a subscriber never loses a
+        # delivery to shutdown.
+        await _spool.close()
 
 
 @_exclusive_core_runtime
@@ -7243,6 +8051,9 @@ async def run(
     interest_session_id: str | None = None,
     fps: float = 4.0,
     source_queue_size: int = 64,
+    delivery_queue_size: int = _DELIVERY_QUEUE_MAX,
+    delivery_dead_letter: Any = None,
+    observation_dispatch: str = "inline",
     source_reconnects: int = 0,
     source_reconnect_backoff_s: float = 0.5,
     source_rtsp_tcp: bool = True,
