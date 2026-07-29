@@ -31,6 +31,14 @@ from pathlib import Path
 #: :class:`ReservedContextKeyError`.
 JUDGE_STATIC_CONTEXT_KEY = "judge_static_context"
 
+#: Reserved key under which the concern's currently OPEN episode is injected into a judge call's
+#: context. Its value is the bounded, pixel-free text built by
+#: :func:`percept.episode_memory.episode_context_text`, so the judge is told what it already
+#: established about this episode instead of re-deciding it from one frame with no memory.
+#: Like :data:`JUDGE_STATIC_CONTEXT_KEY`, a caller-supplied context already carrying this key is a
+#: bug — see :class:`ReservedContextKeyError`.
+JUDGE_OPEN_EPISODE_KEY = "judge_open_episode"
+
 #: Default upper bound on artifact size. Static judge context is small by design; a large blob is a
 #: configuration mistake, not a valid artifact.
 DEFAULT_MAX_BYTES = 1_048_576
@@ -67,10 +75,11 @@ class JudgeContextStoreError(JudgeContextError):
 
 
 class ReservedContextKeyError(JudgeContextError):
-    """A caller's context already contains :data:`JUDGE_STATIC_CONTEXT_KEY`.
+    """A caller's context already contains one of this module's reserved keys
+    (:data:`JUDGE_STATIC_CONTEXT_KEY`, :data:`JUDGE_OPEN_EPISODE_KEY`).
 
-    Defined here so the reserved key and the error that guards it have a single home; raised by the
-    later injection step, not by this module's store.
+    Defined here so the reserved keys and the error that guards them have a single home; raised by
+    the later injection step, not by this module's store.
     """
 
 

@@ -22,10 +22,21 @@ PRODUCTIZES that mechanism as a standalone, named judge mode:
   * ``episode_memory_enabled`` — reads an opt-in ``goal.state["judge_mode"]`` flag, the seam a future
     ``WatchProfile`` can set to select this mode per (environment, goal-type, state).
 
-Additive only: this module does not import or modify ``agent.py``, ``gate.py``, ``concern.py``, or any
-backend — the existing single-frame and window judge paths are byte-for-byte unchanged. Wiring this
-mode into the live ``perceive_judged`` loop (so a WatchProfile's choice actually takes effect on the
-hot path) and registering it with the swappable judge seam are follow-up work — out of scope here.
+The OTHER half of the memory — and the half that IS live
+--------------------------------------------------------
+The running answer above carries what the MODEL said. What the SYSTEM already established lives in
+the concern's :class:`~percept.episodes.EpisodeLog`, and until the producer below existed nothing
+ever put it into a model call: a concern could hold an open episode for hours while the judge
+re-answered "is it still there?" every tick from a single frame, with no memory of ever having seen
+the thing. ``episode_judge_context`` / ``with_open_episode`` serialize that open episode under the
+reserved :data:`~percept.judge_context.JUDGE_OPEN_EPISODE_KEY`, and ``agent.py``'s judge dispatch
+site calls them on every judged tick. A goal with no open episode gets no key and is byte-for-byte
+unchanged, so this is inert for every concern that does not own episodes.
+
+The judge-MODE half above remains off by default: selecting it per (environment, goal-type, state)
+from a ``WatchProfile`` and registering it with the swappable judge seam are still follow-up work.
+``gate.py`` is untouched either way — nothing in this module decides anything, it only tells the
+judge what is already known.
 """
 
 from __future__ import annotations
@@ -35,6 +46,13 @@ from typing import Any
 
 from .adapters import Goal, Verdict
 from .concern import resolution_ready
+from .episodes import (
+    JUDGE_CONTEXT_MAX_REVISIONS,
+    JUDGE_CONTEXT_MAX_VALUE_CHARS,
+    Episode,
+    EpisodeLog,
+)
+from .judge_context import JUDGE_OPEN_EPISODE_KEY, ReservedContextKeyError
 
 # The plan_mode/config value a WatchProfile will set to select this judge mode (future). A goal
 # that never sets ``judge_mode`` is untouched by this module — no behavior changes by default.
@@ -115,6 +133,139 @@ class EpisodeMemoryStore:
         return len(self._states)
 
 
+# ==================================================================================================
+# THE OPEN EPISODE, AS THE JUDGE SEES IT
+# ==================================================================================================
+#
+# The running answer above threads what the MODEL said. This half threads what the SYSTEM already
+# established: when a concern has an open episode, the judge should be told about it instead of
+# re-deciding "is the bag still there?" from a single frame with no memory of ever having seen it.
+#
+# The serialized form is deliberately a fixed-size TEXT, not the episode object:
+#
+#   * pixel-free — built from :meth:`percept.episodes.Episode.to_judge_dict`, which drops the
+#     ``exemplar``/``representative`` payloads outright;
+#   * constant-size — an episode confirmed 400 times serializes to the same length as one confirmed
+#     twice (confirmations coalesce into scalars, and the timeline contributes at most
+#     ``JUDGE_CONTEXT_MAX_REVISIONS`` rows), and a concern holding many open episodes contributes ONE
+#     of them plus a count, never a list;
+#   * text — every shipped judge adapter already surfaces an unrecognized context key to the model as
+#     a structured fact, so a string reaches the prompt on all of them with no per-backend prompt
+#     work. The same property is what makes the static-context key work.
+
+#: Hard ceiling on the whole serialized episode, applied last, after every per-field bound. A
+#: backstop: with the field bounds in place the text lands well under this, so reaching it means a
+#: caller-owned value was pathological, and clipping is the right answer.
+EPISODE_CONTEXT_MAX_CHARS = 1024
+
+#: What the text says when the timeline had to be truncated / other episodes were left out. Named so
+#: the omission is legible to the model rather than looking like the whole story.
+_TRUNCATION_MARK = "…"
+
+
+def open_episode_of(log: "EpisodeLog | None") -> "Episode | None":
+    """The open episode a judge call should be told about, or ``None``.
+
+    Thin, total wrapper over :meth:`percept.episodes.EpisodeLog.current_open` that also accepts
+    ``None`` (a goal with no episode log at all — the common case), so a call site can ask without
+    first proving the concern is episode-owning."""
+    if log is None:
+        return None
+    return log.current_open()
+
+
+def _fmt_t(t: Any) -> str:
+    """Stream time, to milliseconds. Fixed width for a given magnitude, so it cannot drive growth."""
+    try:
+        return f"{float(t):.3f}"
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def episode_context_text(
+    episode: "Episode",
+    *,
+    other_open: int = 0,
+    max_revisions: int = JUDGE_CONTEXT_MAX_REVISIONS,
+    max_value_chars: int = JUDGE_CONTEXT_MAX_VALUE_CHARS,
+    max_chars: int = EPISODE_CONTEXT_MAX_CHARS,
+) -> str:
+    """Serialize ONE open episode into the bounded, pixel-free text a judge call carries.
+
+    Reads only :meth:`percept.episodes.Episode.to_judge_dict`, so the payload-stripping and the
+    per-field bounds live in one place and this function cannot reintroduce pixels by reaching for a
+    field directly. ``other_open`` is how many further open episodes this concern holds and were
+    deliberately NOT serialized — reported as a count so the judge knows the view is partial while
+    the size stays constant.
+
+    No ``;`` is emitted: adapters join context entries with ``"; "``, and a semicolon inside the
+    value would read as the start of a different fact.
+    """
+    d = episode.to_judge_dict(max_revisions=max_revisions, max_value_chars=max_value_chars)
+    subject = d["subject_key"] or "unidentified subject"
+    parts = [
+        f"you are continuing an already-established episode ({d['status']}) about {subject}",
+        f"first seen at t={_fmt_t(d['started_at'])}",
+        f"last seen at t={_fmt_t(d['last_seen'])}",
+        f"confirmed across {d['observations']} observations",
+    ]
+    if d["last_confirmed"] is not None:
+        parts.append(f"last confirmed at t={_fmt_t(d['last_confirmed'])}")
+    if d["value"] is not None:
+        parts.append(f"established finding: {d['value']}")
+    if d["incident_id"] is not None:
+        parts.append(f"already reported as incident {d['incident_id']}")
+    if d["revisions"]:
+        rows = ", ".join(
+            f"{r['kind']}@t={_fmt_t(r['t'])}"
+            + (f" ({r['value']})" if r["value"] is not None else "")
+            for r in d["revisions"]
+        )
+        omitted = d["revisions_omitted"]
+        prefix = f"{_TRUNCATION_MARK} " if omitted else ""
+        label = (
+            f"most recent {len(d['revisions'])} of {len(d['revisions']) + omitted} changes"
+            if omitted else "changes"
+        )
+        parts.append(f"{label}: {prefix}{rows}")
+    if other_open > 0:
+        parts.append(f"{other_open} other open episode(s) not shown")
+    text = ", ".join(parts).replace(";", ",")
+    if len(text) > max_chars:
+        text = text[: max(0, max_chars - 1)] + _TRUNCATION_MARK
+    return text
+
+
+def episode_judge_context(log: "EpisodeLog | None", **kwargs: Any) -> "str | None":
+    """The judge-context text for whatever this log currently holds open, or ``None``.
+
+    ``None`` — not an empty string — when the concern has no open episode, so a call site can use it
+    directly as "is there anything to inject?" and a goal with nothing open is byte-for-byte
+    unchanged."""
+    episode = open_episode_of(log)
+    if episode is None:
+        return None
+    other_open = max(0, len(log.open_episodes()) - 1) if log is not None else 0
+    return episode_context_text(episode, other_open=other_open, **kwargs)
+
+
+def with_open_episode(context: "dict | None", text: str) -> dict:
+    """Return a COPY of ``context`` carrying ``text`` under :data:`JUDGE_OPEN_EPISODE_KEY`.
+
+    Never mutates the caller's dict, and refuses to inject over a caller-supplied value for the
+    reserved key (:class:`~percept.judge_context.ReservedContextKeyError`) — the same contract the
+    static-context key already has, for the same reason: two different meanings arriving under one
+    key is a bug that must be loud, not a silent overwrite."""
+    if context is not None and JUDGE_OPEN_EPISODE_KEY in context:
+        raise ReservedContextKeyError(
+            f"judge context already carries the reserved key {JUDGE_OPEN_EPISODE_KEY!r}; "
+            "the concern's open episode cannot be injected over it"
+        )
+    merged = dict(context) if context else {}
+    merged[JUDGE_OPEN_EPISODE_KEY] = text
+    return merged
+
+
 async def judge_episode_memory(
     vision: Any,
     goal: Goal,
@@ -125,6 +276,7 @@ async def judge_episode_memory(
     roi: Any = None,
     exemplar: Any = None,
     corrections: dict | None = None,
+    episode_log: "EpisodeLog | None" = None,
 ) -> Verdict:
     """One episode-memory judge step: the next precision/recall lever after the ordered window.
 
@@ -137,13 +289,22 @@ async def judge_episode_memory(
     is the productization step over the raw per-frame ``running_answer`` plumbing.
 
     A parse miss (the backend returns no new ``running_answer``) is a no-op on the state — the prior
-    answer (and its accumulated coverage) is preserved, never regressed."""
+    answer (and its accumulated coverage) is preserved, never regressed.
+
+    ``episode_log`` is optional and, when given, adds the concern's currently open episode under
+    :data:`~percept.judge_context.JUDGE_OPEN_EPISODE_KEY` — so this path threads BOTH halves of the
+    memory: what the model said last (the running answer) and what the system already established
+    (the episode). Omitted, or with nothing open, the call is byte-for-byte the prior one."""
     state = store.get(goal.id)
     prior = state.running_answer
+    context: dict = {"process_qa": True, "running_answer": prior}
+    episode_text = episode_judge_context(episode_log)
+    if episode_text is not None:
+        context = with_open_episode(context, episode_text)
     verdict = await vision.judge(
         goal.condition, frame,
         roi=roi, exemplar=exemplar, corrections=corrections, frames=frames,
-        context={"process_qa": True, "running_answer": prior},
+        context=context,
     )
     state.record(verdict.running_answer)
     answer = state.running_answer
@@ -158,8 +319,13 @@ async def judge_episode_memory(
 
 __all__ = [
     "JUDGE_MODE_EPISODE_MEMORY",
+    "EPISODE_CONTEXT_MAX_CHARS",
     "episode_memory_enabled",
     "EpisodeMemoryState",
     "EpisodeMemoryStore",
     "judge_episode_memory",
+    "open_episode_of",
+    "episode_context_text",
+    "episode_judge_context",
+    "with_open_episode",
 ]

@@ -404,6 +404,36 @@ class Revision:
     incident_id: str | None = None
 
 
+# -- Bounds on the judge-facing projection of an episode -------------------------------------------
+# A judge context is re-sent on every judged tick of a stream that may run for weeks, so what an
+# episode contributes to a prompt has to be a CONSTANT, not a function of how long it has been open.
+# These three ceilings are what make :meth:`Episode.to_judge_dict` fixed-size. They bound a prompt,
+# not a decision — nothing here participates in whether a verdict is satisfied.
+
+#: How many of an episode's MOST RECENT state-change rows are serialized. The timeline itself is
+#: already capped (``EpisodeLog.max_revisions``), but 256 rows is a prompt, not a summary.
+JUDGE_CONTEXT_MAX_REVISIONS = 5
+#: Characters retained from any single caller-owned ``value``. Values are arbitrary text the client
+#: put there; a long one is clipped rather than allowed to set the size of the prompt.
+JUDGE_CONTEXT_MAX_VALUE_CHARS = 120
+
+
+def _clip_text(value: Any, max_chars: int) -> "str | None":
+    """Stringify a caller-owned value and clip it to ``max_chars``, marking any truncation.
+
+    ``None`` passes through as ``None`` — the one and only absence sentinel this module recognizes
+    (see :meth:`EpisodeLog._absent_if_empty`); it must not become the string ``"None"``.
+    """
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "…"
+
+
 @dataclass
 class Episode:
     id: str
@@ -476,6 +506,55 @@ class Episode:
             "observations": self.observations,
             "last_confirmed": self.last_confirmed,
             "revisions": list(self.revisions),
+        }
+
+    def to_judge_dict(
+        self,
+        *,
+        max_revisions: int = JUDGE_CONTEXT_MAX_REVISIONS,
+        max_value_chars: int = JUDGE_CONTEXT_MAX_VALUE_CHARS,
+    ) -> dict:
+        """A PAYLOAD-FREE, BOUNDED projection of :meth:`to_dict`, safe to put in a model call.
+
+        Two properties this must never lose, because a judge context is spent on every tick of a
+        stream that may run for weeks:
+
+        * **pixel-free** — ``exemplar`` and ``representative`` are the caller's opaque observation
+          payloads (a decoded frame, an evidence handle). They are DROPPED outright, not summarized:
+          nothing here should ever carry image bytes into a prompt.
+        * **bounded** — everything retained is either a scalar or a fixed-size slice. The revision
+          timeline is truncated to its ``max_revisions`` MOST RECENT rows (the recent ones are the
+          ones that describe what the episode is now), with the number dropped reported as
+          ``revisions_omitted`` so the truncation is visible rather than silent. ``value`` is
+          caller-owned and arbitrary, so it is stringified and clipped to ``max_value_chars``.
+
+        The size of this dict is therefore independent of how long the episode has been open and of
+        how many times it has been confirmed: a confirmation coalesces in place
+        (see :meth:`EpisodeLog.record_revision`) and moves only the scalar ``observations`` /
+        ``last_confirmed`` / ``last_seen`` fields.
+        """
+        max_revisions = max(0, int(max_revisions))
+        kept = self.revisions[-max_revisions:] if max_revisions else []
+        return {
+            "id": self.id,
+            "goal_id": self.goal_id,
+            "started_at": self.started_at,
+            "last_seen": self.last_seen,
+            "status": self.status,
+            "subject_key": self.subject_key,
+            "observations": self.observations,
+            "last_confirmed": self.last_confirmed,
+            "value": _clip_text(self.value, max_value_chars),
+            "incident_id": self.incident_id,
+            "revisions": [
+                {
+                    "kind": r.kind,
+                    "t": r.t,
+                    "value": _clip_text(r.value, max_value_chars),
+                }
+                for r in kept
+            ],
+            "revisions_omitted": max(0, len(self.revisions) - len(kept)),
         }
 
     @classmethod
@@ -1018,6 +1097,29 @@ class EpisodeLog:
             self._prune(now)
         return len(self._episodes)
 
+    def open_episodes(self) -> list["Episode"]:
+        """Every NON-TERMINAL episode in this log, oldest first (terminality per this log's policy).
+
+        The read-only public view of what is still live. Callers that need "the episode we are
+        continuing" should prefer :meth:`current_open`, which is O(1)-sized by construction."""
+        return [e for e in self._episodes if not self.policy.is_terminal(e.status)]
+
+    def current_open(self) -> "Episode | None":
+        """The MOST RECENTLY SEEN open episode, or ``None`` when nothing is live.
+
+        "Most recently seen" (largest ``last_seen``, ties broken toward the later insertion) is the
+        honest answer to "which episode is this tick most likely about" without making an identity
+        claim: it is the one whose evidence is freshest. A concern holding several open episodes gets
+        exactly one of them from this method — deliberately, so a caller that puts it in a prompt
+        pays a size that does not grow with the number of open episodes."""
+        best: "Episode | None" = None
+        for e in self._episodes:
+            if self.policy.is_terminal(e.status):
+                continue
+            if best is None or e.last_seen >= best.last_seen:
+                best = e
+        return best
+
 
 # ================================================================================================
 # INTERVAL COVERAGE — "time accounted for" comes from OBSERVATION, never interpolation.
@@ -1178,6 +1280,8 @@ __all__ = [
     "RevisionKind",
     "REVISION_KINDS",
     "STATE_CHANGING_REVISION_KINDS",
+    "JUDGE_CONTEXT_MAX_REVISIONS",
+    "JUDGE_CONTEXT_MAX_VALUE_CHARS",
     "ContinuationDecision",
     "ContinuationReason",
     "CONTINUATION_REASONS",

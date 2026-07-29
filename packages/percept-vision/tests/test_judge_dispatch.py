@@ -16,7 +16,9 @@ from typing import Any
 from percept.adapters import Goal, Verdict
 from percept.agent import JudgeBindingInvariantError, Percept
 from percept.contracts.watchplan import ResolvedJudgeSpec
+from percept.episodes import EpisodeLog
 from percept.judge_context import (
+    JUDGE_OPEN_EPISODE_KEY,
     JUDGE_STATIC_CONTEXT_KEY,
     ReservedContextKeyError,
     ResolvedJudgeContext,
@@ -205,6 +207,124 @@ class StaticContextInjectionTests(unittest.TestCase):
 
         self.assertEqual(shared.judge_calls[0]["context"][JUDGE_STATIC_CONTEXT_KEY], "CONTEXT-A")
         self.assertEqual(shared.judge_calls[1]["context"][JUDGE_STATIC_CONTEXT_KEY], "CONTEXT-B")
+
+
+class OpenEpisodeInjectionTests(unittest.TestCase):
+    """The concern's open episode must REACH the model call.
+
+    The gap these close: an episode existed in ``Percept.episodes`` and the judge never saw it, so a
+    persistent question was re-answered from scratch every tick with no memory of what had already
+    been established about the thing being watched."""
+
+    @staticmethod
+    def _open_episode(core: Percept, goal: Goal, *, value: str | None = None) -> EpisodeLog:
+        log = EpisodeLog(goal.id)
+        episode, _ = log.observe(10.0, "exemplar-payload", None, subject_key="backpack_a")
+        if value is not None:
+            log.annotate(episode, value=value)
+        core.episodes[goal.id] = log
+        return log
+
+    def test_open_episode_reaches_the_judge_under_the_reserved_key(self):
+        vision = SpyJudge("vision")
+        core = _core(vision)
+        g = _goal("g1")
+        core.add_goal(g)
+        self._open_episode(core, g, value="an unattended black backpack")
+
+        _run(core._judge(g, "frame", None, {}))
+
+        received = vision.judge_calls[0]["context"]
+        self.assertIsNotNone(received)
+        self.assertIn("backpack_a", received[JUDGE_OPEN_EPISODE_KEY])
+        self.assertIn("an unattended black backpack", received[JUDGE_OPEN_EPISODE_KEY])
+        # pixel-free: the episode's opaque payload never rides into the prompt
+        self.assertNotIn("exemplar-payload", received[JUDGE_OPEN_EPISODE_KEY])
+
+    def test_goal_without_an_episode_is_unchanged(self):
+        vision = SpyJudge("vision")
+        core = _core(vision)
+        g = _goal("g1")
+        core.add_goal(g)
+
+        _run(core._judge(g, "frame", None, {}))
+
+        self.assertIsNone(vision.judge_calls[0]["context"])
+
+    def test_closed_episode_is_not_injected(self):
+        vision = SpyJudge("vision")
+        core = _core(vision)
+        g = _goal("g1")
+        core.add_goal(g)
+        log = self._open_episode(core, g)
+        log.close(log.current_open().id, t=50.0)
+
+        _run(core._judge(g, "frame", None, {}))
+
+        self.assertIsNone(vision.judge_calls[0]["context"])
+
+    def test_injection_rides_alongside_a_static_context_and_a_caller_context(self):
+        vision = SpyJudge("vision")
+        adapter = SpyJudge("bound")
+        core = _core(vision)
+        g = _goal("g1")
+        core.add_goal(g)
+        core._register_judge_binding(
+            g.id, FakeBound(spec=_spec("j@1", context_ref="r.txt", context_sha256="f" * 64),
+                            adapter=adapter, static_context=_static_ctx("RUBRIC", sha="f" * 64)),
+        )
+        self._open_episode(core, g, value="a black backpack")
+
+        caller_ctx = {"foo": "bar"}
+        _run(core._judge(g, "frame", None, {}, context=caller_ctx))
+
+        received = adapter.judge_calls[0]["context"]
+        self.assertEqual(received[JUDGE_STATIC_CONTEXT_KEY], "RUBRIC")
+        self.assertEqual(received["foo"], "bar")
+        self.assertIn("a black backpack", received[JUDGE_OPEN_EPISODE_KEY])
+        self.assertNotIn(JUDGE_OPEN_EPISODE_KEY, caller_ctx)  # caller's dict COPIED, never mutated
+
+    def test_preexisting_reserved_episode_key_raises(self):
+        vision = SpyJudge("vision")
+        core = _core(vision)
+        g = _goal("g1")
+        core.add_goal(g)
+        self._open_episode(core, g)
+
+        with self.assertRaises(ReservedContextKeyError):
+            _run(core._judge(g, "frame", None, {}, context={JUDGE_OPEN_EPISODE_KEY: "smuggled"}))
+        self.assertEqual(vision.judge_calls, [])  # nothing dispatched on a reserved-key collision
+
+    def test_two_goals_do_not_see_each_others_episodes(self):
+        vision = SpyJudge("vision")
+        core = _core(vision)
+        ga, gb = _goal("ga"), _goal("gb")
+        core.add_goal(ga)
+        core.add_goal(gb)
+        self._open_episode(core, ga, value="finding for A")
+
+        _run(core._judge(ga, "fa", None, {}))
+        _run(core._judge(gb, "fb", None, {}))
+
+        self.assertIn("finding for A", vision.judge_calls[0]["context"][JUDGE_OPEN_EPISODE_KEY])
+        self.assertIsNone(vision.judge_calls[1]["context"])
+
+    def test_a_long_running_episode_does_not_grow_the_call(self):
+        """Cost: what an open episode adds to a call must not scale with how long it has been open."""
+        vision = SpyJudge("vision")
+        core = _core(vision)
+        g = _goal("g1")
+        core.add_goal(g)
+        log = self._open_episode(core, g, value="a black backpack")
+        _run(core._judge(g, "frame-a", None, {}))
+
+        episode = log.current_open()
+        for i in range(4000):
+            log.record_revision(episode, "confirmed", t=20.0 + i)
+        _run(core._judge(g, "frame-b", None, {}))
+
+        first, later = (c["context"][JUDGE_OPEN_EPISODE_KEY] for c in vision.judge_calls)
+        self.assertLessEqual(len(later), len(first) + 32)  # only the digits of the clock may grow
 
 
 class JudgeTraceProvenanceTests(unittest.TestCase):
