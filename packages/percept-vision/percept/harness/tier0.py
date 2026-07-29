@@ -1207,6 +1207,7 @@ class GatedWatchLoop:
         cfg = settings or getattr(core, "settings", None) or load_settings()
         self._settings = cfg
         self._source = source
+        self._on_health = on_health  # kept for run()'s mid-run rhythm-failure reporting, below
         self._skipped_routes: list[dict] = []  # host-driven Goals this loop reports and skips
         # An explicit list is already a caller selection (and historically supports logical source
         # aliases such as a default-"camera" Goal on a "camera:front" loop). Only the implicit
@@ -1227,6 +1228,21 @@ class GatedWatchLoop:
         # and counted, not admitted and judged. Split it out here so compile_watchspec keeps its
         # "one condition per watch goal" contract and the counting path is explicit.
         self._rhythm = RhythmDrive(core, [g for g in driven if drives_rhythm(goal_behavior_route(g))])
+        # Arm-time pre-flight: RhythmDrive warmed each goal's pose provider above (construction), so a
+        # goal whose provider could not be prepared (missing extra, missing model) is ALREADY refused
+        # — never armed, never observed by run() below. Report it the same way _preflight_routes
+        # reports an undriven route: logged, and a structured health event naming the goal and the
+        # missing extra, never raised — one goal's missing pose extra must not abort this loop for
+        # every unrelated Watch beside it.
+        for _rhythm_goal_id, _rhythm_reason in self._rhythm.arm_failures.items():
+            get_logger("percept.harness.tier0").warning("%s", _rhythm_reason)
+            if on_health is not None:
+                from percept.runtime.worker import RuntimeHealthEvent  # noqa: PLC0415 — import cycle
+
+                on_health(RuntimeHealthEvent(
+                    "rhythm_goal_refused_at_arm",
+                    data={"goal_id": _rhythm_goal_id, "reason": _rhythm_reason},
+                ))
         thr = cfg.edge.motion_gate if threshold is None else threshold
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
         # subset and the brain selects within it (the capability handshake).
@@ -1423,7 +1439,33 @@ class GatedWatchLoop:
                 # on every frame at native rate (never gated, never judged) — the count comes from
                 # the signal, so it is bounded by the frame rate, not by judgment density.
                 if self._rhythm:
-                    report.fire_events.extend(self._rhythm.observe(item.ts, item.frame))
+                    # RhythmDrive.observe already isolates a per-goal eye failure (e.g. a pose
+                    # provider that passed arm-time pre-flight and then raised inside detect(),
+                    # percept/harness/pose.py:97-100) so it never reaches here — wrapped anyway so
+                    # this call is never the one uncontained hop between a goal's eye and this whole
+                    # loop: one rhythm goal's failure must fail only that goal, never this report.
+                    try:
+                        report.fire_events.extend(self._rhythm.observe(item.ts, item.frame))
+                    except Exception as exc:  # noqa: BLE001 - a rhythm goal's eye must never end the loop for every other goal
+                        get_logger("percept.harness.tier0").warning(
+                            "rhythm_drive_observe_failed: %s", exc
+                        )
+                        if self._on_health is not None:
+                            from percept.runtime.worker import RuntimeHealthEvent  # noqa: PLC0415 — import cycle
+
+                            self._on_health(RuntimeHealthEvent(
+                                "rhythm_drive_error", ts=item.ts, data={"error": repr(exc)}
+                            ))
+                    for _rhythm_goal_id, _rhythm_reason in self._rhythm.pop_mid_run_failures().items():
+                        get_logger("percept.harness.tier0").warning("%s", _rhythm_reason)
+                        if self._on_health is not None:
+                            from percept.runtime.worker import RuntimeHealthEvent  # noqa: PLC0415 — import cycle
+
+                            self._on_health(RuntimeHealthEvent(
+                                "rhythm_goal_failed",
+                                ts=item.ts,
+                                data={"goal_id": _rhythm_goal_id, "reason": _rhythm_reason},
+                            ))
                     for goal_id in self._rhythm.goal_ids:
                         report.rhythm_counts[goal_id] = self._rhythm.count(goal_id)
                 if decision.escalate:

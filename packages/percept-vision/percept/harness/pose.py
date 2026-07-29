@@ -206,8 +206,34 @@ def ensure_pose_ready(name: str | None = None) -> str:
 
     Front-loads (and surfaces failures from) the pose checkpoint download before a run,
     instead of paying it lazily on the first frame. Returns the resolved provider name.
+
+    This is the ARM-TIME half of the pose-provider contract: call it (or let
+    :class:`percept.rhythm.RhythmDrive` call it for you at construction) before the frame loop
+    starts, so a missing extra or model surfaces as a refusal for the ONE goal that needs it —
+    never as a bare ``RuntimeError`` out of the middle of a run. See :func:`describe_pose_unavailable`
+    for the client-facing remediation text wrapped around whatever this raises.
     """
     return make_pose_provider(name).warm()
+
+
+def describe_pose_unavailable(reason: str) -> str:
+    """Client-facing remediation for "the pose provider a rhythm goal needs could not be prepared".
+
+    ``reason`` is the underlying failure's message — already names the specific missing module or
+    model (see :meth:`RTMOPoseProvider._ensure` / :meth:`BlazePoseProvider._ensure`). Composed once
+    here so every caller that pre-flights (:func:`ensure_pose_ready`, arm time) or contains
+    (:class:`percept.rhythm.RhythmDrive.observe`, mid-run) a pose failure gives the SAME actionable
+    diagnostic instead of each inventing its own wording: the extras that fix it, and the
+    frame-driven alternative that needs no pose model at all.
+    """
+    return (
+        f"{reason} Install the extra the configured pose provider needs — "
+        "pip install \"percept-vision[pose]\" for the default RTMO provider, or "
+        "pip install \"percept-vision[blazepose]\" plus PERCEPT_POSE_PROVIDER=blazepose and "
+        "PERCEPT_POSE_MODEL=<path-to-.task> for the local MediaPipe fallback — or skip pose "
+        "entirely: author this as a frame-driven `count` goal with detectors=['motion-periodicity'] "
+        "instead, which counts oscillations straight from motion, with no pose model and no judge call."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +478,7 @@ __all__ = [
     "BlazePoseProvider",
     "make_pose_provider",
     "ensure_pose_ready",
+    "describe_pose_unavailable",
     "FrameNotDecodable",
     "frame_pixels",
     "pose_channels",

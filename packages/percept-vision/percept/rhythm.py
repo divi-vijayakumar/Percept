@@ -483,6 +483,48 @@ def rhythm_emits_incidents(state: object) -> bool:
     return type(expr) is str and bool(expr.strip())
 
 
+def _pose_preflight_failure(detector: object) -> str | None:
+    """If ``detector`` is a pose-provider-backed measuring eye, warm its provider NOW so a missing
+    extra or model surfaces at ARM TIME — before the frame loop ever calls ``measure`` — instead of
+    on the first frame. Returns the underlying failure reason, or ``None`` when the detector needs no
+    pose provider (a `.measure`-capable detector need not be pose-backed at all) or the provider
+    warmed cleanly.
+
+    ``percept.harness.detectors.PoseChannels`` sits outside this fix's owned files (only
+    ``percept.rhythm``, two named lines of ``percept.runtime.worker``, ``percept.harness.tier0`` and
+    ``percept.harness.pose`` are in scope), so this duck-types the shape its own public constructor
+    (``provider=``/``provider_name=``) already accepts, rather than adding a public ``ensure_ready()``
+    seam to that class. Duck-typed on purpose rather than ``isinstance``-checked: a detector module
+    reloaded mid-session (``importlib.reload`` — see ``tests/test_registration.py``) mints a NEW class
+    object, and an ``isinstance`` check against an import captured before that reload would silently
+    stop matching the very shape it exists to recognise. A natural follow-up, once that file is in
+    scope: give ``PoseChannels`` its own ``ensure_ready()`` and replace this probe with a plain method
+    call.
+    """
+    if not hasattr(detector, "_provider") or not hasattr(detector, "_provider_name"):
+        return None  # not pose-provider-backed at all — nothing to pre-flight
+    try:
+        provider = detector._provider  # noqa: SLF001 - see docstring: no detectors.py seam to call instead
+        if provider is not None:
+            provider.warm()
+        else:
+            from .harness.pose import ensure_pose_ready
+
+            ensure_pose_ready(detector._provider_name)  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001 - a missing pose extra fails only THIS goal, never the run
+        return str(exc)
+    return None
+
+
+def _pose_unavailable_diagnostic(goal_id: str, reason: str) -> str:
+    """The full client-facing diagnostic for one rhythm goal: names the GOAL, then the missing extra
+    and the frame-driven alternative (:func:`percept.harness.pose.describe_pose_unavailable`)."""
+
+    from .harness.pose import describe_pose_unavailable
+
+    return f"rhythm goal {goal_id!r} cannot run: {describe_pose_unavailable(reason)}"
+
+
 class RhythmDrive:
     """Drives every ``type="rhythm"`` goal on one source from the frame loop — the missing seam.
 
@@ -495,16 +537,38 @@ class RhythmDrive:
 
     :meth:`observe` returns only the fire events that pass this goal's milestone policy
     (:func:`rhythm_emits_incidents`), so the default rhythm goal accrues a count and stays silent.
+
+    Two independent containment layers, because one test cannot prove both: a goal whose pose
+    provider is missing altogether is refused HERE, at construction (:attr:`arm_failures`) and never
+    observed at all; a goal whose provider passes that pre-flight and then raises INSIDE a later
+    ``detect()`` call (:mod:`percept.harness.pose`) is caught in :meth:`observe` and dropped from then
+    on (:meth:`pop_mid_run_failures`). Both fail that ONE goal loudly — a diagnostic is always
+    recorded — never the silent-zero :meth:`observe` documents refusing; and never any OTHER goal on
+    this drive or on the source's Watch gate, which does not go through here at all.
     """
 
     def __init__(self, core: object, goals: Iterable[object]) -> None:
         self._core = core
         self._perceive = getattr(core, "perceive_rhythm", None)
         self._goals: dict[str, tuple[list, bool]] = {}
+        #: Goal id -> diagnostic, for a goal refused before it was ever armed (see :attr:`arm_failures`).
+        self._arm_failures: dict[str, str] = {}
+        #: Goal id -> diagnostic, for a goal whose eye raised mid-run; drained by
+        #: :meth:`pop_mid_run_failures` so a caller reports each exactly once.
+        self._mid_run_failures: dict[str, str] = {}
         for goal in goals:
             goal_id = str(getattr(goal, "id", ""))
+            measurers = self._measurers_for(goal)
+            reason = None
+            for detector in measurers:
+                reason = _pose_preflight_failure(detector)
+                if reason is not None:
+                    break
+            if reason is not None:
+                self._arm_failures[goal_id] = _pose_unavailable_diagnostic(goal_id, reason)
+                continue
             self._goals[goal_id] = (
-                self._measurers_for(goal),
+                measurers,
                 rhythm_emits_incidents(getattr(goal, "state", None)),
             )
 
@@ -533,6 +597,22 @@ class RhythmDrive:
     @property
     def goal_ids(self) -> tuple[str, ...]:
         return tuple(self._goals)
+
+    @property
+    def arm_failures(self) -> dict[str, str]:
+        """Every goal refused at construction (its pose provider could not be prepared), mapped to
+        its diagnostic. These goals were never armed and :meth:`observe` never touches them; this is
+        the ONLY record that they exist, so a caller should log/report it once at construction."""
+        return dict(self._arm_failures)
+
+    def pop_mid_run_failures(self) -> dict[str, str]:
+        """Diagnostics for goals whose eye raised INSIDE :meth:`observe` since the last call, then
+        were dropped. Draining (not just reading) is deliberate: a caller polls this once per frame
+        and must see each failed goal exactly once, not once per subsequent frame — the goal itself
+        already stopped being measured the instant it failed."""
+        out = dict(self._mid_run_failures)
+        self._mid_run_failures.clear()
+        return out
 
     def __bool__(self) -> bool:
         return bool(self._goals) and self._perceive is not None
@@ -571,16 +651,39 @@ class RhythmDrive:
         payload is opaque by design (a judge uploads it, a clip retains it, a sink forwards it), and a
         measuring eye declares its own input. A frame-backed eye crosses transport to pixels through
         :func:`percept.harness.pose.frame_pixels` — one seam, shared with the boundary detectors that
-        ``DetectorBank`` feeds off the same loop — and RAISES on a payload it cannot decode rather
-        than returning an empty channel vector that would count zero forever."""
+        ``DetectorBank`` feeds off the same loop — and RAISES :class:`~percept.harness.pose.FrameNotDecodable`
+        on a payload it cannot decode rather than returning an empty channel vector that would count
+        zero forever. That RAISE propagates out of this call UNCHANGED — it is the frame loop's own
+        payload that is bad, not this goal's provider, and it is very possibly transient (the next
+        frame may decode fine); swallowing it here would be exactly the silent-zero this drive
+        refuses to become.
+
+        A DIFFERENT failure is contained here instead: a goal that passed arm-time pre-flight
+        (:attr:`arm_failures`, provider ``warm()`` succeeded) whose provider then errors INSIDE a
+        later ``detect()`` call — e.g. a backend crash, unlike a one-off bad frame this is likely to
+        recur every frame. Per goal, not per call: that measurer's exception is caught, the goal is
+        recorded in :meth:`pop_mid_run_failures` and dropped from every future frame — loudly (a
+        diagnostic is always produced), never silently downgraded to counting zero — while every
+        OTHER rhythm goal on this drive, and the Watch gate this drive never touches, keeps running
+        unaffected.
+        """
+        from .harness.pose import FrameNotDecodable
 
         out: list = []
         if self._perceive is None or frame is None:
             return out
-        for goal_id, (measurers, emits) in self._goals.items():
+        for goal_id in list(self._goals):
+            measurers, emits = self._goals[goal_id]
             channels: dict[str, float] = {}
-            for detector in measurers:
-                channels.update(detector.measure(frame))
+            try:
+                for detector in measurers:
+                    channels.update(detector.measure(frame))
+            except FrameNotDecodable:
+                raise  # the frame loop's payload is bad, not this goal's provider — see docstring
+            except Exception as exc:  # noqa: BLE001 - one rhythm goal's EYE must never end the watch for every other goal
+                del self._goals[goal_id]
+                self._mid_run_failures[goal_id] = _pose_unavailable_diagnostic(goal_id, str(exc))
+                continue
             if not channels:
                 continue  # the eye saw nobody this frame — no measurement, no phantom cycle
             fired = self._perceive(goal_id, t=t, channels=channels)

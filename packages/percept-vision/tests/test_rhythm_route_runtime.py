@@ -380,6 +380,14 @@ class _PixelAssertingPose:
         self.seen: list[tuple] = []   # (shape, dtype, top-right pixel) per accepted frame
         self.frames: list = []        # the buffer objects themselves (identity, for pass-through)
 
+    def warm(self) -> str:
+        """The rest of the ``PoseProvider`` protocol: RhythmDrive's arm-time pre-flight
+        (percept.rhythm._pose_preflight_failure) calls this on construction, before any frame is
+        measured. A double standing in for a real provider must implement the WHOLE protocol it
+        claims — a fake missing ``warm()`` would make every goal using it refused at arm instead of
+        exercising what these tests are actually for."""
+        return "test-pixel-asserting-pose"
+
     def detect(self, frame):
         if not hasattr(frame, "shape") or not hasattr(frame, "dtype"):
             raise AssertionError(

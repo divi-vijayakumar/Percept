@@ -4248,6 +4248,14 @@ async def _run_worker(
         # rhythm goal is not admitted, it is measured) so it is built from the goal partition, not
         # from `s.conditions`. A surviving goal keeps its eye across a regate (see RhythmDrive.adopt).
         _rhythm = RhythmDrive(core, _rhythm_goals()).adopt(prev_rhythm)
+        # Arm-time pre-flight (RhythmDrive now warms each goal's pose provider via
+        # percept.harness.pose.ensure_pose_ready at construction): a rhythm goal whose eye needs a
+        # pose provider that cannot be prepared (missing extra, missing model) is refused HERE —
+        # never armed, never observed, never a bare RuntimeError out of the frame loop's first frame
+        # — while logged loudly so its absence is never mistaken for a quiet zero count. One goal's
+        # missing extra must never stop this worker from arming every OTHER goal.
+        for _rhythm_goal_id, _rhythm_reason in _rhythm.arm_failures.items():
+            _log.warning("rhythm_goal_refused_at_arm: %s", _rhythm_reason)
         # One fovea coast controller per Watch. A shared "most sensitive" controller made one
         # Watch's cadence admit every other Watch on the source; compiling each existing
         # SensorPlan independently preserves the already-defined per-concern allocation semantics.
@@ -6576,7 +6584,33 @@ async def _run_worker(
             # land on goal.state["count"]; an Incident is minted only for an authored count MILESTONE
             # (Goal.state.fire_when), never once per rep. No rhythm goal -> the block is skipped.
             if rhythm_drive:
-                rhythm_fires = rhythm_drive.observe(t, judge_frame)
+                # RhythmDrive.observe already isolates a per-goal eye failure (e.g. a pose provider
+                # that passed arm-time pre-flight and then raised inside detect(), percept/harness/
+                # pose.py:97-100) so it never reaches here — but this call must never be the one
+                # uncontained hop between a goal's measuring eye and the whole frame loop, so it is
+                # wrapped anyway: one rhythm goal's failure must fail only that goal, never end the
+                # watch for every other goal (including every judged Watch on this same source).
+                try:
+                    rhythm_fires = rhythm_drive.observe(t, judge_frame)
+                except Exception as exc:  # noqa: BLE001 - a rhythm goal's eye must never end the watch for every other goal
+                    rhythm_fires = None
+                    _log.warning("rhythm_drive_observe_failed: %s", exc)
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent("rhythm_drive_error", ts=t, data={"error": repr(exc)}),
+                        )
+                for _rhythm_goal_id, _rhythm_reason in rhythm_drive.pop_mid_run_failures().items():
+                    _log.warning("rhythm_goal_failed_mid_run: %s", _rhythm_reason)
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "rhythm_goal_failed",
+                                ts=t,
+                                data={"goal_id": _rhythm_goal_id, "reason": _rhythm_reason},
+                            ),
+                        )
                 if rhythm_fires:
                     # from_boundary=True: like the edge-boundary and absence fires, a rhythm milestone
                     # never passed through perceive_judged, so its trace must not claim a judge stage.
