@@ -489,6 +489,12 @@ class _ObservationCandidate:
     goals: tuple[Goal, ...]
     source_t: float
     ingest_observed_ts: float
+    #: Admission decided nothing on this source can consume the detector's output, so
+    #: :meth:`Percept.dispatch_observation_candidate` returns the empty result WITHOUT spending the
+    #: provider round trip. Defaults to ``False``: an unset flag is the unguarded path, so an
+    #: externally built candidate still dispatches. See
+    #: :meth:`Percept._detect_output_is_consumable`.
+    skip_detect: bool = False
 
 
 @dataclass(frozen=True)
@@ -1006,6 +1012,13 @@ _NO_SCENE_KEY = object()
 #: :class:`percept.observability.Metrics` is a flat counter registry with no label dimension, so a
 #: discriminator has to live in the name.
 _EPISODE_FOLD_SKIP_METRIC = "episode.fold.skipped"
+
+#: One counter per elided ``vision.detect`` round trip, named for the reason that licensed it — the
+#: same ``<stage>.skipped.<reason>`` shape as :data:`_EPISODE_FOLD_SKIP_METRIC` and
+#: ``episode.scene.entity_turnover_skipped``. Bumped where the provider call WOULD have been spent,
+#: so a run reports the saving instead of leaving it to be inferred from a latency histogram. See
+#: :meth:`Percept._detect_output_is_consumable` for the predicate.
+_DETECT_SKIP_METRIC = "observation.detect.skipped.identity_policy_scene_only"
 
 #: Every distinct guard in :meth:`Percept._document_episode_fold` and :meth:`Percept._scene_episode_fold`
 #: that answers "no fold" for one observation, one reason per guard.
@@ -2961,6 +2974,55 @@ class Percept:
             return None
         return log.get(episode_id)
 
+    def _detect_output_is_consumable(self, source: str) -> bool:
+        """Can anything on ``source`` still consume what ``vision.detect`` populates?
+
+        Every admitted frame spends TWO serialized provider round trips: ``detect``, then ``judge``.
+        ``detect`` exists to populate the entity graph, and the graph is read by far more than the
+        crop box: focus, per-entity gate keys, transition latch scoping, episode subjects, cache
+        scoping, and the binding target a user correction (:meth:`assert_attribute`) needs. So the
+        leg is skippable only when NOTHING downstream can read a subject — and answering that
+        honestly means answering it for the whole source, not for one goal.
+
+        THE PREDICATE. ``False`` (skippable) iff ``source`` carries at least one active goal and
+        EVERY one of them DECLARES ``identity_policy="scene"``. That is the exact set for which
+        :func:`~percept.identity_policy.watch_reducer_entity_id` reduces onto the non-entity key
+        ``None``; it is called on every watch judgment and hands back the focus id for every goal
+        that did not declare scene, so a single undeclared goal anywhere on the source is enough to
+        make detect's output load-bearing. Declaring scope is the ONLY way in: a goal that merely
+        INHERITS a scene-like source-profile default still reduces on focus identity, which is why
+        this reads the declaration and not :func:`~percept.identity_policy.select_identity_policy`.
+
+        DELIBERATELY NARROW, because the measured cost of being wrong is silent:
+
+        * two subjects both satisfying a condition fire once instead of twice, with
+          ``entity_id=None`` — a dropped incident, not a logged error;
+        * a transition goal scoped per entity spends no judge call and latches nothing, forever;
+        * :meth:`assert_attribute` with no focus to bind returns ``None`` and the correction is a
+          no-op, so the user's word never reaches the next judgment.
+
+        Widening it — to a per-goal test, to the resolved rather than declared policy, or to a
+        perception-spec property such as ``roi`` — reintroduces one of those. The tests named for
+        each case are the regression guard.
+
+        CONSERVATIVE ON AMBIGUITY. A source with no active goals, an unreadable registry, and a
+        goal whose scope cannot be read all answer ``True``: when the consumer set is unknown, the
+        leg runs exactly as it always has.
+        """
+        try:
+            on_source = [
+                goal
+                for goal in self.goals.active()
+                if getattr(goal, "source", None) == source
+            ]
+            if not on_source:
+                return True
+            return not all(
+                identity_policy_of(goal) == SCENE_IDENTITY for goal in on_source
+            )
+        except Exception:  # noqa: BLE001 - an unreadable goal set is ambiguity, so run detect
+            return True
+
     def prepare_observation_candidate(
         self,
         frame: Any,
@@ -3039,6 +3101,9 @@ class Percept:
             goals=projected_goals,
             source_t=float(t),
             ingest_observed_ts=observed_at,
+            # The consumer question is asked of the WHOLE source, not of the filtered/selected
+            # ``goals`` above: a goal this admission excluded still reads the graph on its own tick.
+            skip_detect=not self._detect_output_is_consumable(source),
         )
 
     async def dispatch_observation_candidate(
@@ -3053,6 +3118,20 @@ class Percept:
         started = self.clock()
         failure = None
         snapshots = ()
+        if candidate.skip_detect:
+            # The elided leg. Admission established that no active goal on this source can read a
+            # subject, so the detector would only be asked for output nothing consumes. The empty
+            # completion still travels the whole owner path — reduction, window, graph ingest of
+            # ``[]`` — so every downstream stage sees exactly the frame it would have seen from a
+            # detector that found nothing.
+            self.metrics.incr(_DETECT_SKIP_METRIC)
+            return _ObservationCompletion(
+                candidate=candidate,
+                observations=(),
+                failure=None,
+                started_ts=started,
+                completed_ts=self.clock(),
+            )
         try:
             observations = await candidate.dispatch(
                 # The launched candidate is owner evidence (Window now, graph on
@@ -4632,7 +4711,16 @@ class Percept:
             self._window(source).push(now, frame)
             if _stale():
                 return []
-            observations = await self.vision.detect(frame, active_goals)
+            # The inline twin of the admission guard in ``prepare_observation_candidate``: same
+            # predicate, same counter, asked of the same whole-source goal set (never the
+            # ``goal_ids``-narrowed ``active_goals``, which would let one selected scene goal skip a
+            # leg its unselected neighbours consume). Ingest still runs, with the empty list a
+            # detector that found nothing would have returned.
+            if self._detect_output_is_consumable(source):
+                observations = await self.vision.detect(frame, active_goals)
+            else:
+                observations = []
+                self.metrics.incr(_DETECT_SKIP_METRIC)
             self.graph.ingest(observations, frame, source, t=now)
             focus = self.graph.in_focus()
             if _stale():
