@@ -26,6 +26,7 @@ from typing import Any
 
 from ..adapters import Box, Goal, Observation, Verdict
 from ..contracts import ClipEvent
+from ..observability import get_logger
 from ._resilience import CircuitBreaker, with_retry
 # The router publishes the latency mode of the route it selected; this module owns the
 # provider-agnostic reply CONTRACT (prompt + parser + output budget) that reads it, so every
@@ -143,6 +144,30 @@ def _judge_max_tokens(
     if not _terse_reply(reflex=reflex, claim_mode=claim_mode):
         return deliberate
     return _REFLEX_STRUCTURED_MAX_TOKENS if structured else _REFLEX_MAX_TOKENS
+
+
+#: The output budget for ONE ``detect`` request. The judge leg has had a shared, measured policy
+#: (:func:`_judge_max_tokens`) since reflex landed; detect never did — the three adapters that make a
+#: real call carried the number inline and had drifted apart, gemini/anthropic at 512 against
+#: openrouter at 1024. One place, one value, so a change is a change everywhere.
+#:
+#: NOT YET TUNED, DELIBERATELY. Latency is driven by output tokens (about ``0.85 s + tokens/26``,
+#: validated within 8%), so this ceiling is a real latency lever and 512 is a loose one. It is held
+#: at the incumbent value anyway: detect's measured p50 implies a typical reply near 74 tokens, so
+#: the cap binds only the tail, and nothing here has been measured SINCE the scene-scope detect
+#: elision landed. Lowering it on that basis would be picking a number to suit a metric — the same
+#: refusal ``_REFLEX_MAX_FRAMES`` records below.
+#:
+#: WHAT MUST COME WITH A LOWER VALUE. A reply cut off at this ceiling is not a short answer, it is
+#: unparseable JSON, and :func:`_parse_observations` can only return the empty list for it — the same
+#: value an empty scene produces. That parser now says so out loud; a *structured* signal needs a
+#: channel ``Vision`` does not have. Read its docstring before moving this number down.
+_DETECT_MAX_TOKENS = 512
+
+
+def _detect_max_tokens() -> int:
+    """The output budget for one ``detect`` request. See :data:`_DETECT_MAX_TOKENS`."""
+    return _DETECT_MAX_TOKENS
 
 
 # --- reflex INPUT bound: the same route policy, applied to the temporal strip ---------------------
@@ -478,7 +503,7 @@ class AnthropicVision:
             return await asyncio.to_thread(
                 client.messages.create,
                 model=self._model,
-                max_tokens=512,
+                max_tokens=_detect_max_tokens(),
                 messages=[{"role": "user", "content": content}],
             )
 
@@ -808,11 +833,41 @@ def _parse_verdict(text: str, *, claim_mode: bool = False) -> Verdict:
 
 
 def _parse_observations(text: str) -> list[Observation]:
+    """Parse a detect reply into observations. An UNREADABLE reply is never silently empty.
+
+    ``detect`` returns ``list[Observation]``, so a failure here has exactly one shape available to
+    it: the empty list — the same value a genuinely empty scene produces. That collapse is the
+    failure mode this project has now fixed twice elsewhere (the deaf ``AcousticOnset`` bar, and
+    ``zero_admission_coverage``), and detect is the remaining instance: an object list cut off at
+    the output-token cap lands in the ``except`` below and reads as "nothing was there".
+
+    So the return value stays as the contract requires and the DISTINCTION is made loud instead.
+    Two cases are reported, both at WARNING, neither changing what is returned:
+
+    * a non-empty reply that no JSON could be read out of — truncation at the token cap is the
+      likeliest cause, and it is the one a lower cap makes MORE likely;
+    * items dropped for a malformed box/label while others parsed — a partial read, which a
+      truncated final element produces.
+
+    An empty or whitespace reply stays silent: that is a model saying "nothing", not a failure.
+
+    A structured health event would be better than a log, but ``Vision`` is a published extension
+    point (``percept.contracts``) and carries no channel for one; adding it is a contract change,
+    not a parser fix.
+    """
     try:
         data = _coerce_json(text)
     except ValueError:
+        if text.strip():
+            get_logger("percept.backends").warning(
+                "detect.unreadable: the model replied %d chars but no JSON could be read out of "
+                "them — returning no observations. A reply cut off at the output-token cap looks "
+                "exactly like this, and is indistinguishable from an empty scene downstream.",
+                len(text),
+            )
         return []
     out: list[Observation] = []
+    dropped = 0
     for item in data if isinstance(data, list) else []:
         try:
             box = item["box"]
@@ -824,7 +879,12 @@ def _parse_observations(text: str) -> list[Observation]:
                 )
             )
         except (KeyError, TypeError, ValueError, IndexError):
-            continue
+            dropped += 1
+    if dropped:
+        get_logger("percept.backends").warning(
+            "detect.partial: dropped %d malformed observation(s) of %d, kept %d. A list truncated "
+            "mid-object produces exactly this.", dropped, dropped + len(out), len(out),
+        )
     return out
 
 

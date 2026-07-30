@@ -35,6 +35,7 @@ from .anthropic import (
     _coerce_json,
     _is_reflex,
     _judge_max_frames,
+    _detect_max_tokens,
     _judge_max_tokens,
     _parse_observations,
     _parse_verdict,
@@ -449,7 +450,7 @@ class OpenRouterVision:
         resp = await self._completion(
             model=self._model,
             messages=[{"role": "user", "content": content}],
-            max_tokens=1024,
+            max_tokens=_detect_max_tokens(),  # was 1024 — the odd one out; now the shared policy
             extra_body=_USAGE_EXTRA_BODY,
         )
         return _parse_observations(_text_of(resp))

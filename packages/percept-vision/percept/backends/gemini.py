@@ -36,6 +36,7 @@ from .anthropic import (
     _clip_timeline_sentence,
     _is_reflex,
     _judge_max_frames,
+    _detect_max_tokens,
     _judge_max_tokens,
     _parse_observations,
     _parse_verdict,
@@ -751,7 +752,7 @@ class GeminiVision(_GeminiBase):
             return await client.aio.models.generate_content(
                 model=self._model,
                 contents=[_image_part(types, frame), prompt],
-                config=types.GenerateContentConfig(max_output_tokens=512),
+                config=types.GenerateContentConfig(max_output_tokens=_detect_max_tokens()),
             )
 
         resp = await self._metered_completion(_call)
