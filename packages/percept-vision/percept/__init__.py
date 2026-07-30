@@ -154,7 +154,12 @@ del _resolve_version
 from ._build import BuildInfo, build_info  # noqa: E402
 
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
-from .agent import CompiledWatchSnapshotUnsupportedError, FireEvent, Percept  # noqa: E402
+from .agent import (  # noqa: E402
+    CompiledWatchSnapshotUnsupportedError,
+    FireEvent,
+    Percept,
+    UnsupportedCorrectionScopeError,
+)
 from .watch import WATCH_VERSION, watch  # noqa: E402
 from .interest import (  # noqa: E402
     INTEREST_ENTERED,
@@ -346,6 +351,7 @@ __all__ = [
     "GoalRegistry",
     "GoalOp",
     "CompiledWatchSnapshotUnsupportedError",
+    "UnsupportedCorrectionScopeError",
     # identity + episodes (Phase 4 — re-id across gaps; the cup problem)
     "ContinuityIdentity",
     "AppearanceIdentity",

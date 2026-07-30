@@ -898,6 +898,22 @@ class CompiledWatchSnapshotUnsupportedError(RuntimeError):
     """A compiled Watch carries session-local executable state that OSS snapshots cannot restore."""
 
 
+class UnsupportedCorrectionScopeError(ValueError):
+    """:meth:`Percept.assert_attribute` was called where no active concern has entity scope.
+
+    A correction binds to an ENTITY. When every active concern declares ``identity_policy="scene"``
+    there is no per-entity subject anywhere in the deployment, so the binding can never succeed —
+    not now, and not on a later frame. Raised rather than returned, because the alternative is the
+    failure this replaces: the call returned ``None``, the caller had no way to tell it apart from
+    "nothing in focus yet", and the user's word silently never reached the next judgment.
+
+    A TRANSIENT miss still returns ``None``. If any active concern carries entity scope, an empty
+    graph is a timing condition — the next frame may put something in focus — and that is not an
+    error. The distinction is deliberate: raise on what can never work, return ``None`` on what has
+    not worked yet.
+    """
+
+
 def _judge_binding_trace(binding: Any) -> dict:
     """The additive judge-provenance keys a trace event carries when (and ONLY when) a per-goal judge
     binding is in force: ``judge_resolved`` (the resolved judge ref), ``judge_context_sha256``
@@ -3021,6 +3037,29 @@ class Percept:
                 identity_policy_of(goal) == SCENE_IDENTITY for goal in on_source
             )
         except Exception:  # noqa: BLE001 - an unreadable goal set is ambiguity, so run detect
+            return True
+
+    def _deployment_has_entity_scope(self) -> bool:
+        """Does ANY active concern carry entity scope, anywhere in this deployment?
+
+        The deployment-wide twin of :meth:`_detect_output_is_consumable`, and deliberately not the
+        same question: that one asks per SOURCE, because the detect leg is spent per source, while
+        :meth:`assert_attribute` takes no source and binds to whatever is in focus. Both read the
+        DECLARED policy for the same reason — inheriting a scene-like source-profile default is not
+        declaring, and the reducer knows the difference.
+
+        Conservative in the opposite direction from its twin: ambiguity answers ``True``, so an
+        unreadable or empty goal set yields the old ``None`` return rather than a new exception.
+        Raising is the new behaviour, so it fires only when the absence of scope is certain.
+        """
+        try:
+            active = list(self.goals.active())
+            if not active:
+                return True
+            return not all(
+                identity_policy_of(goal) == SCENE_IDENTITY for goal in active
+            )
+        except Exception:  # noqa: BLE001 - ambiguity must not manufacture an exception
             return True
 
     def prepare_observation_candidate(
@@ -6308,7 +6347,21 @@ class Percept:
 
     def _resolve_roi(self, goal: Goal, focus, spec) -> Box | None:
         """ROI per the ``PerceptionSpec``: ``focus`` = the in-focus entity box (today); ``hint`` = the
-        authored ``region_hint`` (reviving the previously-dead field); ``full`` = the whole frame."""
+        authored ``region_hint`` (reviving the previously-dead field); ``full`` = the whole frame.
+
+        SCENE SCOPE REACHES FRAMING. A concern that declares ``identity_policy="scene"`` has said
+        there is no per-entity subject here — it reduces onto the non-entity gate key and its
+        occurrence is one scene occurrence, not one per entity. ``roi="focus"`` then has nothing
+        coherent to point at: :meth:`~percept.entity.EntityGraph.in_focus` elects *"the largest
+        entity in the most recent frame"*, so cropping to it hands the judge whichever object
+        happened to win an election this concern explicitly opted out of.
+
+        That crop is residue, not a decision. ``_resolve_roi``'s focus branch predates
+        ``identity_policy`` by a month (2026-06-22 vs 2026-07-21) and was never revisited when scene
+        scope landed; nothing in the package ever SETS ``roi``, so every concern inherits the
+        ``"focus"`` default rather than choosing it. A scene concern that genuinely wants a crop has
+        the non-identity channel for it — ``roi="hint"`` plus ``region_hint`` — and that is honoured
+        above, ahead of this branch. Only the *identity-derived* crop is refused here."""
         if spec.roi == "full":
             return None
         if spec.roi == "hint":
@@ -6317,7 +6370,9 @@ class Percept:
                 return hint
             if isinstance(hint, (list, tuple)) and len(hint) == 4:
                 return Box(*hint)
-            # no usable hint authored -> fall back to the focus box (never worse than today)
+            # no usable hint authored -> fall through (scene still declines the focus crop below)
+        if identity_policy_of(goal) == SCENE_IDENTITY:
+            return None  # whole frame: scene scope has no subject to crop to
         return focus.box if focus else None
 
     def _resolve_strip(self, goal, source: str, *, perception_level: int = 0):
@@ -6975,6 +7030,11 @@ class Percept:
 
         Asserted beats observed; the goal's edge state is cleared so the corrected fact is
         re-judged rather than suppressed by a stale rising edge, and the cache is invalidated.
+
+        NO SUBJECT: raises :class:`UnsupportedCorrectionScopeError` when the deployment has no
+        entity scope at all (every active concern declares ``identity_policy="scene"``), and still
+        returns ``None`` when scope EXISTS but nothing is in focus on this frame. See that class for
+        why the two are not the same answer.
         """
         now = self.clock() if t is None else t
         target = entity_id
@@ -6982,7 +7042,13 @@ class Percept:
             focus = self.graph.in_focus()
             target = focus.id if focus else None
         if target is None:
-            return None
+            if self._deployment_has_entity_scope():
+                return None  # transient: scope exists, nothing in focus on this frame
+            raise UnsupportedCorrectionScopeError(
+                f"cannot bind correction {key!r}={value!r}: no active concern has entity scope "
+                "(every one declares identity_policy=\"scene\"), so there is no subject to "
+                "correct. Pass entity_id= explicitly, or declare a concern with entity scope."
+            )
         self.graph.assert_attribute(target, key, value, t=now)
         for goal in self.goals.active():
             self.gate.reset_goal(goal.id)  # a correction re-opens the edge

@@ -46,6 +46,10 @@ EXPECTED_PERCEPT_ALL = frozenset({
     "Scheduler", "Settings", "SqlitePersistence", "SubjectResolver", "Tier0MotionInterest",
     "Tier0Signal", "Timer", "TraceBundle", "TraceEvent", "TracePolicy", "TraceRecord", "TraceRecorder",
     "TraceSummary", "TurnResult", "UndrivenBehaviorRouteWarning", "UnsupportedBehaviorRouteError",
+    # Raised by assert_attribute when NO active concern carries entity scope, so the correction can
+    # never bind. Exported because it is the documented way a caller distinguishes that from the
+    # transient "nothing in focus yet", which still returns None.
+    "UnsupportedCorrectionScopeError",
     "Verdict", "VisualizeError", "VizOptions", "WATCH_VERSION", "WatchCondition", "WatchEvent",
     "WatchSpec", "__version__", "assert_live_or_offline", "build_info", "client_asserted_subject",
     "desugar_goal", "desugar_goals", "envelope_summary", "episode_policy_of", "export_bug_report",
