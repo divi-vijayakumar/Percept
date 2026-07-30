@@ -20,11 +20,15 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field as dc_field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 from percept import Goal, Percept, build_info
-from percept.agent import CONSECUTIVE_DEGRADE_ESCALATE
+from percept.agent import (
+    CONSECUTIVE_DEGRADE_ESCALATE,
+    EPISODE_FOLD_DISPATCH_ARMS,
+    EPISODE_FOLD_SKIP_REASONS,
+)
 from percept._safe_json import (
     SAFE_JSON_MAX_BYTES,
     SafeInputReceipt,
@@ -36,6 +40,7 @@ from percept._safe_json import (
 )
 from percept.adapters import Verdict
 from percept.behavior import INCIDENT_MERGE_WINDOW_S, episode_fold
+from percept.behavior_routes import BehaviorRoute, goal_behavior_route
 from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
 from percept.domain_pack import DomainPack, get_domain_pack, watch_template
@@ -1828,6 +1833,109 @@ def _plan_route(plan: WatchPlan) -> str:
             "transition Watch template must render exact from/to predicates",
         )
     return route
+
+
+#: The ``WatchPlan.explicit`` key prefix that carries armed ``Goal.state``.
+_GOAL_STATE_PREFIX = "Goal.state."
+
+#: "The scene occurrence has not governed a gate key yet" — the reconstruction twin of
+#: ``percept.agent._NO_SCENE_KEY``. ``None`` is itself a real gate key here (the non-entity scope an
+#: ordinary Watch reduces onto), so absence needs a value of its own.
+_NO_GOVERNED_KEY = object()
+
+
+def _declared_goal_state(explicit: Mapping[str, Any]) -> dict[str, Any]:
+    """The armed ``Goal.state`` a WatchPlan declares, keyed the way the runtime reads it.
+
+    ``WatchPlan.explicit`` is a flat, prefixed projection of everything the template authored;
+    stripping the prefix hands back the mapping the runtime's own state readers take, so a
+    reconstruction can ask them the questions it asks rather than re-deriving their answers.
+    """
+
+    return {
+        key[len(_GOAL_STATE_PREFIX) :]: value
+        for key, value in explicit.items()
+        if key.startswith(_GOAL_STATE_PREFIX)
+    }
+
+
+def _expected_governing_fold(
+    *,
+    identity_policy: str,
+    declared_state: Mapping[str, Any],
+    subject: Any,
+    truth: str,
+    key_turned_over: bool,
+    scene_key_turnovers: int,
+) -> dict[str, Any]:
+    """The governing-fold fields one ``shadow.fold`` record must carry, DERIVED from declared state.
+
+    These five fields (:class:`percept.agent.FoldObservation`) are the only part of a ``shadow.fold``
+    record that says what the GOVERNING episode fold did — the ``fold`` dict beside them is the
+    shadow's, which binds no continuation decision and so reads ``unbound`` on every tick of every
+    concern. Asserting them as a constant is what let this receipt keep passing while the dispatch it
+    describes changed underneath it, so they are reconstructed here instead, on the runtime's own
+    inputs and in the runtime's own order (:meth:`percept.agent.Percept._document_episode_fold`, then
+    :meth:`~percept.agent.Percept._scene_episode_fold`):
+
+    * an event-chain Watch owns occurrence identity, so it never reaches either fold;
+    * a policy that groups occurrences on the scene scope
+      (:func:`percept.identity_policy.folds_on_scene_scope` — the declared scene scope every shipped
+      domain-pack template names, or an inherited per-entity track resolver) ENTERS the scene fold,
+      whose own guards then answer for this tick: the goal's behaviour route
+      (:func:`percept.behavior_routes.goal_behavior_route`) decides whether a fold can be built at
+      all, and after that it is the tick's classified ``truth`` and the gate key the occurrence is
+      speaking for;
+    * anything else is either the content-key path or the arm that builds no fold.
+
+    Which is why a frame watch and a transition under the SAME declared policy differ: the frame
+    watch binds and reports no skip reason, while the transition enters the scene fold and declines on
+    its route guard.
+
+    Two guards are deliberately not modelled: the two out-of-order ones. The reconstruction walks
+    candidates in decode order (contiguous ``source_sequence``, whose ``t`` the media-identity check
+    pins to the decoder), so neither can fire. If a receipt ever presented a non-monotone candidate,
+    the derived record would disagree with the recorded one and the caller would refuse it — an
+    unmodelled guard costs a refusal, never a silent pass.
+    """
+
+    dispatch, entered_scene = "none", False
+    reason: str | None = None
+    if declared_state.get("rearm") == "each_event":
+        reason = "document.event_chain_rearm"
+    elif folds_on_scene_scope(identity_policy):
+        dispatch, entered_scene = "scene", True
+        if declared_state.get("rearm", "on_false") != "on_false":
+            reason = "scene.rearm_not_rising_edge"
+        elif (
+            goal_behavior_route(SimpleNamespace(state=dict(declared_state)))
+            is not BehaviorRoute.FRAME_WATCH
+        ):
+            reason = "scene.route_not_frame_watch"
+        elif truth == "unknown":
+            reason = "scene.truth_unknown"
+        elif truth == "no":
+            reason = "scene.occurrence_closed"
+        elif key_turned_over:
+            reason = "scene.entity_turnover"
+    elif identity_policy != "content_key":
+        reason = "document.identity_policy_not_content_key"
+    else:
+        dispatch = "content_key"
+        if subject is None:
+            reason = "document.no_content_subject"
+    _require(
+        dispatch in EPISODE_FOLD_DISPATCH_ARMS
+        and (reason is None or reason in EPISODE_FOLD_SKIP_REASONS),
+        "reconstructed episode-fold arm/guard is not one the runtime can record",
+    )
+    return {
+        "fold_identity_policy": identity_policy,
+        "fold_dispatch": dispatch,
+        "fold_entered_scene": entered_scene,
+        "fold_skip_reason": reason,
+        "fold_scene_key_turnovers": scene_key_turnovers,
+    }
 
 
 def _parse_persisted_real_manifest(doc: Mapping[str, Any], context: str) -> Mapping[str, Any]:
@@ -3821,12 +3929,14 @@ def _validate_v2_arm_reconstruction(
         # built, and its continuation policy from the preregistered profile's own declaration — the
         # same two inputs ``Percept`` reads. Nothing here is a threshold or a default of its own.
         episode_log: EpisodeLog | None = None
-        resolved_identity = plan["explicit"].get(
-            "Goal.state.identity_policy"
-        ) or arm.source_profile["identity_strategy"]
+        declared_state = _declared_goal_state(plan["explicit"])
+        resolved_identity = str(
+            declared_state.get("identity_policy")
+            or arm.source_profile["identity_strategy"]
+        )
         if (
-            folds_on_scene_scope(str(resolved_identity))
-            and plan["explicit"].get("Goal.state.rearm", "on_false") == "on_false"
+            folds_on_scene_scope(resolved_identity)
+            and declared_state.get("rearm", "on_false") == "on_false"
         ):
             runner_settings = Settings()
             profile_parameters = _thaw(arm.source_profile["parameters"])
@@ -3846,6 +3956,15 @@ def _validate_v2_arm_reconstruction(
             )
         episode_emissions: dict[str, int] = {}
         open_episode_id: str | None = None
+        # The gate key every candidate of an ordinary arm is evaluated under. A scene occurrence
+        # governs ONE key at a time and hands a tick straight back to the gate when the key it has
+        # been speaking for turns over, so the key is TRACKED here rather than assumed: this arm
+        # reduces onto the non-entity scope (the ``entity_id: None`` every gate row below pins), so
+        # there is one key and no turnover — but an arm that did reduce per-entity reconstructs its
+        # turnovers instead of quietly expecting none.
+        gate_key = (goal_id, None)
+        governed_scene_key: Any = _NO_GOVERNED_KEY
+        scene_key_turnovers = 0
         for candidate in dispatched:
             coordinate = {
                 "trace_id": f"{source_id}@{candidate.t}",
@@ -3923,20 +4042,33 @@ def _validate_v2_arm_reconstruction(
             # occurrence boundary and changes nothing; a confident-false CLOSES the occurrence and
             # leaves the tick to the gate; a confident-true observes the scene occurrence.
             fold = None
+            key_turned_over = False
             if episode_log is not None and truth != "unknown":
                 if truth == "no":
                     if open_episode_id is not None:
                         episode_log.close(open_episode_id, t=candidate.t)
                         open_episode_id = None
+                    governed_scene_key = _NO_GOVERNED_KEY
                 else:
                     decision = episode_log.observe_decision(
                         candidate.t, verdict, subject_key=SCENE_IDENTITY
                     )
                     open_episode_id = decision.episode.id
-                    fold = episode_fold(
-                        decision,
-                        emitted=episode_emissions.get(decision.episode.id, 0),
+                    key_turned_over = (
+                        governed_scene_key is not _NO_GOVERNED_KEY
+                        and governed_scene_key != gate_key
                     )
+                    governed_scene_key = gate_key
+                    if key_turned_over:
+                        # The occurrence WAS advanced, but it does not govern a tick belonging to a
+                        # key it has not been speaking for: whether another entity's edge fires is
+                        # the gate's question and the runtime hands it back untouched.
+                        scene_key_turnovers += 1
+                    else:
+                        fold = episode_fold(
+                            decision,
+                            emitted=episode_emissions.get(decision.episode.id, 0),
+                        )
             if fold is not None and not fold.should_evaluate_gate:
                 # The occurrence already delivered its incident: the gate is not consulted at all, so
                 # the row carries no typed gate reason and falls back to the truth/action wording
@@ -3962,9 +4094,9 @@ def _validate_v2_arm_reconstruction(
                     # Mirrors ``BehaviorExecutor.fire_judged``: a new episode re-arms its own edge, but
                     # never over a gate that requires an observed false first — arming is that gate's
                     # business alone.
-                    gate.rearm((goal_id, None))
+                    gate.rearm(gate_key)
                 outcome = gate.decide(
-                    (goal_id, None),
+                    gate_key,
                     verdict,
                     freshness=1.0,
                     hold_s=hold_s,
@@ -4002,14 +4134,11 @@ def _validate_v2_arm_reconstruction(
                 },
                 f"{arm.arm} ordinary gate trace does not reconstruct from oracle/state",
             )
-            # The shadow's own fold is a CONSTANT for an ordinary Watch: the shadow path binds no
-            # continuation decision, so it is ``unbound`` on every candidate regardless of what the
-            # run did. The governing-fold fields beside it are the ones that carry information, and
-            # they reconstruct from the arm's declared identity strategy: a matched-Watch arm profile
-            # declares the scene SCOPE (``identity_strategy="scene"``, see ``_profile``), which is
-            # neither a per-entity resolver nor ``content_key``, so the dispatch takes the arm that
-            # builds no fold at all and the scene fold is never entered.
-            identity_strategy = str(arm.source_profile["identity_strategy"])
+            # The shadow's own ``fold`` is a CONSTANT for an ordinary Watch: the shadow path passes no
+            # continuation decision, so it reads ``unbound`` on every candidate even on the ticks whose
+            # GOVERNING fold bound an occurrence. The ``fold_*`` fields beside it are the ones that
+            # carry information, and they are derived — see ``_expected_governing_fold`` for the order
+            # and for why a frame watch and a transition under the same declared policy disagree.
             _require(
                 _thaw(shadow_by_t.get(candidate.t))
                 == {
@@ -4025,11 +4154,14 @@ def _validate_v2_arm_reconstruction(
                             "should_evaluate_gate": True,
                             "supersedes": None,
                         },
-                        "fold_identity_policy": identity_strategy,
-                        "fold_dispatch": "none",
-                        "fold_entered_scene": False,
-                        "fold_skip_reason": "document.identity_policy_not_content_key",
-                        "fold_scene_key_turnovers": 0,
+                        **_expected_governing_fold(
+                            identity_policy=resolved_identity,
+                            declared_state=declared_state,
+                            subject=getattr(verdict, "subject", None),
+                            truth=truth,
+                            key_turned_over=key_turned_over,
+                            scene_key_turnovers=scene_key_turnovers,
+                        ),
                     },
                 },
                 f"{arm.arm} shadow-fold trace does not reconstruct from ordinary Watch state",
