@@ -139,6 +139,14 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
 .fCell small{display:block;margin-top:5px;font:8.5px/1.4 var(--mono);color:var(--steel)}
 .fCell.hot b{color:var(--fire)}
 .metricsStrip{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;min-height:23px}
+.mechPanel{margin-top:12px;font:10px var(--mono);color:var(--steel)}
+.mechPanel:empty{display:none}
+.mechTitle{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);padding-bottom:6px;border-bottom:1px solid var(--hairline);margin-bottom:7px}
+.mechRow{padding:2px 0}
+.mechRow b{color:var(--ink);font-weight:600}
+.mechBad{color:#c4453f;font-weight:600}
+.mechEp{margin-top:6px;padding:6px 8px;border:1px solid var(--hairline);background:var(--panel)}
+.mechHist{margin-top:3px;color:var(--steel);opacity:.85}
 .metricsStrip .m{border:1px solid var(--hairline);background:var(--panel);padding:5px 9px;font:9px var(--mono);color:var(--steel);white-space:nowrap}
 .metricsStrip .m b{color:var(--ink);font-weight:600;margin-left:5px}
 .frameBar{position:relative;height:110px;border:1px solid var(--hairline);background:var(--panel);overflow:hidden;margin-top:12px}
@@ -419,6 +427,7 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
                 <option value="claim_slot">claim_slot</option>
               </select></label>
               <label class="advCheck"><input id="advEpisode" type="checkbox"> episode tracking</label>
+              <label class="advCheck" title="Ships DISABLED. When on, the trust threshold is also raised off its 0.0 default, and every 4th hit is re-judged so false serves are visible."><input id="advCache" type="checkbox"> verdict cache</label>
             </div>
             <div class="row">
               <label>goal temporality<select id="advTemporality">
@@ -445,7 +454,7 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
         </details>
         <div class="agentBox">
           <div class="agentRow">
-            <div><div class="agentName">Watch runtime</div><div class="agentMeta" id="seamMeta">percept.run() · streaming NDJSON</div></div>
+            <div><div class="agentName">Watch runtime</div><div class="agentMeta" id="seamMeta">percept.run() · streaming NDJSON</div><div class="agentMeta" id="buildMeta"></div></div>
             <span class="status" id="agentStatus"><i></i><b>READY</b></span>
           </div>
           <button id="armBtn" class="armBtn" disabled>Arm &amp; stream watch</button>
@@ -467,6 +476,7 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
             <div class="fCell hot"><b id="nFired">0</b><span>fired</span><small>became an incident</small></div>
           </div>
           <div id="metricsStrip" class="metricsStrip"></div>
+          <div id="mechPanel" class="mechPanel"></div>
           <div class="frameBar" id="frameBar">
             <div id="frames" class="frames"></div>
             <div id="headline" class="headline"></div>
@@ -930,7 +940,8 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
   const advancedParams=()=>({
     profile:$('#advProfile').value||'physical_scene', execution_policy:$('#advExec').value,
     identity_policy:$('#advIdentity').value, episode_tracking:$('#advEpisode').checked?'1':'0',
-    audio_fused:$('#advAudio').checked?'1':'0', vision_model:$('#advVisionModel').value.trim(),
+    audio_fused:$('#advAudio').checked?'1':'0', verdict_cache:$('#advCache').checked?'1':'0',
+    vision_model:$('#advVisionModel').value.trim(),
     goal_temporality: $('#advTemporality').value,
     window_s: $('#advWindowS').value,
     conductor_model:$('#advConductorModel').value.trim(), specialist_model:$('#advSpecialistModel').value.trim(),
@@ -1039,6 +1050,7 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
           const s=n=>`${n} ${(msg.seams[n]||{}).backend||'—'}`;
           $('#seamMeta').textContent=[s('vision'),s('conductor'),s('specialist')].join(' · ');
         }
+        showBuild(msg.build);
         if(msg.note) note(msg.note);
         break;
       case 'note': note(msg.text); break;
@@ -1053,6 +1065,57 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
   const elapsed=()=>((performance.now()-runStartedAt)/1000).toFixed(1)+'s wall';
   function note(text){ $('#hint').className='hint'; $('#hint').textContent=text; }
 
+  // Episodes and cache counters are read off the live core after the run -- neither survives into
+  // the .ptrace, so this panel is the only place they can be seen.
+  function renderMechanisms(mech, cacheOn){
+    const el=$('#mechPanel'); if(!el) return;
+    if(!mech){ el.innerHTML=''; return; }
+    const t=mech.episode_totals||{}, jv=mech.judged_vs_observed||{};
+    const cache=mech.cache||{}, epc=mech.episode_counters||{};
+    const hits=cache['cache.hit']||0, miss=cache['cache.miss']||0, bad=cache['cache.false_serve']||0;
+    const rows=[];
+    rows.push(`<div class="mechRow"><b>episodes</b> ${t.episodes||0}`
+      + (t.statuses?` · ${Object.entries(t.statuses).map(([k,v])=>k+'='+v).join(' ')}`:'')
+      + (t.subject_keys?` · keys ${Object.keys(t.subject_keys).join(',')}`:'')
+      + ` · ${t.revisions||0} revisions</div>`);
+    if(epc['gate.idempotent_suppressed'])
+      rows.push(`<div class="mechRow"><b>repeats suppressed by episode</b> ${epc['gate.idempotent_suppressed']}</div>`);
+    if(jv.observations!=null)
+      rows.push(`<div class="mechRow"><b>observations</b> ${jv.observations} · <b>paid for a judge call</b> ${jv.judged_observations}</div>`);
+    rows.push(`<div class="mechRow"><b>verdict cache</b> ${cacheOn?'on':'off (ships disabled)'}`
+      + (cacheOn?` · ${hits} hits · ${miss} misses · <span class="${bad?'mechBad':''}">${bad} false serves</span>`:'')
+      + `</div>`);
+    for(const e of (mech.episodes||[])){
+      const hist=(e.revisions||[]).map(r=>r.kind+(r.t!=null?`@${(+r.t).toFixed(1)}s`:'')).join(' \u2192 ');
+      rows.push(`<div class="mechEp"><span class="mono">${e.subject_key}</span> ${e.status}`
+        + ` · seen ${e.observations}\u00d7, judged ${e.judged_observations}\u00d7`
+        + (hist?`<div class="mechHist">${hist}</div>`:'')+`</div>`);
+    }
+    el.innerHTML=`<div class="mechTitle">Episodes &amp; cache</div>`+rows.join('');
+  }
+
+  // Which build answered. The trace manifest's percept_version is read from INSTALLED package
+  // metadata, so it can name a build that never executed — a checkout ahead of or behind the
+  // installed dist still reports the dist's number. The git line below describes the code that
+  // actually ran, and is the one to trust when a run surprises you.
+  function showBuild(build){
+    const el=$('#buildMeta'); if(!el) return;
+    if(!build){ el.textContent=''; return; }
+    const parts=[];
+    if(build.git) parts.push(build.git);
+    if(build.version) parts.push('pkg '+build.version);
+    el.textContent=parts.join(' · ');
+    if(build.stale_metadata){
+      el.textContent+='  ⚠ tree is '+(build.source_version||'?')+' — the version above did NOT run';
+      el.style.color='#c47f00';
+      el.title='Package metadata is stale (a leftover *.egg-info in the checkout, or an older '
+             + 'installed dist). The .ptrace manifest carries the same wrong number. '
+             + 'Fix: pip install -e '+(build.pkg_dir||'packages/percept-vision');
+    } else {
+      el.style.color=''; el.title='';
+    }
+  }
+
   function finish(result){
     $('#liveTag').classList.remove('on'); $('#headline').classList.remove('on');
     $('#stopBtn').disabled=true;
@@ -1061,6 +1124,7 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
     if(lastRun){
       runId=lastRun.run_id||runId;
       renderMetrics(lastRun.summary||{});
+      renderMechanisms(lastRun.mechanisms, lastRun.verdict_cache);
       resolveThumbnails(); markFiredCells();
       $('#viewTraceBtn').disabled=false; $('#downloadTraceBtn').disabled=false;
       $('#replayBtn').disabled=false; $('#phaseReplay').disabled=false;

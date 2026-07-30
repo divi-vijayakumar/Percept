@@ -58,9 +58,127 @@ PORT = int(os.environ.get("PERCEPT_DEMO_PORT", "8788"))
 RUNS: dict[str, dict] = {}  # run_id -> {"trace": <path>, "json": <dict>}
 
 # --- make percept-vision importable whether or not it is pip-installed -------------------------
+# This checkout wins over any pip-installed copy, so the harness always exercises the tree it
+# ships in. Note what that does NOT fix: ``percept.__version__`` resolves from the INSTALLED
+# distribution's metadata, so a checkout ahead of (or behind) the installed dist still reports the
+# dist's number — including into the .ptrace manifest. _build_provenance() below reports what
+# actually ran, and main() says so out loud when the two disagree.
 _PKG = HERE.parent.parent / "packages" / "percept-vision"
 if _PKG.exists() and str(_PKG) not in sys.path:
     sys.path.insert(0, str(_PKG))
+
+
+def _mechanism_report(core) -> dict:
+    """Episode and verdict-cache state read off the live core after a run.
+
+    Neither reaches the .ptrace today. `shadow.fold` records pass ``decision=None`` unconditionally,
+    so they read ``match="unbound"`` even on ticks where the governing fold bound an episode — the
+    trace cannot answer "were episodes created?". And no cache counter is plumbed into the trace
+    summary at all. Reading the engine directly is the only honest source for both.
+    """
+    out: dict = {"episodes": [], "episode_totals": {}, "cache": {}, "judged_vs_observed": {}}
+
+    logs = getattr(core, "episodes", {}) or {}
+    statuses: dict[str, int] = {}
+    keys: dict[str, int] = {}
+    revisions = observations = judged = 0
+    for gid, log in logs.items():
+        for e in (getattr(log, "_episodes", None) or []):
+            status = str(getattr(e, "status", "?"))
+            subject = str(getattr(e, "subject_key", "?"))
+            statuses[status] = statuses.get(status, 0) + 1
+            keys[subject] = keys.get(subject, 0) + 1
+            rows = list(getattr(e, "revisions", []) or [])
+            revisions += len(rows)
+            observations += int(getattr(e, "observations", 0) or 0)
+            judged += int(getattr(e, "judged_observations", 0) or 0)
+            out["episodes"].append({
+                "goal_id": gid,
+                "episode_id": getattr(e, "id", None),
+                "status": status,
+                "subject_key": subject,
+                "observations": getattr(e, "observations", None),
+                "judged_observations": getattr(e, "judged_observations", None),
+                # The occurrence's own history: what changed, and when. This is the "how was the
+                # episode reconstructed" answer.
+                "revisions": [
+                    {"kind": str(getattr(r, "kind", "?")),
+                     "t": getattr(r, "t", None),
+                     "value": getattr(r, "value", None)}
+                    for r in rows
+                ],
+            })
+    out["episode_totals"] = {"episodes": len(out["episodes"]), "statuses": statuses,
+                             "subject_keys": keys, "revisions": revisions}
+    # Cheap serves still advance `observations`; only `judged_observations` cost a model call. The
+    # gap between them IS the cache's saving, per episode.
+    out["judged_vs_observed"] = {"observations": observations, "judged_observations": judged}
+
+    m = getattr(core, "metrics", None)
+    counters: dict = {}
+    for attr in ("counters", "_counters", "snapshot", "as_dict"):
+        v = getattr(m, attr, None) if m is not None else None
+        if callable(v):
+            try:
+                counters = dict(v())
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        if isinstance(v, dict):
+            counters = dict(v)
+            break
+    out["cache"] = {k: v for k, v in counters.items() if k.startswith("cache.")}
+    out["episode_counters"] = {k: v for k, v in counters.items()
+                               if k.startswith("episode.") or k == "gate.idempotent_suppressed"}
+    return out
+
+
+def _build_provenance() -> dict:
+    """What is ACTUALLY about to run: the imported file, its git commit, and the dist version.
+
+    ``version`` is metadata-derived and can describe a build that is not present; ``git`` and
+    ``code_path`` describe the code itself. When ``stale_metadata`` is true, believe the latter.
+    """
+    import percept
+
+    code_path = getattr(percept, "__file__", None) or "<unknown>"
+    version = getattr(percept, "__version__", "<unknown>")
+    pkg_dir = str(_PKG) if _PKG.exists() else ""
+
+    git = ""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(HERE), "log", "--oneline", "-1"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0:
+            branch = subprocess.run(
+                ["git", "-C", str(HERE), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+            git = f"{branch} @ {out.stdout.strip()}"
+    except Exception:  # noqa: BLE001 — provenance is reported, never fatal
+        git = ""
+
+    # Compare the reported version against the version THIS SOURCE TREE declares. That is the
+    # question worth answering — "does the number describe the code?" — and it catches both a
+    # stale *.egg-info sitting in the checkout and an older installed dist shadowing it. Comparing
+    # file locations instead does not: an egg-info inside the tree resolves to a RELATIVE path and
+    # silently looks like a match.
+    source_version = ""
+    stale = False
+    try:
+        import re as _re
+
+        text = (Path(pkg_dir) / "pyproject.toml").read_text() if pkg_dir else ""
+        m = _re.search(r'^version\s*=\s*"([^"]+)"', text, _re.M)
+        source_version = m.group(1) if m else ""
+        stale = bool(source_version) and source_version != str(version)
+    except Exception:  # noqa: BLE001 — provenance is reported, never fatal
+        source_version, stale = "", False
+
+    return {"code_path": code_path, "version": version, "git": git, "pkg_dir": pkg_dir,
+            "source_version": source_version, "stale_metadata": stale}
 
 
 def _load_dotenv() -> None:
@@ -426,7 +544,7 @@ async def _run_real(video_path, goal_text: str, backend: str, fps: float,
     logging.disable(logging.WARNING)
     import percept
     from percept import Percept
-    from percept.config import GateSettings, ModelSettings, Settings
+    from percept.config import CacheSettings, GateSettings, ModelSettings, Settings
     from percept.watchplan_apply import apply_watch_plan
 
     # [DEMO4 Finding 2] route the chosen backend to ALL THREE model-bearing seams, honestly — never
@@ -469,6 +587,7 @@ async def _run_real(video_path, goal_text: str, backend: str, fps: float,
     source_uri = str(video_path)
     is_live = _is_live_uri(source_uri)
     audio_fused = bool(advanced.get("audio_fused")) and not is_live
+    verdict_cache = bool(advanced.get("verdict_cache"))
     audio_note = ("audio (fused) is off for a live source — there is no container to demux; "
                   "this run is vision-only.") if (is_live and advanced.get("audio_fused")) else None
     if audio_fused:
@@ -511,7 +630,14 @@ async def _run_real(video_path, goal_text: str, backend: str, fps: float,
 
     resolved, profile, settings, plan = _resolve_watch(
         profile_name, goal_text, source_key="camera",
-        settings=Settings(gate=GateSettings(refractory_s=15.0), models=model_settings),
+        settings=Settings(
+            gate=GateSettings(refractory_s=15.0), models=model_settings,
+            # OFF unless the panel asks. When on, the trust gate is raised off its 0.0 default
+            # too -- at zero every hit passes and the layer's similarity/age model gates
+            # nothing, so a demo run would show hits without showing whether they were safe.
+            cache=CacheSettings(enabled=True, threshold=0.5, audit_rate=0.25)
+            if verdict_cache else CacheSettings(),
+        ),
         execution_policy=exec_policy, explicit=explicit,
     )
     # discover_plugins left at its default (True) — byte-for-byte the old Percept.create(vision=backend)
@@ -547,6 +673,9 @@ async def _run_real(video_path, goal_text: str, backend: str, fps: float,
               "audio_fused": audio_fused, "live": is_live, "source_uri": source_uri,
               "max_s": max_s, "note": " ".join(x for x in (temporal_note, audio_note) if x) or None,
               "temporality": temporality,
+              # Which build is answering. The manifest's percept_version comes from installed
+              # package metadata and can name a build that never ran; this names the code.
+              "build": _build_provenance(),
               "perception": {k.rsplit(".", 1)[-1]: v for k, v in explicit.items()
                              if k.startswith("Goal.state.perception.")}})
     events = []
@@ -615,7 +744,9 @@ async def _run_real(video_path, goal_text: str, backend: str, fps: float,
 
     rec.close()
     rec.write_json(str(trace_path))
+    mechanisms = _mechanism_report(core)
     return {"mode": "real", "backend": backend, "events": events, "resolved": resolved, "receipt": receipt,
+            "mechanisms": mechanisms, "verdict_cache": verdict_cache,
             "seams": seams, "video_path": source_uri, "live": is_live, "stop_reason": stop_reason,
             "note": " ".join(x for x in (temporal_note, audio_note) if x) or None,
             "temporality": temporality,
@@ -935,13 +1066,16 @@ def _extract_frame_thumbnails(video_path: Path, records: list, run_id: str) -> N
 #: individually optional so an empty panel is byte-for-byte today's behavior.
 _ADVANCED_PARAM_KEYS = (
     "execution_policy", "identity_policy", "episode_tracking", "audio_fused",
+    # The verdict cache ships DISABLED, so a demo that never offers it can only ever show the
+    # default. Off unless asked for, so an untouched panel still reproduces shipped behaviour.
+    "verdict_cache",
     "vision_model", "conductor_model", "specialist_model",
     # [DEMO 04] goal temporality — see _run_real. Declared by the caller, never inferred from the
     # condition text: reading the goal string to guess what it "means" is the authoring boundary
     # this harness does not cross.
     "goal_temporality", "window_s",
 )
-_ADVANCED_BOOL_KEYS = ("episode_tracking", "audio_fused")
+_ADVANCED_BOOL_KEYS = ("episode_tracking", "audio_fused", "verdict_cache")
 
 
 def _advanced_from_params(params: dict) -> dict:
@@ -1078,6 +1212,10 @@ def _do_run(params: dict, body: bytes, sink=None) -> dict:
             "mode": result.get("mode"), "note": result.get("note"), "backend": result.get("backend"),
             "resolved_explain": _resolved_explain_json(result.get("resolved")),
             "receipt": _receipt_json(result.get("receipt")),
+            # Episode reconstruction + verdict-cache counters, read off the live core. Neither is
+            # recoverable from the .ptrace, so this is the only place the page can see them.
+            "mechanisms": _json_safe(result.get("mechanisms")),
+            "verdict_cache": result.get("verdict_cache"),
             # [DEMO4 Finding 2] per-seam routing plan (vision/conductor/specialist -> {backend, model,
             # fallback_from, reason}) — None on the fixture path (no live backend is ever chosen there).
             "seams": result.get("seams"),
@@ -1285,10 +1423,23 @@ def main():
         return 1
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     key = _have_key()
+    build = _build_provenance()
     print("─" * 68)
     print(f"  PERCEPT demo harness  ·  http://localhost:{PORT}")
     print(f"  judge key: {key or 'UNSET (keyless fixture only — real runtime, scripted verdicts)'}")
     print(f"  real judge over uploads: {'ENABLED' if key else 'set an API key to enable'}")
+    print(f"  running code: {build['code_path']}")
+    print(f"  git         : {build['git'] or 'not a git checkout'}")
+    print(f"  version     : {build['version']}  (from installed package metadata)")
+    if build["stale_metadata"]:
+        # The version string comes from installed package metadata, not from the code about to
+        # run — a stale *.egg-info in the checkout or an older installed dist both shadow it. The
+        # .ptrace manifest carries this same number, so a trace can be stamped with a version that
+        # never executed. Say so, because "which build produced this?" is the first question a
+        # surprising run raises, and answering it wrong costs an entire debugging session.
+        print(f"  ! this tree declares {build['source_version']}, but metadata says "
+              f"{build['version']} — the version above did NOT run.")
+        print(f"  ! trust the git line. To make them agree: pip install -e {build['pkg_dir']}")
     print("─" * 68)
     try:
         srv.serve_forever()
