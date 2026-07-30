@@ -489,6 +489,12 @@ class _ObservationCandidate:
     goals: tuple[Goal, ...]
     source_t: float
     ingest_observed_ts: float
+    #: Admission decided nothing on this source can consume the detector's output, so
+    #: :meth:`Percept.dispatch_observation_candidate` returns the empty result WITHOUT spending the
+    #: provider round trip. Defaults to ``False``: an unset flag is the unguarded path, so an
+    #: externally built candidate still dispatches. See
+    #: :meth:`Percept._detect_output_is_consumable`.
+    skip_detect: bool = False
 
 
 @dataclass(frozen=True)
@@ -892,6 +898,22 @@ class CompiledWatchSnapshotUnsupportedError(RuntimeError):
     """A compiled Watch carries session-local executable state that OSS snapshots cannot restore."""
 
 
+class UnsupportedCorrectionScopeError(ValueError):
+    """:meth:`Percept.assert_attribute` was called where no active concern has entity scope.
+
+    A correction binds to an ENTITY. When every active concern declares ``identity_policy="scene"``
+    there is no per-entity subject anywhere in the deployment, so the binding can never succeed —
+    not now, and not on a later frame. Raised rather than returned, because the alternative is the
+    failure this replaces: the call returned ``None``, the caller had no way to tell it apart from
+    "nothing in focus yet", and the user's word silently never reached the next judgment.
+
+    A TRANSIENT miss still returns ``None``. If any active concern carries entity scope, an empty
+    graph is a timing condition — the next frame may put something in focus — and that is not an
+    error. The distinction is deliberate: raise on what can never work, return ``None`` on what has
+    not worked yet.
+    """
+
+
 def _judge_binding_trace(binding: Any) -> dict:
     """The additive judge-provenance keys a trace event carries when (and ONLY when) a per-goal judge
     binding is in force: ``judge_resolved`` (the resolved judge ref), ``judge_context_sha256``
@@ -1006,6 +1028,13 @@ _NO_SCENE_KEY = object()
 #: :class:`percept.observability.Metrics` is a flat counter registry with no label dimension, so a
 #: discriminator has to live in the name.
 _EPISODE_FOLD_SKIP_METRIC = "episode.fold.skipped"
+
+#: One counter per elided ``vision.detect`` round trip, named for the reason that licensed it — the
+#: same ``<stage>.skipped.<reason>`` shape as :data:`_EPISODE_FOLD_SKIP_METRIC` and
+#: ``episode.scene.entity_turnover_skipped``. Bumped where the provider call WOULD have been spent,
+#: so a run reports the saving instead of leaving it to be inferred from a latency histogram. See
+#: :meth:`Percept._detect_output_is_consumable` for the predicate.
+_DETECT_SKIP_METRIC = "observation.detect.skipped.identity_policy_scene_only"
 
 #: Every distinct guard in :meth:`Percept._document_episode_fold` and :meth:`Percept._scene_episode_fold`
 #: that answers "no fold" for one observation, one reason per guard.
@@ -2961,6 +2990,78 @@ class Percept:
             return None
         return log.get(episode_id)
 
+    def _detect_output_is_consumable(self, source: str) -> bool:
+        """Can anything on ``source`` still consume what ``vision.detect`` populates?
+
+        Every admitted frame spends TWO serialized provider round trips: ``detect``, then ``judge``.
+        ``detect`` exists to populate the entity graph, and the graph is read by far more than the
+        crop box: focus, per-entity gate keys, transition latch scoping, episode subjects, cache
+        scoping, and the binding target a user correction (:meth:`assert_attribute`) needs. So the
+        leg is skippable only when NOTHING downstream can read a subject — and answering that
+        honestly means answering it for the whole source, not for one goal.
+
+        THE PREDICATE. ``False`` (skippable) iff ``source`` carries at least one active goal and
+        EVERY one of them DECLARES ``identity_policy="scene"``. That is the exact set for which
+        :func:`~percept.identity_policy.watch_reducer_entity_id` reduces onto the non-entity key
+        ``None``; it is called on every watch judgment and hands back the focus id for every goal
+        that did not declare scene, so a single undeclared goal anywhere on the source is enough to
+        make detect's output load-bearing. Declaring scope is the ONLY way in: a goal that merely
+        INHERITS a scene-like source-profile default still reduces on focus identity, which is why
+        this reads the declaration and not :func:`~percept.identity_policy.select_identity_policy`.
+
+        DELIBERATELY NARROW, because the measured cost of being wrong is silent:
+
+        * two subjects both satisfying a condition fire once instead of twice, with
+          ``entity_id=None`` — a dropped incident, not a logged error;
+        * a transition goal scoped per entity spends no judge call and latches nothing, forever;
+        * :meth:`assert_attribute` with no focus to bind returns ``None`` and the correction is a
+          no-op, so the user's word never reaches the next judgment.
+
+        Widening it — to a per-goal test, to the resolved rather than declared policy, or to a
+        perception-spec property such as ``roi`` — reintroduces one of those. The tests named for
+        each case are the regression guard.
+
+        CONSERVATIVE ON AMBIGUITY. A source with no active goals, an unreadable registry, and a
+        goal whose scope cannot be read all answer ``True``: when the consumer set is unknown, the
+        leg runs exactly as it always has.
+        """
+        try:
+            on_source = [
+                goal
+                for goal in self.goals.active()
+                if getattr(goal, "source", None) == source
+            ]
+            if not on_source:
+                return True
+            return not all(
+                identity_policy_of(goal) == SCENE_IDENTITY for goal in on_source
+            )
+        except Exception:  # noqa: BLE001 - an unreadable goal set is ambiguity, so run detect
+            return True
+
+    def _deployment_has_entity_scope(self) -> bool:
+        """Does ANY active concern carry entity scope, anywhere in this deployment?
+
+        The deployment-wide twin of :meth:`_detect_output_is_consumable`, and deliberately not the
+        same question: that one asks per SOURCE, because the detect leg is spent per source, while
+        :meth:`assert_attribute` takes no source and binds to whatever is in focus. Both read the
+        DECLARED policy for the same reason — inheriting a scene-like source-profile default is not
+        declaring, and the reducer knows the difference.
+
+        Conservative in the opposite direction from its twin: ambiguity answers ``True``, so an
+        unreadable or empty goal set yields the old ``None`` return rather than a new exception.
+        Raising is the new behaviour, so it fires only when the absence of scope is certain.
+        """
+        try:
+            active = list(self.goals.active())
+            if not active:
+                return True
+            return not all(
+                identity_policy_of(goal) == SCENE_IDENTITY for goal in active
+            )
+        except Exception:  # noqa: BLE001 - ambiguity must not manufacture an exception
+            return True
+
     def prepare_observation_candidate(
         self,
         frame: Any,
@@ -3039,6 +3140,9 @@ class Percept:
             goals=projected_goals,
             source_t=float(t),
             ingest_observed_ts=observed_at,
+            # The consumer question is asked of the WHOLE source, not of the filtered/selected
+            # ``goals`` above: a goal this admission excluded still reads the graph on its own tick.
+            skip_detect=not self._detect_output_is_consumable(source),
         )
 
     async def dispatch_observation_candidate(
@@ -3053,6 +3157,20 @@ class Percept:
         started = self.clock()
         failure = None
         snapshots = ()
+        if candidate.skip_detect:
+            # The elided leg. Admission established that no active goal on this source can read a
+            # subject, so the detector would only be asked for output nothing consumes. The empty
+            # completion still travels the whole owner path — reduction, window, graph ingest of
+            # ``[]`` — so every downstream stage sees exactly the frame it would have seen from a
+            # detector that found nothing.
+            self.metrics.incr(_DETECT_SKIP_METRIC)
+            return _ObservationCompletion(
+                candidate=candidate,
+                observations=(),
+                failure=None,
+                started_ts=started,
+                completed_ts=self.clock(),
+            )
         try:
             observations = await candidate.dispatch(
                 # The launched candidate is owner evidence (Window now, graph on
@@ -4632,7 +4750,16 @@ class Percept:
             self._window(source).push(now, frame)
             if _stale():
                 return []
-            observations = await self.vision.detect(frame, active_goals)
+            # The inline twin of the admission guard in ``prepare_observation_candidate``: same
+            # predicate, same counter, asked of the same whole-source goal set (never the
+            # ``goal_ids``-narrowed ``active_goals``, which would let one selected scene goal skip a
+            # leg its unselected neighbours consume). Ingest still runs, with the empty list a
+            # detector that found nothing would have returned.
+            if self._detect_output_is_consumable(source):
+                observations = await self.vision.detect(frame, active_goals)
+            else:
+                observations = []
+                self.metrics.incr(_DETECT_SKIP_METRIC)
             self.graph.ingest(observations, frame, source, t=now)
             focus = self.graph.in_focus()
             if _stale():
@@ -6220,7 +6347,21 @@ class Percept:
 
     def _resolve_roi(self, goal: Goal, focus, spec) -> Box | None:
         """ROI per the ``PerceptionSpec``: ``focus`` = the in-focus entity box (today); ``hint`` = the
-        authored ``region_hint`` (reviving the previously-dead field); ``full`` = the whole frame."""
+        authored ``region_hint`` (reviving the previously-dead field); ``full`` = the whole frame.
+
+        SCENE SCOPE REACHES FRAMING. A concern that declares ``identity_policy="scene"`` has said
+        there is no per-entity subject here — it reduces onto the non-entity gate key and its
+        occurrence is one scene occurrence, not one per entity. ``roi="focus"`` then has nothing
+        coherent to point at: :meth:`~percept.entity.EntityGraph.in_focus` elects *"the largest
+        entity in the most recent frame"*, so cropping to it hands the judge whichever object
+        happened to win an election this concern explicitly opted out of.
+
+        That crop is residue, not a decision. ``_resolve_roi``'s focus branch predates
+        ``identity_policy`` by a month (2026-06-22 vs 2026-07-21) and was never revisited when scene
+        scope landed; nothing in the package ever SETS ``roi``, so every concern inherits the
+        ``"focus"`` default rather than choosing it. A scene concern that genuinely wants a crop has
+        the non-identity channel for it — ``roi="hint"`` plus ``region_hint`` — and that is honoured
+        above, ahead of this branch. Only the *identity-derived* crop is refused here."""
         if spec.roi == "full":
             return None
         if spec.roi == "hint":
@@ -6229,7 +6370,9 @@ class Percept:
                 return hint
             if isinstance(hint, (list, tuple)) and len(hint) == 4:
                 return Box(*hint)
-            # no usable hint authored -> fall back to the focus box (never worse than today)
+            # no usable hint authored -> fall through (scene still declines the focus crop below)
+        if identity_policy_of(goal) == SCENE_IDENTITY:
+            return None  # whole frame: scene scope has no subject to crop to
         return focus.box if focus else None
 
     def _resolve_strip(self, goal, source: str, *, perception_level: int = 0):
@@ -6887,6 +7030,11 @@ class Percept:
 
         Asserted beats observed; the goal's edge state is cleared so the corrected fact is
         re-judged rather than suppressed by a stale rising edge, and the cache is invalidated.
+
+        NO SUBJECT: raises :class:`UnsupportedCorrectionScopeError` when the deployment has no
+        entity scope at all (every active concern declares ``identity_policy="scene"``), and still
+        returns ``None`` when scope EXISTS but nothing is in focus on this frame. See that class for
+        why the two are not the same answer.
         """
         now = self.clock() if t is None else t
         target = entity_id
@@ -6894,7 +7042,13 @@ class Percept:
             focus = self.graph.in_focus()
             target = focus.id if focus else None
         if target is None:
-            return None
+            if self._deployment_has_entity_scope():
+                return None  # transient: scope exists, nothing in focus on this frame
+            raise UnsupportedCorrectionScopeError(
+                f"cannot bind correction {key!r}={value!r}: no active concern has entity scope "
+                "(every one declares identity_policy=\"scene\"), so there is no subject to "
+                "correct. Pass entity_id= explicitly, or declare a concern with entity scope."
+            )
         self.graph.assert_attribute(target, key, value, t=now)
         for goal in self.goals.active():
             self.gate.reset_goal(goal.id)  # a correction re-opens the edge
