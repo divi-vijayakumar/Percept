@@ -1025,9 +1025,11 @@ EPISODE_FOLD_SKIP_REASONS: tuple[str, ...] = (
     #: An event-chain Watch (``rearm="each_event"``) already owns occurrence identity; a second,
     #: incompatible episode fold must not be added underneath it.
     "document.event_chain_rearm",
-    #: The concern's RESOLVED identity policy is neither a per-entity (scene) one nor ``content_key``
-    #: — e.g. ``claim_slot``, or no policy at all on a profile-less core. This is the ordinary answer
-    #: for most concerns, not a fault; a claim-slot concern goes on to fold via ``_claim_episode_fold``.
+    #: The concern's RESOLVED identity policy neither groups on the scene scope
+    #: (:func:`~percept.identity_policy.folds_on_scene_scope`) nor is ``content_key`` — e.g.
+    #: ``claim_slot``, ``speaker_label``, or no policy at all on a profile-less core. This is the
+    #: ordinary answer for most concerns, not a fault; a claim-slot concern goes on to fold via
+    #: ``_claim_episode_fold``.
     "document.identity_policy_not_content_key",
     #: A content-key concern whose verdict carried no subject at all. There is nothing to group by,
     #: and this method refuses to fabricate a content key.
@@ -1059,8 +1061,10 @@ EPISODE_FOLD_SKIP_REASONS: tuple[str, ...] = (
 #: The three arms of the dispatch at the top of :meth:`Percept._document_episode_fold`: the concern's
 #: RESOLVED identity policy sends it to the scene fold, keeps it on the content-key path, or matches
 #: neither and ends the fold there. ``"none"`` is the arm that produces no fold of any kind, and it is
-#: reached by every policy outside the two named sets — including :data:`percept.identity_policy.
-#: SCENE_IDENTITY` itself, which names the scene scope but is not a per-entity resolver.
+#: reached by every policy that neither groups on the scene scope
+#: (:func:`percept.identity_policy.folds_on_scene_scope` — a per-entity track resolver, or the
+#: DECLARED :data:`percept.identity_policy.SCENE_IDENTITY` scope) nor is ``content_key``: a
+#: ``speaker_label``, a client's own registered resolver name, or no policy at all.
 EPISODE_FOLD_DISPATCH_ARMS: tuple[str, ...] = ("scene", "content_key", "none")
 
 
@@ -2653,9 +2657,10 @@ class Percept:
                 goal, verdict, t, truth=truth, key=key, identity_policy=resolved_policy
             )
         if resolved_policy != "content_key":
-            # The arm that builds NO fold of any kind. Reached by every policy outside the two named
-            # sets -- including the literal SCENE_IDENTITY scope, which names the scene but is not a
-            # per-entity resolver and so never reaches the scene fold below it.
+            # The arm that builds NO fold of any kind. Reached by every policy that answered False
+            # above and is not content_key -- claim_slot (which folds via _claim_episode_fold
+            # instead), speaker_label, a client's own registered resolver name, or nothing declared
+            # on a profile-less core.
             return self._note_fold(
                 goal, identity_policy=resolved_policy, dispatch="none",
                 skip_reason="document.identity_policy_not_content_key",

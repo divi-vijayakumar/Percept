@@ -43,7 +43,7 @@ from percept.backends.fake import FakeVision
 from percept.config import GateSettings, Settings
 from percept.contracts import SubjectRef
 from percept.gate import Gate
-from percept.identity_policy import SCENE_IDENTITY
+from percept.identity_policy import SCENE_IDENTITY, folds_on_scene_scope
 from percept.replay import gate_config_of
 from percept.source_profiles_default import PHYSICAL_SCENE, SCREEN_DOCUMENT
 from percept.tracing import (
@@ -265,32 +265,57 @@ class TestTheDispatchArmIsRecorded(unittest.TestCase):
         self.assertEqual(observed.dispatch, "content_key")
         self.assertFalse(observed.entered_scene_fold)
 
-    def test_a_policy_in_neither_set_never_enters_the_scene_fold(self):
-        # The dispatch routes to the scene fold ONLY for PER_ENTITY_IDENTITY_POLICIES. Any other
-        # resolved policy ends the fold on the "none" arm without the scene fold ever running --
-        # including the literal scene SCOPE below, which names the scene but is not a resolver.
+    def test_a_declared_scene_policy_enters_the_scene_fold(self):
+        # The dispatch asks folds_on_scene_scope(), so TWO kinds of policy reach the scene fold from
+        # opposite directions: the per-entity resolvers above (a subject, but no key stable enough to
+        # group by) and the DECLARED scene scope here, for which scene grouping is the tautology --
+        # one occurrence per concern is exactly what it asks for, and exactly what the scene fold
+        # keys its own subject on. So this arm is "scene", not "none".
         a = _build(state={"identity_policy": SCENE_IDENTITY})
         self.assertEqual(a._resolved_identity_policy(_goal(a)), SCENE_IDENTITY)
-        self.assertIsNone(a._document_episode_fold(_goal(a), _YES, 0.0, truth="yes"))
+        self.assertIsNotNone(a._document_episode_fold(_goal(a), _YES, 0.0, truth="yes"))
         observed = self._observed(a)
         self.assertEqual(observed.identity_policy, SCENE_IDENTITY)
-        self.assertEqual(observed.dispatch, "none")
-        self.assertFalse(
+        self.assertEqual(observed.dispatch, "scene")
+        self.assertTrue(
             observed.entered_scene_fold,
-            "the scene fold is never reached by the policy that names the scene scope",
+            "the policy that names the scene scope must reach the fold keyed by it",
         )
+        self.assertIsNone(observed.skip_reason)
+        self.assertIsNotNone(a.episodes.get("g1"), "and an occurrence really is opened")
+
+    def test_a_policy_in_neither_set_never_enters_the_scene_fold(self):
+        # An identity policy is an open resolver NAME, so a policy that neither groups on the scene
+        # scope nor is content_key is a real case -- a diarization slot here, a client's own
+        # registered resolver in the field. It ends the fold on the "none" arm and the scene fold
+        # never runs, which is the guard that keeps that arm from quietly widening to everything.
+        a = _build(state={"identity_policy": "speaker_label"})
+        self.assertEqual(a._resolved_identity_policy(_goal(a)), "speaker_label")
+        self.assertFalse(folds_on_scene_scope("speaker_label"), "the premise of this case")
+        self.assertIsNone(a._document_episode_fold(_goal(a), _YES, 0.0, truth="yes"))
+        observed = self._observed(a)
+        self.assertEqual(observed.identity_policy, "speaker_label")
+        self.assertEqual(observed.dispatch, "none")
+        self.assertFalse(observed.entered_scene_fold)
         self.assertEqual(observed.skip_reason, "document.identity_policy_not_content_key")
         self.assertNotIn("g1", a.episodes, "and so no episode is ever opened")
 
     def test_the_policy_is_resolved_at_judgment_time_not_reused_from_arming(self):
         # The record must reflect what the fold ACTUALLY saw on this tick. Change what the concern
-        # declares between two folds and the second record must report the new answer.
+        # declares between folds and every later record must report the new answer -- both the policy
+        # NAME (tick two, where the arm is unchanged and only the name moves) and the ARM it routed
+        # to (tick three, where the new policy routes somewhere else entirely).
         a = _build()
         a._document_episode_fold(_goal(a), _YES, 0.0, truth="yes")
         self.assertEqual(self._observed(a).identity_policy, "track_iou_label")
+        self.assertEqual(self._observed(a).dispatch, "scene")
         _goal(a).state["identity_policy"] = SCENE_IDENTITY
         a._document_episode_fold(_goal(a), _YES, 1.0, truth="yes")
         self.assertEqual(self._observed(a).identity_policy, SCENE_IDENTITY)
+        self.assertEqual(self._observed(a).dispatch, "scene")
+        _goal(a).state["identity_policy"] = "speaker_label"
+        a._document_episode_fold(_goal(a), _YES, 2.0, truth="yes")
+        self.assertEqual(self._observed(a).identity_policy, "speaker_label")
         self.assertEqual(self._observed(a).dispatch, "none")
 
     def test_every_declared_arm_is_reachable(self):
