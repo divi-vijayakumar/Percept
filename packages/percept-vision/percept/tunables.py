@@ -210,17 +210,35 @@ _SETTINGS: tuple[TunableSpec, ...] = (
     TunableSpec(
         path="Settings.cache.enabled", owner="ExecutionPolicy", visibility="public", safe_to_optimize=False,
         default=False, value_type="bool", env_var="PERCEPT_CACHE_ENABLED", requires_recompile=True,
-        risk="medium", note="wires the FrameHashLayer cost-cascade short-circuit into the pipeline.",
+        risk="medium", note=(
+            "wires the FrameHashLayer cost-cascade short-circuit into the pipeline. An open episode "
+            "does NOT disable it: the episode's answer-affecting state is part of the cache key, so a "
+            "continuing occurrence can be served from cache while any real change to it — close, "
+            "reopen, update, annotation — misses and is judged afresh. Note that enabling this alone "
+            "leaves the trust gate open; Settings.cache.threshold defaults to 0.0, at which every hit "
+            "is served. See docs/configuration/episodes.md."
+        ),
     ),
     TunableSpec(
         path="Settings.cache.threshold", owner="ExecutionPolicy", visibility="public", safe_to_optimize=True,
         default=0.0, value_type="float", bounds=(0.0, 1.0), env_var="PERCEPT_CACHE_THRESHOLD",
-        requires_recompile=True, risk="medium", note="cascade short-circuit cutoff.",
+        requires_recompile=True, risk="medium", note=(
+            "cascade short-circuit cutoff — the ONLY consumer of a cache hit's decayed confidence "
+            "(how near the frame matched, decayed by how stale the entry is). At the 0.0 default that "
+            "comparison passes unconditionally, so the similarity radius and the age decay gate "
+            "nothing and every hit is served. Raise it to make the layer's own trust model load-bearing."
+        ),
     ),
     TunableSpec(
         path="Settings.cache.ttl_s", owner="ExecutionPolicy", visibility="public", safe_to_optimize=True,
         default=8.0, value_type="float", env_var="PERCEPT_CACHE_TTL_S", requires_recompile=True,
-        risk="low", note="hard ceiling on slow drift before a cache HIT is distrusted.",
+        risk="low", note=(
+            "hard ceiling on slow drift before a cache HIT is distrusted. Raising it does not by "
+            "itself raise the hit rate: the layer holds at most ONE entry per (goal, entity, "
+            "condition) and overwrites on every store, so under dense admission the slot already "
+            "holds the immediately preceding judged frame whatever the TTL says. Size it to how "
+            "long the SCENE stays decidable from one frame, not to how often frames repeat."
+        ),
     ),
     TunableSpec(
         path="Settings.cache.tau_bits", owner="ExecutionPolicy", visibility="public", safe_to_optimize=True,
@@ -230,7 +248,12 @@ _SETTINGS: tuple[TunableSpec, ...] = (
     TunableSpec(
         path="Settings.cache.audit_rate", owner="ExecutionPolicy", visibility="public", safe_to_optimize=True,
         default=0.05, value_type="float", bounds=(0.0, 1.0), env_var="PERCEPT_CACHE_AUDIT_RATE",
-        requires_recompile=True, risk="low", note="fraction of cache HITs re-perceived for audit.",
+        requires_recompile=True, risk="low", note=(
+            "fraction of cache HITs re-perceived for audit. This is the ONLY mechanism that detects "
+            "a false serve — a cached verdict that a fresh judgment contradicts. At the 0.05 "
+            "default a systematic false serve is caught only after ~19 of every 20 have already "
+            "been delivered, so raise it while first enabling the cache on a new source."
+        ),
     ),
     # -- ModelSettings — provider/model selection -> DeploymentConfig (ownership table's own example row;
     # Invariants: "Model id != adapter identity... DeploymentConfig may own model-id fields").

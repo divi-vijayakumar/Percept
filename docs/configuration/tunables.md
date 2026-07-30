@@ -1,6 +1,6 @@
 ---
 title: Tunables
-updated: 2026-07-28
+updated: 2026-07-30
 applies_to: percept-vision 1.0.0
 status: stable
 generated_by: tools/build_tunables_doc.py
@@ -45,10 +45,10 @@ takes effect.
 
 | path | owner | type | default | bounds | env | risk | note |
 |---|---|---|---|---|---|---|---|
-| `Settings.cache.audit_rate` | ExecutionPolicy | float | `0.05` | 0.0 – 1.0 | `PERCEPT_CACHE_AUDIT_RATE` | low | fraction of cache HITs re-perceived for audit. |
+| `Settings.cache.audit_rate` | ExecutionPolicy | float | `0.05` | 0.0 – 1.0 | `PERCEPT_CACHE_AUDIT_RATE` | low | fraction of cache HITs re-perceived for audit. This is the ONLY mechanism that detects a false serve — a cached verdict that a fresh judgment contradicts. At the 0.05 default a systematic false serve is caught only after ~19 of every 20 have already been delivered, so raise it while first enabling the cache on a new source. |
 | `Settings.cache.tau_bits` | ExecutionPolicy | int | `6` | 0.0 – 64.0 | `PERCEPT_CACHE_TAU_BITS` | low | dHash Hamming near-match radius. |
-| `Settings.cache.threshold` | ExecutionPolicy | float | `0.0` | 0.0 – 1.0 | `PERCEPT_CACHE_THRESHOLD` | medium | cascade short-circuit cutoff. |
-| `Settings.cache.ttl_s` | ExecutionPolicy | float | `8.0` | — | `PERCEPT_CACHE_TTL_S` | low | hard ceiling on slow drift before a cache HIT is distrusted. |
+| `Settings.cache.threshold` | ExecutionPolicy | float | `0.0` | 0.0 – 1.0 | `PERCEPT_CACHE_THRESHOLD` | medium | cascade short-circuit cutoff — the ONLY consumer of a cache hit's decayed confidence (how near the frame matched, decayed by how stale the entry is). At the 0.0 default that comparison passes unconditionally, so the similarity radius and the age decay gate nothing and every hit is served. Raise it to make the layer's own trust model load-bearing. |
+| `Settings.cache.ttl_s` | ExecutionPolicy | float | `8.0` | — | `PERCEPT_CACHE_TTL_S` | low | hard ceiling on slow drift before a cache HIT is distrusted. Raising it does not by itself raise the hit rate: the layer holds at most ONE entry per (goal, entity, condition) and overwrites on every store, so under dense admission the slot already holds the immediately preceding judged frame whatever the TTL says. Size it to how long the SCENE stays decidable from one frame, not to how often frames repeat. |
 | `Settings.routing.confidence_threshold` | ExecutionPolicy | float | `0.6` | 0.0 – 1.0 | `PERCEPT_ROUTE_THRESHOLD` | low | below this, the local router defers to the conductor (defer-on-miss is structural). |
 | `WatchProfile.cadence.base_fps` | ExecutionPolicy | float | `4.0` | 0.0 – inf | — | low | fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings'). |
 | `WatchProfile.cadence.escalate_threshold` | ExecutionPolicy | float | `0.15` | 0.0 – 1.0 | — | low | motion level that triggers a saccade toward max_fps. |
@@ -120,11 +120,11 @@ takes effect.
 | path | type | default | bounds / choices | env | safe? | risk | note |
 |---|---|---|---|---|---|---|---|
 | `Percept.create.judge_concurrency` | int | — | 1 – 1024 | — | — | medium | how many of ONE frame's admitted goals may hold a judge call at once (agent.py _DEFAULT_JUDGE_CONCURRENCY=8 when unset) — a resource/concurrency ceiling, which is the ExecutionPolicy ownership row verbatim. NOT optimizable: it is floored at runtime by whatever the deployment's judge routes DECLARE (JudgePool.max_inflight), so tuning it moves provider load and batch makespan, never accuracy. |
-| `Settings.cache.audit_rate` | float | `0.05` | 0.0 – 1.0 | `PERCEPT_CACHE_AUDIT_RATE` | ✅ | low | fraction of cache HITs re-perceived for audit. |
-| `Settings.cache.enabled` | bool | `false` | — | `PERCEPT_CACHE_ENABLED` | — | medium | wires the FrameHashLayer cost-cascade short-circuit into the pipeline. |
+| `Settings.cache.audit_rate` | float | `0.05` | 0.0 – 1.0 | `PERCEPT_CACHE_AUDIT_RATE` | ✅ | low | fraction of cache HITs re-perceived for audit. This is the ONLY mechanism that detects a false serve — a cached verdict that a fresh judgment contradicts. At the 0.05 default a systematic false serve is caught only after ~19 of every 20 have already been delivered, so raise it while first enabling the cache on a new source. |
+| `Settings.cache.enabled` | bool | `false` | — | `PERCEPT_CACHE_ENABLED` | — | medium | wires the FrameHashLayer cost-cascade short-circuit into the pipeline. An open episode does NOT disable it: the episode's answer-affecting state is part of the cache key, so a continuing occurrence can be served from cache while any real change to it — close, reopen, update, annotation — misses and is judged afresh. Note that enabling this alone leaves the trust gate open; Settings.cache.threshold defaults to 0.0, at which every hit is served. See docs/configuration/episodes.md. |
 | `Settings.cache.tau_bits` | int | `6` | 0.0 – 64.0 | `PERCEPT_CACHE_TAU_BITS` | ✅ | low | dHash Hamming near-match radius. |
-| `Settings.cache.threshold` | float | `0.0` | 0.0 – 1.0 | `PERCEPT_CACHE_THRESHOLD` | ✅ | medium | cascade short-circuit cutoff. |
-| `Settings.cache.ttl_s` | float | `8.0` | — | `PERCEPT_CACHE_TTL_S` | ✅ | low | hard ceiling on slow drift before a cache HIT is distrusted. |
+| `Settings.cache.threshold` | float | `0.0` | 0.0 – 1.0 | `PERCEPT_CACHE_THRESHOLD` | ✅ | medium | cascade short-circuit cutoff — the ONLY consumer of a cache hit's decayed confidence (how near the frame matched, decayed by how stale the entry is). At the 0.0 default that comparison passes unconditionally, so the similarity radius and the age decay gate nothing and every hit is served. Raise it to make the layer's own trust model load-bearing. |
+| `Settings.cache.ttl_s` | float | `8.0` | — | `PERCEPT_CACHE_TTL_S` | ✅ | low | hard ceiling on slow drift before a cache HIT is distrusted. Raising it does not by itself raise the hit rate: the layer holds at most ONE entry per (goal, entity, condition) and overwrites on every store, so under dense admission the slot already holds the immediately preceding judged frame whatever the TTL says. Size it to how long the SCENE stays decidable from one frame, not to how often frames repeat. |
 | `Settings.edge.coast_enabled` | bool | `true` | — | `PERCEPT_COAST_ENABLED` | — | medium | whether a SourceProfile-declared coast floor is bound into the runtime; strict deployments disable via ExecutionPolicy. |
 | `Settings.entity.max_entities` | int | `64` | 1.0 – inf | `PERCEPT_MAX_ENTITIES` | — | low | eviction bound; resource ceiling (ExecutionPolicy row: 'concurrency ceiling'-shaped). |
 | `Settings.episodes.max_episodes` | int | `64` | 1.0 – inf | `PERCEPT_MAX_EPISODES` | — | low | bound on the per-goal episode log; resource ceiling. |
