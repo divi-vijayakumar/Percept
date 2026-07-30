@@ -34,6 +34,7 @@ from typing import Any
 from percept.adapters import Goal, Verdict
 from percept.agent import _DEFAULT_JUDGE_CONCURRENCY, Percept
 from percept.backends.judge_pool import JudgeCapability, JudgePool, JudgeRoute
+from percept.runtime.worker import RuntimeStats
 
 # -- the measured single-call latency distribution -------------------------------------------------
 # n=100 corpus run, deliberate route (not deadline-censored).
@@ -368,6 +369,222 @@ class BatchDeadlineTests(unittest.TestCase):
         # And the batch genuinely needed more than one goal's budget: 20 goals / 4 slots = 5 waves.
         self.assertEqual(batch_s, per_goal_s * 5)
         self.assertGreater(sum(_latency_s(i) for i in range(4)) * _SUITE_SCALE, per_goal_s)
+
+
+class _FixedLatencyJudge:
+    """Every call costs the same, so a batch's makespan is arithmetic rather than a draw.
+
+    The measured-distribution judge above is the right double for asking "how long does a batch
+    take"; this one is for asking "does the batch's own BUDGET describe the loop that spends it",
+    where a variable per-call cost would only add noise to a question about integers.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.calls_by_goal: dict[str, int] = {}
+        self.inflight = 0
+        self.peak_inflight = 0
+
+    async def judge(
+        self,
+        condition: str,
+        frame: Any,
+        *,
+        roi: Any = None,
+        exemplar: Any = None,
+        corrections: dict | None = None,
+        frames: list | None = None,
+        audio: Any = None,
+        context: dict | None = None,
+    ) -> Verdict:
+        goal_id = condition.rsplit(" ", 1)[-1]
+        self.calls_by_goal[goal_id] = self.calls_by_goal.get(goal_id, 0) + 1
+        self.inflight += 1
+        self.peak_inflight = max(self.peak_inflight, self.inflight)
+        try:
+            await asyncio.sleep(self.seconds)
+        finally:
+            self.inflight -= 1
+        return Verdict(False, 0.9, f"judged {goal_id}")
+
+    async def detect(self, frame: Any, goals: list) -> list:
+        return []
+
+    async def detect_events(self, frames: list, goals: list) -> list:
+        return []
+
+
+async def _split_jobs(core, n: int, *, t: float = 1.0) -> tuple:
+    """Prepare one admitted frame's N judgment jobs the way the runtime worker does."""
+    goal_ids = tuple(f"g{i:03d}" for i in range(n))
+    candidate = core.prepare_observation_candidate(
+        "frame",
+        "camera",
+        t=t,
+        expected_goals_revision=core.goals.revision,
+        expected_source_generation=core.source_continuity_generation("camera"),
+        goal_ids=goal_ids,
+    )
+    assert candidate is not None
+    assert core.launch_observation_candidate(candidate)
+    reduction = core.reduce_observation_completion(
+        await core.dispatch_observation_candidate(candidate)
+    )
+    return tuple(
+        job
+        for goal_id in goal_ids
+        if (job := core.prepare_judgment(reduction, goal_id=goal_id)) is not None
+    )
+
+
+class SplitBatchDeadlineTests(unittest.TestCase):
+    """The batch budget must describe the loop that spends it.
+
+    ``_JudgeScheduler`` has two dispatch protocols and they do not execute alike. The SPLIT protocol
+    (a core publishing ``launch_judgments``/``dispatch_judgment`` — i.e. every ``Percept``, which is
+    what ``run(judge_dispatch="async")`` builds by default for ordinary vision goals) awaits one job
+    at a time, STRICTLY IN SERIES, so a route's terminal-outcome latch stays checkable between jobs.
+    Its makespan is therefore the SUM of its calls. The LEGACY protocol hands the whole frame to
+    ``perceive_judged``, which fans out under the declared bound, so its makespan is the MAX and
+    ``ceil(N / slots)`` waves is the right budget there.
+
+    Sizing the serial loop with the concurrent formula under-budgeted it by a factor of the slot
+    count. Nothing fired on default config (``judge_decision_deadline_s`` is ``None``, and the budget
+    is ``None`` when unset) — which is what made it dangerous rather than visible: the knob read as
+    safe to turn on and, for any multi-goal watch, was not.
+    """
+
+    def _split_scheduler(self, core, *, deadline_s: float | None):
+        from percept.runtime.worker import _JudgeScheduler
+
+        sched = _JudgeScheduler(
+            core, "camera", RuntimeStats(), decision_deadline_s=deadline_s
+        )
+        assert sched._split_protocol, "the split protocol is the subject of these tests"
+        return sched
+
+    def test_the_split_batch_budget_is_one_per_decision_deadline_per_job(self):
+        # 20 goals at 8 slots. The concurrent reading is ceil(20/8) = 3 waves; the loop runs 20 calls
+        # in series. Pinned as BOTH the value it must be and the value it must not be, so a revert to
+        # the wave formula fails here rather than only under a stopwatch.
+        async def main():
+            core = _core(_FixedLatencyJudge(0.0), judge_concurrency=8)
+            _arm(core, 20)
+            jobs = await _split_jobs(core, 20)
+            sched = self._split_scheduler(core, deadline_s=1.9)
+            return len(jobs), sched._batch_deadline_s(jobs)
+
+        n_jobs, budget = asyncio.run(main())
+        self.assertEqual(n_jobs, 20)
+        self.assertEqual(budget, 1.9 * 20)
+        self.assertNotEqual(budget, 1.9 * math.ceil(20 / 8))
+
+    def test_the_budget_matches_the_waves_the_loop_actually_runs(self):
+        """The invariant, not the arithmetic: budget == per-decision x ceil(N / peak concurrency).
+
+        This is the assertion that survives whichever way the loop goes. It holds today because the
+        loop is serial (peak 1 -> N budgets). If the terminal-abort contract is ever re-expressed and
+        this loop fans out under ``effective_judge_concurrency``, the measured peak rises and the
+        budget has to fall with it — so the two can never be changed independently.
+        """
+        async def main():
+            judge = _FixedLatencyJudge(0.002)
+            core = _core(judge, judge_concurrency=6)
+            _arm(core, 12)
+            jobs = await _split_jobs(core, 12)
+            sched = self._split_scheduler(core, deadline_s=1.9)
+            budget = sched._batch_deadline_s(jobs)
+            await sched._dispatch(core.launch_judgments(jobs), t=1.0)
+            return judge, budget
+
+        judge, budget = asyncio.run(main())
+        self.assertEqual(len(judge.calls_by_goal), 12)
+        self.assertGreaterEqual(judge.peak_inflight, 1)
+        self.assertEqual(budget, 1.9 * math.ceil(12 / judge.peak_inflight))
+
+    def test_the_legacy_protocol_keeps_the_concurrent_wave_count(self):
+        """The other half of the fix: the concurrent dispatch is not re-budgeted serially.
+
+        A ``_JudgeScheduler`` over a core WITHOUT the split seams falls back to ``perceive_judged``,
+        which really does fan out, so ``ceil(N / slots)`` is correct there and must stay.
+        """
+        from percept.runtime.worker import _JudgeScheduler
+
+        class _LegacyOnlyCore:
+            class _Goals:
+                revision = 1
+
+                def active(self):
+                    return [object()] * 20
+
+            def __init__(self) -> None:
+                self.goals = self._Goals()
+
+            def effective_judge_concurrency(self, goals=()) -> int:
+                return 8
+
+            async def perceive_judged(self, frame, source, **kwargs):
+                return []
+
+        sched = _JudgeScheduler(
+            _LegacyOnlyCore(), "camera", RuntimeStats(), decision_deadline_s=1.9
+        )
+        self.assertFalse(sched._split_protocol)
+        self.assertEqual(
+            sched._batch_deadline_s(("legacy", "frame", tuple(f"g{i}" for i in range(20)))),
+            1.9 * math.ceil(20 / 8),
+        )
+
+    def test_no_deadline_configured_stays_no_deadline_on_the_split_protocol(self):
+        """The reason this was never reported in the field: on default config there is no budget at
+        all, so the mismatch could not fire. It becomes reachable the moment the knob is set."""
+        async def main():
+            core = _core(_FixedLatencyJudge(0.0), judge_concurrency=4)
+            _arm(core, 12)
+            jobs = await _split_jobs(core, 12)
+            return self._split_scheduler(core, deadline_s=None)._batch_deadline_s(jobs)
+
+        self.assertIsNone(asyncio.run(main()))
+
+    def test_a_multi_goal_split_batch_does_not_expire_from_its_own_arithmetic(self):
+        """The defect end-to-end, on a stopwatch: N > slots, every call comfortably inside its OWN
+        budget, and the batch must still deliver.
+
+        Each of the 8 calls costs ``per_call_s`` and the per-decision budget is twice that, so no
+        individual judgment is anywhere near late. The batch runs them in series, needing ~8 x
+        ``per_call_s`` — which the old concurrent budget (ceil(8/4) = 2 decisions = 4 x
+        ``per_call_s``) could not cover, so the whole batch was cancelled and every goal's verdict
+        discarded, including the ones that had already answered.
+        """
+        per_call_s = 0.03
+        decision_s = per_call_s * 2
+
+        async def main():
+            judge = _FixedLatencyJudge(per_call_s)
+            core = _core(judge, judge_concurrency=4)
+            core.clock = asyncio.get_running_loop().time
+            _arm(core, 8)
+            jobs = await _split_jobs(core, 8)
+            sched = self._split_scheduler(core, deadline_s=decision_s)
+            stats = sched._stats
+            budget = sched._batch_deadline_s(jobs)
+            assert sched.submit(1.0, jobs)
+            for _ in range(200_000):
+                if sched._active is None:
+                    break
+                await asyncio.sleep(0)
+            drained = sched.drain()
+            return judge, stats, drained, budget
+
+        judge, stats, drained, budget = asyncio.run(main())
+        self.assertEqual(stats.judge_deadline_expired, 0)  # not cancelled by its own arithmetic
+        self.assertEqual(len(judge.calls_by_goal), 8)      # every goal judged
+        self.assertEqual(len(drained), 1)                  # one batch delivered
+        self.assertEqual(len(drained[0][1]), 8)            # all eight completions, none discarded
+        # The budget now covers the SERIES the loop runs, and the series really did exceed what the
+        # concurrent formula would have allowed.
+        self.assertEqual(budget, decision_s * 8)
+        self.assertGreater(per_call_s * 8, decision_s * math.ceil(8 / 4))
 
 
 # -- real-speed measurement ------------------------------------------------------------------------

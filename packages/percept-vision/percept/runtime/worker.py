@@ -961,16 +961,35 @@ def _batch_slots(core: Any) -> int:
 
 
 def _decision_waves(core: Any, count: int) -> int:
-    """How many bounded concurrency waves a batch of ``count`` judge calls needs.
+    """How many bounded concurrency waves a CONCURRENTLY-dispatched batch of ``count`` calls needs.
 
-    The core fans a frame's admitted goals out against a bounded slot pool
+    For the dispatch that hands a whole frame to ``Percept.perceive_judged``: that call fans the
+    frame's admitted goals out against a bounded slot pool
     (``Percept.effective_judge_concurrency``), so a batch of N goals resolves in
     ``ceil(N / slots)`` waves of roughly one call each. A core that does not publish the seam is
     assumed to judge serially, which is what it did before the seam existed.
+
+    NOT for a dispatch that runs its jobs in series — that needs :func:`_decision_serial_waves`.
+    Sizing a budget with this function while executing serially is the mismatch the two
+    ``_batch_deadline_s`` implementations below are careful to keep apart: it under-budgets by a
+    factor of the slot count, and the whole batch then aborts on arithmetic rather than on lateness.
     """
     if count <= 1:
         return 1
     return max(1, math.ceil(count / _batch_slots(core)))
+
+
+def _decision_serial_waves(count: int) -> int:
+    """How many per-decision budgets a STRICTLY SEQUENTIAL batch of ``count`` calls needs: ``count``.
+
+    A serial loop's makespan is the SUM of its calls, so its structural worst case is one
+    per-decision budget per call. This is not the pre-concurrency fallback ``_decision_waves``
+    already has for a core that publishes no bound — it is the case where the bound EXISTS and is
+    genuinely wide, and the dispatch still does not use it (see ``_JudgeScheduler._dispatch``, which
+    is sequential on purpose so a route's terminal-outcome latch can be honoured between jobs).
+    Reading the bound there would budget for waves nobody runs.
+    """
+    return max(1, int(count))
 
 
 class _LegacyJudgeScheduler:
@@ -2323,19 +2342,41 @@ class _JudgeScheduler:
     def _batch_deadline_s(self, jobs: tuple[Any, ...]) -> float | None:
         """The whole batch's absolute backstop, derived from the per-decision ``decision_deadline_s``.
 
-        See ``_LegacyJudgeScheduler._batch_deadline_s`` for the full argument; the defect, the fix
-        and the ordering against ``stall_after_s`` are identical on both dispatch protocols. Per-goal
-        lateness stays a per-goal outcome (``JudgePool.deadline_s``, then the fail-closed degrade to
-        ASK); only the batch's own absolute abort is sized to the structural worst case an N-goal
-        batch can reach at the configured concurrency, and it collapses to the unscaled per-decision
-        value whenever the bound is wide enough to hold the batch in one wave.
+        See ``_LegacyJudgeScheduler._batch_deadline_s`` for the full argument about WHY a batch needs
+        a budget of its own — the defect (one goal's deadline cancelling an N-goal batch wholesale),
+        the per-goal deadline living one layer down, and the ordering against ``stall_after_s`` are
+        identical on both dispatch protocols.
+
+        WHAT DIFFERS HERE IS THE WAVE COUNT, AND IT HAS TO. This scheduler has two dispatch
+        protocols and they do not execute alike:
+
+        * **split protocol** — ``_dispatch`` awaits ``core.dispatch_judgment`` once per job, STRICTLY
+          IN SERIES (deliberately; a route's terminal-outcome latch is only checkable between jobs).
+          A serial makespan is the SUM, so the structural worst case is one per-decision budget PER
+          JOB: ``_decision_serial_waves``.
+        * **legacy protocol** — ``_dispatch`` hands the whole frame to ``perceive_judged``, which
+          fans out under ``asyncio.Semaphore(effective_judge_concurrency(...))``. That really does
+          resolve in ``ceil(N / slots)`` waves, so ``_decision_waves`` is right there and collapses
+          to the unscaled per-decision value once the bound holds the batch in one wave.
+
+        Using the concurrent formula for the serial loop was a live defect: it budgeted
+        ``ceil(N/slots)`` waves against N sequential calls, so a batch could be cancelled WHOLESALE
+        by its own arithmetic — every goal's verdict discarded, including the ones that had already
+        answered — while every individual call was comfortably inside its own budget. It could not
+        fire on default config (``judge_decision_deadline_s`` defaults to ``None`` and this returns
+        ``None`` when unset), which is exactly what made it dangerous: the knob looked safe to turn
+        on and was not, for any multi-goal watch. The budget and the execution now agree by
+        construction, and a change to either has a test that names the other.
         """
         if self._decision_deadline_s is None:
             return None
-        return self._decision_deadline_s * _decision_waves(
-            self._core,
-            self._batch_size(jobs),
+        count = self._batch_size(jobs)
+        waves = (
+            _decision_serial_waves(count)
+            if self._split_protocol
+            else _decision_waves(self._core, count)
         )
+        return self._decision_deadline_s * waves
 
     async def _dispatch_with_deadline(
         self,
@@ -2425,20 +2466,33 @@ class _JudgeScheduler:
                 self._source,
                 **kwargs,
             )
-        # DELIBERATELY SEQUENTIAL — this loop is not the batch-latency defect, and fanning it out
-        # would break a guarantee that has a name and a test. A route may declare
-        # ``terminal_outcomes``; when it does, ``take_terminal_error`` latches after the job that
-        # tripped it and this loop must spend NO further provider call (see
-        # ``test_terminal_goal_bound_adapter_stops_rest_of_split_batch``). That is only enforceable
-        # if the next job has not started yet, so "check between jobs" and "run jobs concurrently"
-        # are mutually exclusive here and the fail-closed reading wins.
+        # DELIBERATELY SEQUENTIAL, AND IT COSTS. Fanning this out would break a guarantee that has a
+        # name and a test. A route may declare ``terminal_outcomes``; when it does,
+        # ``take_terminal_error`` latches after the job that tripped it and this loop must spend NO
+        # further provider call (see ``test_terminal_goal_bound_adapter_stops_rest_of_split_batch``).
+        # That is only enforceable if the next job has not started yet, so "check between jobs" and
+        # "run jobs concurrently" are mutually exclusive here and the fail-closed reading wins.
         #
-        # It costs nothing today: no production ``run()`` path constructs a split-protocol
-        # ``_JudgeScheduler`` — every live judge lane goes through ``_LegacyJudgeScheduler`` into
-        # ``Percept.perceive_judged``, which IS batched concurrently (see its dispatch/apply passes).
-        # If this protocol ever becomes the live lane, the fan-out belongs here too — but only once
-        # the terminal-abort contract has been re-expressed as something a concurrent batch can
-        # honour (e.g. a pre-dispatch latch check plus immediate cancellation), not by deleting it.
+        # WHAT THIS LOOP IS, PLAINLY: an N-goal batch's makespan here is the SUM of its judge calls,
+        # not the MAX. ``Percept.perceive_judged`` — the legacy protocol's dispatch, a few lines up —
+        # converts that sum into a max under ``asyncio.Semaphore(effective_judge_concurrency(...))``;
+        # this loop does not, and a multi-goal watch on this lane waits accordingly.
+        #
+        # AND THIS LANE IS LIVE, not hypothetical: ``judge_dispatch="async"`` is ``run()``'s DEFAULT
+        # and builds a ``_ProviderScheduler`` (this class) over a ``Percept`` core, which publishes
+        # both ``launch_judgments`` and ``dispatch_judgment`` — so ``_split_protocol`` is True and
+        # every ordinary VISION goal reaches this loop. (Audio-only and fused goals go through
+        # ``_LegacyJudgeScheduler`` into ``perceive_judged`` and are fanned out.) An earlier version
+        # of this comment claimed no production path reached here; it was wrong, and the deadline
+        # arithmetic in ``_batch_deadline_s`` was sized on that mistaken reading.
+        #
+        # Two things follow, and only one is done here. (1) The BUDGET must match this execution:
+        # ``_batch_deadline_s`` now sizes the split protocol serially, so a batch can no longer be
+        # cancelled wholesale by arithmetic that assumed a fan-out. (2) The LATENCY is a real cost
+        # and reducing it means re-expressing the terminal-abort contract as something a concurrent
+        # batch can honour (a pre-dispatch latch check plus immediate cancellation of the rest) —
+        # reusing ``effective_judge_concurrency`` as the bound, never a second one. That is a
+        # contract change, not a loop change, and it is not attempted here.
         completions = []
         for job in jobs:
             completions.append(await self._core.dispatch_judgment(job))
