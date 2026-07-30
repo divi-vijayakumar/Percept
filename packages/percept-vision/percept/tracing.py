@@ -118,6 +118,16 @@ STAGE_SHADOW_FOLD = "shadow.fold"          # ADVISORY — the subject + EpisodeF
 #: ``data["fold_skip_reason"]`` is: ``None`` when a governing fold WAS built and threaded into the gate
 #: this tick, otherwise the ``percept.agent.EPISODE_FOLD_SKIP_REASONS`` entry naming the one guard that
 #: declined. Purely additive observability — nothing branches on it.
+#:
+#: ``data["fold_episode_id"]`` / ``data["fold_match"]`` are the governing fold's OWN answer — which
+#: episode it bound and how — carried as SIBLINGS beside ``data["fold"]``, never inside it. They make
+#: three states distinguishable that the shadow's always-``unbound`` dict collapses into one:
+#:
+#: * both ``None`` — no governing fold ran this tick (see ``fold_skip_reason`` for which guard declined)
+#: * ``fold_match="unbound"``, id ``None`` — a fold RAN and bound nothing
+#: * an id with a binding match — a fold ran and bound that episode
+#:
+#: Read them, not ``data["fold"]``, when the question is what governed. Purely additive observability.
 STAGE_JUDGMENT_EVENT = "judgment.event"    # the frozen percept.contracts.JudgmentEvent for one decision,
 #: projected into the trace stream whenever a fire carried one: alongside ``gate.classified`` for a
 #: judged Watch, or alongside ``transition.decision`` for a fired live transition (marked

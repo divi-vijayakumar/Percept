@@ -1115,6 +1115,17 @@ class FoldObservation:
       when a fold was built.
     * ``scene_key_turnovers`` — how many times this concern's governed gate key has changed. Focus
       churn is what turns a scene occurrence into a stream of declined ticks.
+    * ``episode_id`` / ``match`` — WHICH episode the governing fold bound, and how it bound it. The
+      other fields settle whether a fold was built and by which arm; only these two say what it
+      decided. ``None`` for both means no governing fold was threaded this tick (the fold was
+      skipped, or never consulted) — distinct from a fold that ran and bound nothing, which reports
+      ``match="unbound"`` with ``episode_id=None``.
+
+    SIBLINGS, NEVER A REDEFINITION. These are ``fold_episode_id`` / ``fold_match`` in the trace,
+    beside — not inside — the ``shadow.fold`` record's ``data["fold"]`` dict. That dict is the
+    SHADOW's fold and reads ``match="unbound"``, ``episode_id=None`` on every tick of every concern
+    by construction; five places document that as invariant and it must stay true. A reader wanting
+    the governing answer reads these siblings.
     """
 
     identity_policy: "str | None"
@@ -1122,6 +1133,8 @@ class FoldObservation:
     entered_scene_fold: bool
     skip_reason: "str | None"
     scene_key_turnovers: int
+    episode_id: "str | None" = None
+    match: "str | None" = None
 
     def to_advisory(self) -> dict[str, Any]:
         """The JSON-safe fields added to a ``shadow.fold`` trace record's ``data``."""
@@ -1131,14 +1144,16 @@ class FoldObservation:
             "fold_entered_scene": self.entered_scene_fold,
             "fold_skip_reason": self.skip_reason,
             "fold_scene_key_turnovers": self.scene_key_turnovers,
+            "fold_episode_id": self.episode_id,
+            "fold_match": self.match,
         }
 
 
 #: What a ``shadow.fold`` record carries when the fold was never consulted for this goal on this tick.
-#: Distinct from every real answer: no policy, no arm, no guard.
+#: Distinct from every real answer: no policy, no arm, no guard, and no bound episode.
 _FOLD_NOT_CONSULTED = FoldObservation(
     identity_policy=None, dispatch="none", entered_scene_fold=False,
-    skip_reason=None, scene_key_turnovers=0,
+    skip_reason=None, scene_key_turnovers=0, episode_id=None, match=None,
 )
 
 
@@ -2578,10 +2593,21 @@ class Percept:
         ``fold`` is the fold actually threaded into ``_fire_concern`` for this tick (document, scene
         OR claim), so a claim-slot concern — which passes THROUGH the content-key guard on its way to
         :meth:`_claim_episode_fold` — is not reported as skipped when it did in fact fold.
+
+        When that fold exists, its OWN ``episode_id``/``match`` are carried out as siblings. They are
+        read from the governing fold in hand — never from the shadow — so ``fold_match`` can legally
+        read ``"unbound"`` (a fold that ran and bound nothing) where ``fold_episode_id`` is ``None``
+        AND ``fold_match`` is ``None`` means no governing fold ran at all. Those two states are
+        different answers and the trace must not collapse them.
         """
         observed = self._fold_observation.get(goal.id, _FOLD_NOT_CONSULTED)
         if fold is not None:
-            observed = replace(observed, skip_reason=None)
+            observed = replace(
+                observed,
+                skip_reason=None,
+                episode_id=fold.episode_id,
+                match=fold.match,
+            )
         return observed.to_advisory()
 
     def _observation_was_judged(self, goal_id: str) -> bool:

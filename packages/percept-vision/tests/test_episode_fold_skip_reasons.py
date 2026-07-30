@@ -432,6 +432,41 @@ class TestTheShadowFoldIsNotEvidence(unittest.TestCase):
         self.assertIsNone(record.data["fold_skip_reason"])
         self.assertIs(record.data["fold_entered_scene"], True)
 
+    def test_the_governing_episode_rides_as_siblings_not_inside_the_shadow_fold(self):
+        # L1: the shadow's ``fold`` says WHICH question this record cannot answer; the siblings say
+        # which episode the GOVERNING fold actually bound. Both live in one record without either
+        # redefining the other.
+        a = _build()
+        a.vision = FakeVision(script={"f0": _YES})
+        rec = _recorder()
+        a.on_trace = rec.tracer()
+        asyncio.run(a.perceive_judged("f0", t=0.0))
+        bound = a.episodes["g1"]._episodes[0]
+        record = _shadow_records(rec)[0]
+        # The sibling carries the real, governing answer...
+        self.assertEqual(record.data["fold_episode_id"], bound.id)
+        self.assertEqual(record.data["fold_match"], "new")
+        # ...while the shadow's own dict is untouched and still reads its structural constant.
+        self.assertEqual(record.data["fold"]["match"], "unbound")
+        self.assertIsNone(record.data["fold"]["episode_id"])
+
+    def test_a_fold_that_never_ran_is_distinguishable_from_one_that_bound_nothing(self):
+        # The whole point of the siblings. Before them these two ticks were indistinguishable in the
+        # trace, because the shadow's fold reads ``unbound`` in BOTH.
+        a = _build()
+        a.vision = FakeVision(script={"f0": _MAYBE})
+        rec = _recorder()
+        a.on_trace = rec.tracer()
+        asyncio.run(a.perceive_judged("f0", t=0.0))
+        record = _shadow_records(rec)[0]
+        # truth=unknown declines the scene fold, so no governing fold ran at all: BOTH siblings None.
+        self.assertEqual(record.data["fold_skip_reason"], "scene.truth_unknown")
+        self.assertIsNone(record.data["fold_episode_id"])
+        self.assertIsNone(
+            record.data["fold_match"],
+            "a fold that never ran must not report a match -- that is the state 'unbound' hides",
+        )
+
     def test_the_two_callers_of_the_fold_are_counted_apart(self):
         # behavior.py's unbound branch is reached whenever the decision is None. The shadow supplies
         # None structurally, on every tick; a governing caller supplying None would be a real finding.

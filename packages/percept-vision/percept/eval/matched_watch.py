@@ -379,6 +379,10 @@ _TRACE_DATA_KEYS = {
         "fold_entered_scene",
         "fold_skip_reason",
         "fold_scene_key_turnovers",
+        # WHICH episode it bound, and how. Both ``None`` means no governing fold ran; ``fold_match``
+        # of ``"unbound"`` means one ran and bound nothing — a different answer.
+        "fold_episode_id",
+        "fold_match",
     },
     "incident.created": {
         "entity_id",
@@ -1936,6 +1940,10 @@ def _expected_governing_fold(
         "fold_skip_reason": reason,
         "fold_scene_key_turnovers": scene_key_turnovers,
     }
+    # DELIBERATELY ABSENT: ``fold_episode_id`` / ``fold_match``. Everything above follows from
+    # DECLARED state; those two are the fold's own outcome and are supplied at the comparison site
+    # from the replayed ``episode_fold`` instead — the same log the runtime drives, not a second
+    # rule re-derived here. Adding them to this function would be that second implementation.
 
 
 def _parse_persisted_real_manifest(doc: Mapping[str, Any], context: str) -> Mapping[str, Any]:
@@ -4139,6 +4147,11 @@ def _validate_v2_arm_reconstruction(
             # GOVERNING fold bound an occurrence. The ``fold_*`` fields beside it are the ones that
             # carry information, and they are derived — see ``_expected_governing_fold`` for the order
             # and for why a frame watch and a transition under the same declared policy disagree.
+            # ``fold_episode_id``/``fold_match`` are DERIVED, not excused. The episode id is a
+            # structured string (goal:event:entity:sequence), not a random token, and ``fold`` above is
+            # this same arm's reconstruction driven through the SAME EpisodeLog and the SAME pure
+            # ``episode_fold`` the runtime uses. So the receipt asserts them by value like every other
+            # field — a wrong episode id fails here rather than passing a weaker shape check.
             _require(
                 _thaw(shadow_by_t.get(candidate.t))
                 == {
@@ -4154,6 +4167,8 @@ def _validate_v2_arm_reconstruction(
                             "should_evaluate_gate": True,
                             "supersedes": None,
                         },
+                        "fold_episode_id": None if fold is None else fold.episode_id,
+                        "fold_match": None if fold is None else fold.match,
                         **_expected_governing_fold(
                             identity_policy=resolved_identity,
                             declared_state=declared_state,
