@@ -54,13 +54,22 @@ already committed to elsewhere in the tree (never invented fresh to make a parti
    scene density — this floor is evaluated against a REPRESENTATIVE mostly-still deployment scene
    (the primary economic claim: "a still scene is effectively free"), not the busiest observed
    track, and is a floor, not a target.
+
+4. ``JUDGE_ROUND_TRIP_P99_CEILING_S`` (§6) — the LAUNCH GATE on what a client actually waits for:
+   one goal's judgment, admitted frame in -> verdict out, at p99. Set to the SAME 2.5s already
+   pre-registered as §5's ``JUDGE_ROUND_TRIP_P95_CEILING_S`` rather than a second number, so the
+   tree carries one "how long may a judgment take" figure and the gate differs from the §5 bar only
+   in WHICH percentile and WHICH span it reads. It is not the tier-0 ``REFLEX_P95_THRESHOLD_S``
+   above and must never be conflated with it: that one is a 10ms LOCAL in-process gate decision with
+   no provider anywhere near it. Unlike §1-§3 this gate is RELEASE-TIME, and it does not pass today
+   — see §6 for the measurement it is evaluated against and why the number is not moved to suit it.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Iterable, Sequence
 
 from .harness.metrics import CostSample, CostSummary, PercentileSummary, percentile
 from .harness.tier0 import LoopReport, MotionGate
@@ -92,6 +101,19 @@ __all__ = [
     "JUDGE_ROUND_TRIP_LATENCY",
     "JUDGE_ROUND_TRIP_P95_CEILING_S",
     "judge_latency_promise",
+    # §6 — the RELEASE-TIME launch gate on per-goal judge round-trip p99
+    "JUDGE_ROUND_TRIP_P99_CEILING_S",
+    "JUDGE_LATENCY_STAGES",
+    "JUDGE_LATENCY_START_STAGE",
+    "JUDGE_LATENCY_END_STAGES",
+    "judge_stage_latencies",
+    "judge_provider_spans",
+    "judge_round_trip_p99",
+    "JudgeLatencyGate",
+    "judge_p99_gate_from_samples",
+    "judge_p99_gate_from_distribution",
+    "MEASURED_JUDGE_ROUND_TRIP",
+    "LAUNCH_GATE_JUDGE_P99",
 ]
 
 # ---------------------------------------------------------------------------
@@ -598,3 +620,259 @@ def judge_latency_promise() -> str:
         )
         lines.append(f"  superseded censored reflex run: {REFLEX_JUDGE_LATENCY_CENSORED.describe()}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 6. LAUNCH GATE — per-goal judge round-trip p99 <= 2.5s (RELEASE-TIME, and RED today)
+# ---------------------------------------------------------------------------
+#
+# WHAT THIS GATE MEASURES, AND WHY NOT THE OTHER THING. The measurand is the wall time between an
+# admitted frame arriving and ONE goal's verdict being emitted for it — per goal, at p99. That span
+# deliberately INCLUDES the time a goal spends queued behind the judge-concurrency bound and behind
+# whatever else its batch is doing, because that is the wait a client experiences. §5's
+# :data:`JUDGE_ROUND_TRIP_P95_CEILING_S` reads a narrower span (the provider call itself, as sampled
+# by a judge adapter), which is why the same 2.5s figure can be comfortably met there and missed
+# here: the difference between the two IS the runtime's queueing, and a gate that could not see it
+# would be measuring the provider's product rather than Percept's.
+#
+# WHERE THE SAMPLES COME FROM — AND THE ONE FIELD THIS MUST NEVER READ. Derive from JUDGE-STAGE
+# TRACE RECORDS ONLY (:func:`judge_stage_latencies`). Do NOT use ``TraceSummary.latency_p95_s`` (the
+# ``latency.p95_s`` field of a trace summary / ``.ptrace`` report). That field is
+# ``emitted_wall_ts - observed_wall_ts`` across EVERY record type, and on any real run ~99% of
+# records are ``edge.decision`` — one per frame, at ~0.00s, because the tier-0 gate answers in
+# microseconds. Its percentiles therefore describe a two-population mixture dominated by the cheap
+# population, and a judge that had regressed to 10s would still leave that field reading ~0.00s. It
+# is a correct field for "how long does a record take to emit" and a nonsense one for "how long does
+# a judgment take". :func:`judge_stage_latencies` filters to the judge stages before taking any
+# percentile, and ``tests/test_slo_asserts.py`` pins the difference on a mixture where the two
+# readings disagree by three orders of magnitude.
+#
+# THIS GATE DOES NOT PASS. The recorded measurement below has a per-goal round-trip MEDIAN of 7.34s
+# (across goals: 7.34s-9.10s) and a maximum of 16.93s. Percentiles are monotone, so a median of 7.34s
+# puts p99 at 7.34s or above — three times the ceiling — without needing a p99 that was never
+# reported. The ceiling is NOT moved to accommodate that, and the assertion is NOT marked xfail: the
+# number is the pre-registered §5 figure, and a gate quietly retuned to the measurement it is
+# supposed to police stops being a gate. The gate is wired RELEASE-TIME (see
+# ``tests/test_slo_asserts.py``) so the gap is a release decision rather than a permanently red
+# per-merge build — the same shape the other release criteria in this tree use, where the suite
+# asserts the pass-condition MECHANICS deterministically and the for-record evaluation happens
+# against a real run.
+
+#: The launch gate. Deliberately the SAME 2.5s as §5's p95 bar rather than a second figure — see the
+#: module docstring §4. Raising it would assert nothing; the lever is the queueing the span exposes.
+JUDGE_ROUND_TRIP_P99_CEILING_S = 2.5
+
+#: The trace stage that opens one goal's judge span (``percept.tracing.STAGE_JUDGE_STARTED``).
+JUDGE_LATENCY_START_STAGE = "judge.started"
+
+#: The stages that close it. A DEGRADED judgment is a completed wait from the client's side — it
+#: waited and got an ASK — so excluding it would censor the slow tail, which is the §5 mistake.
+JUDGE_LATENCY_END_STAGES: tuple[str, ...] = ("judge.finished", "judge.degraded")
+
+#: Every stage this gate is allowed to read. Anything else — above all ``edge.decision`` — is a
+#: different population and is filtered out before a percentile is taken.
+JUDGE_LATENCY_STAGES: tuple[str, ...] = (
+    JUDGE_LATENCY_START_STAGE,
+    *JUDGE_LATENCY_END_STAGES,
+)
+
+
+def judge_stage_latencies(records: "Iterable[Any]") -> list[float]:
+    """Per-goal judge round-trip seconds, read from JUDGE-STAGE trace records only.
+
+    One sample per closing record (:data:`JUDGE_LATENCY_END_STAGES`), taken from that record's own
+    ``latency_s`` — which the recorder defines as its ``emitted_wall_ts`` minus the ``trace_id``'s
+    FIRST observed wall time, i.e. from the admitted frame's arrival to this goal's verdict. Records
+    from any other stage are dropped, so ``edge.decision``'s ~0.00s population can never enter the
+    percentile (see this section's header for why that matters).
+
+    Accepts anything with ``.stage`` and ``.latency_s`` — a ``percept.tracing.TraceRecord``, or a
+    replayed one. A closing record with no usable clock contributes nothing rather than a zero.
+    """
+    samples: list[float] = []
+    for record in records:
+        if getattr(record, "stage", None) not in JUDGE_LATENCY_END_STAGES:
+            continue
+        latency = getattr(record, "latency_s", None)
+        if latency is None:
+            continue
+        samples.append(float(latency))
+    return samples
+
+
+def judge_provider_spans(records: "Iterable[Any]") -> list[float]:
+    """The provider-call half of each judge span: ``judge.started`` -> its closing record.
+
+    Diagnostic, not the gate. Subtracting these from :func:`judge_stage_latencies` is what tells a
+    reader whether a failing gate is the provider being slow or the runtime making a goal wait, so
+    the gate reports a cause rather than only a colour. Paired on
+    ``(trace_id, goal_id)``: one admitted frame judges many goals under one ``trace_id``.
+    """
+    started: dict[tuple, float] = {}
+    spans: list[float] = []
+    for record in records:
+        stage = getattr(record, "stage", None)
+        if stage not in JUDGE_LATENCY_STAGES:
+            continue
+        emitted = getattr(record, "emitted_wall_ts", None)
+        if emitted is None:
+            continue
+        key = (getattr(record, "trace_id", None), getattr(record, "goal_id", None))
+        if stage == JUDGE_LATENCY_START_STAGE:
+            started[key] = float(emitted)
+            continue
+        begin = started.pop(key, None)
+        if begin is not None:
+            spans.append(max(0.0, float(emitted) - begin))
+    return spans
+
+
+def judge_round_trip_p99(samples: Sequence[float]) -> float:
+    """p99 of per-goal judge round-trip seconds (nearest-rank, :func:`percentile`)."""
+    return percentile(samples, 99)
+
+
+@dataclass(frozen=True)
+class JudgeLatencyGate:
+    """One evaluation of the launch gate: the ceiling, what was measured, and whether it cleared.
+
+    ``is_floor`` marks a verdict reached from a LOWER percentile than p99. Percentiles are monotone,
+    so a measured p50 of 7.34s proves p99 >= 7.34s; a gate that FAILS on such a floor fails a
+    fortiori and needs no invented p99. A gate cannot PASS on a floor — clearing the ceiling is a
+    claim about the tail, and this module never emits a percentile it did not observe — so
+    :attr:`passed` is ``False`` whenever the floor itself is under the ceiling but the real p99 is
+    unknown, and :attr:`is_decided` says which of the two it is.
+    """
+
+    ceiling_s: float
+    measured_s: float | None
+    percentile_read: float
+    n: int | None
+    conditions: LatencyConditions | None = None
+    note: str = ""
+
+    @property
+    def is_floor(self) -> bool:
+        """Whether ``measured_s`` is a lower bound on p99 rather than p99 itself."""
+        return self.percentile_read < 99.0
+
+    @property
+    def is_decided(self) -> bool:
+        """Whether the evidence settles the gate. A floor ABOVE the ceiling decides it (fail); a
+        floor below it does not, because the tail it does not cover could still breach."""
+        if self.measured_s is None:
+            return False
+        return not self.is_floor or self.measured_s > self.ceiling_s
+
+    @property
+    def passed(self) -> bool:
+        """``True`` only on an observed p99 at or under the ceiling. Unknown is never a pass."""
+        return (
+            self.measured_s is not None
+            and not self.is_floor
+            and self.measured_s <= self.ceiling_s
+        )
+
+    def describe(self) -> str:
+        """One human line: the reading, the ceiling, the verdict, and the conditions."""
+        if self.measured_s is None:
+            body = f"per-goal judge round-trip: NOT MEASURED (ceiling {self.ceiling_s:g}s)"
+        else:
+            read = "p99" if not self.is_floor else f"p{self.percentile_read:g} (a p99 FLOOR)"
+            verdict = (
+                "PASS"
+                if self.passed
+                else ("FAIL" if self.is_decided else "UNDECIDED — the tail was never measured")
+            )
+            body = (
+                f"per-goal judge round-trip {read} {self.measured_s:g}s "
+                f"vs ceiling {self.ceiling_s:g}s: {verdict}"
+            )
+        if self.n is not None:
+            body = f"{body} · n={self.n}"
+        if self.conditions is not None:
+            body = f"{body} [{self.conditions.describe()}]"
+        if self.note:
+            body = f"{body} — {self.note}"
+        return body
+
+
+def judge_p99_gate_from_samples(
+    samples: Sequence[float],
+    *,
+    conditions: LatencyConditions | None = None,
+    note: str = "",
+) -> JudgeLatencyGate:
+    """Evaluate the launch gate over per-goal round-trip samples — the RELEASE-TIME path.
+
+    Feed it :func:`judge_stage_latencies` over a for-record run's judge-stage records. Never feed it
+    a trace summary's ``latency.p95_s``: that field mixes populations (see this section's header).
+    """
+    if not samples:
+        raise ValueError("judge_p99_gate_from_samples() requires at least one sample")
+    return JudgeLatencyGate(
+        ceiling_s=JUDGE_ROUND_TRIP_P99_CEILING_S,
+        measured_s=judge_round_trip_p99(samples),
+        percentile_read=99.0,
+        n=len(samples),
+        conditions=conditions,
+        note=note,
+    )
+
+
+def judge_p99_gate_from_distribution(
+    distribution: LatencyDistribution,
+) -> JudgeLatencyGate:
+    """Evaluate the gate against a run that was only ever reported as percentiles.
+
+    Uses the HIGHEST measured percentile at or below p99 and marks the result a floor, because that
+    is all such a report supports. A run whose samples survive should go through
+    :func:`judge_p99_gate_from_samples` instead, which reads the real p99.
+    """
+    for read, value in ((95.0, distribution.p95_s), (50.0, distribution.p50_s), (25.0, distribution.p25_s)):
+        if value is not None:
+            return JudgeLatencyGate(
+                ceiling_s=JUDGE_ROUND_TRIP_P99_CEILING_S,
+                measured_s=value,
+                percentile_read=read,
+                n=distribution.n,
+                conditions=distribution.conditions,
+                note=distribution.note,
+            )
+    return JudgeLatencyGate(
+        ceiling_s=JUDGE_ROUND_TRIP_P99_CEILING_S,
+        measured_s=None,
+        percentile_read=99.0,
+        n=distribution.n,
+        conditions=distribution.conditions,
+        note=distribution.note,
+    )
+
+
+#: The measurement the launch gate is evaluated against: per-goal judge round-trip, admitted frame
+#: to that goal's verdict, taken from judge-stage records on a multi-goal watch. ``p50_s`` is the
+#: FASTEST goal's median of the observed 7.34s-9.10s spread, so the gate's failure cannot be blamed
+#: on having picked the worst goal; ``max_s`` is the slowest single wait seen. p25/p95/n were not
+#: reported and are not invented — this module never emits a percentile it did not observe.
+MEASURED_JUDGE_ROUND_TRIP = LatencyDistribution(
+    p25_s=None,
+    p50_s=7.34,
+    p95_s=None,
+    max_s=16.93,
+    n=None,
+    conditions=LatencyConditions(
+        model="unspecified",
+        transport="admitted frame -> per-goal verdict (judge-stage trace records)",
+        frames=None,
+        corpus="multi-goal watch, judge-stage trace records",
+        build="pre-launch measurement",
+    ),
+    note=(
+        "per-goal medians spanned 7.34s-9.10s; this is the fastest goal's. Uncensored — no judge "
+        "deadline was in force, so the tail is real and not a deadline's shadow"
+    ),
+)
+
+#: The gate's standing verdict on the measurement above. Read it, print it, assert on it — but do not
+#: raise :data:`JUDGE_ROUND_TRIP_P99_CEILING_S` to change it.
+LAUNCH_GATE_JUDGE_P99 = judge_p99_gate_from_distribution(MEASURED_JUDGE_ROUND_TRIP)
