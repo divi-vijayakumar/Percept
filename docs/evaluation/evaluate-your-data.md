@@ -130,8 +130,16 @@ A benchmark is one JSON file: the **concerns** under test plus the **labelled cl
 ### Where labels come from
 
 `expected` is *your* ground truth — the moment a human (or a stronger adjudicator model) says the
-condition became true. The SDK's own labelling/review provenance pattern is documented in
-[`eval/LABELING_PIPELINE.md`](../../packages/percept-vision/eval/LABELING_PIPELINE.md).
+condition became true. Two habits keep a label set auditable as it grows:
+
+- **Keep provenance next to the label** — who or what decided it, when, and a one-line note. A label
+  whose origin you cannot reconstruct cannot be re-adjudicated when you reword the concern.
+- **Tag adjudicator labels.** A stronger model is a cheap way to label the many no-fire clips, but
+  mark those rows so a human pass can spot-audit them, and let the human call win on disagreement.
+
+If you are converting an already-annotated dataset rather than labelling from scratch,
+[Methodology](methodology.md) covers how a dataset label becomes a watch condition, and why a vague
+label has to be scored separately from a specific one.
 
 ---
 

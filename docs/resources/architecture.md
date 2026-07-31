@@ -69,7 +69,7 @@ sample ──► route ──► judge ──► gate ──► deliver
   **authorizes** it against a deployment-owned catalog, **binds** an immutable static context verified
   byte-for-byte against a pinned SHA-256, and only then **dispatches**. Every step is fail-closed: any
   mismatch refuses the arm rather than silently falling back to a generalist model. See
-  [Judges](../../codewiki/Judges.md).
+  [Judging, and creating a custom judge](../judges/custom-specialist-judge.md).
 - **gate** — the three-state consequence gate
   ([`gate.py`](../../packages/percept-vision/percept/gate.py)) maps the verdict to **FIRE** (known true,
   rising edge), **ASK** (unknown), or **SILENT** (not true, or a duplicate). It fires once when a
@@ -104,25 +104,32 @@ only on a genuine, novel, unresolved change. The same gate that decides *when* t
 
 ## Fourteen modules across five layers
 
-The cognition core is documented module-by-module in the CodeWiki at
-[`../../codewiki/`](../../codewiki/). At a high level the modules group into five layers:
+Each module below links to the file or package directory it lives in, under
+[`packages/percept-vision/percept/`](../../packages/percept-vision/percept). At a high level they
+group into five layers:
 
-- **Foundation** — [Contracts](../../codewiki/Contracts.md) (the frozen shared vocabulary: `Verdict`,
-  `Decision`, `Goal`, `Incident`, the component `Protocol`s, `CONTRACT_VERSION`) and
-  [Profiles & Configuration](../../codewiki/Profiles-and-Configuration.md) (the env-driven settings tree
-  and layered resolver).
-- **Planning** — [WatchPlan & Goals](../../codewiki/WatchPlan-and-Goals.md) (the frozen `watch()` seam,
-  natural-language goal desugaring, plan compilation, prepared apply with cache preflight and bounded
-  rollback of goal/binding/ledger state; cache eviction and revision notifications are not transactional).
-- **Cognition core** — [Core & Agent](../../codewiki/Core-and-Agent.md),
-  [Routing](../../codewiki/Routing.md), [Cache](../../codewiki/Cache.md),
-  [Judges](../../codewiki/Judges.md), [Backends](../../codewiki/Backends.md),
-  [Sensing & Signals](../../codewiki/Sensing-and-Signals.md), and
-  [Episodes & Evidence](../../codewiki/Episodes-and-Evidence.md).
-- **Runtime** — [Runtime](../../codewiki/Runtime.md) (the `run` / `RuntimeSession` front door: open a
-  source, drive the core, pace judge calls, deliver to safe sinks).
-- **Quality & tooling** — [Observability](../../codewiki/Observability-and-Diagnostics.md),
-  [Evaluation](../../codewiki/Evaluation.md), and [Harness](../../codewiki/Harness.md).
+- **Foundation** — [Contracts](../../packages/percept-vision/percept/contracts) (the frozen shared
+  vocabulary: `Verdict`, `Decision`, `Goal`, `Incident`, the component `Protocol`s,
+  `CONTRACT_VERSION`) and
+  [Profiles & Configuration](../../packages/percept-vision/percept/config.py) (the env-driven
+  settings tree and layered resolver).
+- **Planning** — [WatchPlan & Goals](../../packages/percept-vision/percept/watch.py) (the frozen
+  `watch()` seam, natural-language goal desugaring, plan compilation, prepared apply with cache
+  preflight and bounded rollback of goal/binding/ledger state; cache eviction and revision
+  notifications are not transactional).
+- **Cognition core** — [Core & Agent](../../packages/percept-vision/percept/agent.py),
+  [Routing](../../packages/percept-vision/percept/routing),
+  [Cache](../../packages/percept-vision/percept/cache),
+  [Judges](../../packages/percept-vision/percept/judge_registry.py),
+  [Backends](../../packages/percept-vision/percept/backends),
+  [Sensing & Signals](../../packages/percept-vision/percept/sampling.py), and
+  [Episodes & Evidence](../../packages/percept-vision/percept/episodes.py).
+- **Runtime** — [Runtime](../../packages/percept-vision/percept/runtime) (the `run` /
+  `RuntimeSession` front door: open a source, drive the core, pace judge calls, deliver to safe
+  sinks).
+- **Quality & tooling** — [Observability](../../packages/percept-vision/percept/observability.py),
+  [Evaluation](../../packages/percept-vision/percept/eval), and
+  [Harness](../../packages/percept-vision/percept/harness).
 
 OSS snapshots persist plain-goal cognition only. A core with an applied compiled Watch refuses
 `snapshot()`/`save_state()` with `CompiledWatchSnapshotUnsupportedError` rather than writing an

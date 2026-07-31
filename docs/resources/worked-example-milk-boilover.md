@@ -31,7 +31,8 @@ streams runs the per-decision lifecycle.
 
 ## Step 1 — a frame arrives
 
-The runtime front door ([`percept.run` / `RuntimeSession`](../../codewiki/Runtime.md)) opens the camera
+The runtime front door
+([`percept.run` / `RuntimeSession`](../../packages/percept-vision/percept/runtime)) opens the camera
 source and drives the cognition core frame by frame. Each captured frame is stamped with the judgment
 clock and pushed onto a rolling `FrameWindow` inside
 [`Percept.perceive_judged`](../../packages/percept-vision/percept/agent.py). Cheap world-state ingest —
@@ -66,8 +67,9 @@ at a decayed confidence and skipped the model entirely.) A miss escalates to the
 
 ## Step 4 — the judge
 
-A judge is never taken on trust. Before this goal ever armed, the runtime ran the fail-closed chain from
-[Judges](../../codewiki/Judges.md): it **authorized** the goal's `WatchPlan.judge` request against the
+A judge is never taken on trust. Before this goal ever armed, the runtime ran the fail-closed
+[judge lifecycle](../judges/custom-specialist-judge.md): it **authorized** the goal's
+`WatchPlan.judge` request against the
 deployment-owned catalog, **bound** any static context (a fixed rubric verified byte-for-byte against a
 pinned SHA-256), and constructed the adapter to dispatch. If any step had failed — an unknown ref, a hash
 mismatch, an uninstalled factory — the goal would have refused to arm rather than silently fall back to a
@@ -103,11 +105,12 @@ The FIRE becomes a `FireEvent`, which the runtime adapts into an `Incident` deli
 sink (idempotent, supersession-aware, dead-lettered). Alongside delivery:
 
 - **Evidence** — the frames that grounded the verdict are retained behind an **opaque handle**, not
-  inlined; dereference is fail-safe. See [Episodes & Evidence](../../codewiki/Episodes-and-Evidence.md).
+  inlined; dereference is fail-safe. See [`evidence.py`](../../packages/percept-vision/percept/evidence.py)
+  and [`episodes.py`](../../packages/percept-vision/percept/episodes.py).
 - **Episode** — the episode ledger records that this occurrence was reported, so a continuation of the
   same boil-over is not re-reported as a new one.
 - **Trace** — the funnel counters (observed → admitted → judged → fired) and trace stages are recorded
-  for offline replay and the visualizer. See [Observability](../../codewiki/Observability-and-Diagnostics.md).
+  for offline replay and the visualizer. See [Trace bundles & replay](../observability/traces-and-replay.md).
 
 The user hears: *"Heads up — the milk is boiling over!"* — once.
 

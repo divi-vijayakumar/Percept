@@ -119,5 +119,5 @@ for how to author goals and watch plans see
 - [End to end: one judged request](worked-example-milk-boilover.md) — a full trace of a single goal.
 - [../reference/consequence-gate.md](../watches/the-gate.md) ·
   [../reference/watch-contract.md](../watches/watch-contract.md)
-- CodeWiki deep dives: [Core & Agent](../../codewiki/Core-and-Agent.md) ·
-  [Sensing & Signals](../../codewiki/Sensing-and-Signals.md)
+- In the source: [`agent.py`](../../packages/percept-vision/percept/agent.py) (the cognition core) ·
+  [`sampling.py`](../../packages/percept-vision/percept/sampling.py) (sensing and signals)
