@@ -5,10 +5,14 @@ of creating a second judgment path.  The cognition core still consumes exactly
 one :class:`~percept.contracts.Verdict`; this adapter only decides which
 deployment-provided judge may produce it.
 
-The pool has three load-bearing rules:
+The pool has four load-bearing rules:
 
 * evidence shape is exact -- a native-video or context-holding request never
   silently falls back to a sprite or a stateless ordered-image prompt;
+* judge CONTEXT is declared -- a route serves a request only when every key the
+  request carries is one the judge-context registry declares AND one this route
+  accepts (:attr:`JudgeCapability.context_keys`), so a caller's arbitrary state
+  cannot arrive at a model framed as a fact;
 * the deadline covers route selection, hedge delay, and provider execution;
 * capacity exhaustion and deadline expiry fail closed to an UNKNOWN-shaped
   verdict while retaining bounded route occupancy and an inspectable receipt.
@@ -64,6 +68,11 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from ..contracts import Verdict
+from ..judge_context_producers import (
+    RESERVED_CONTEXT_KEYS,
+    spec_for,
+    unregistered,
+)
 
 EvidenceShape = Literal[
     "single_image",
@@ -150,6 +159,13 @@ REFLEX_DECISION_MARGIN_S = 0.4
 REFLEX_DECISION_DEADLINE_S = REFLEX_PROVIDER_DEADLINE_S + REFLEX_DECISION_MARGIN_S
 
 
+#: How many refused context keys a single receipt may name.  A receipt is retained in a bounded
+#: deque, and the refused set is derived from a CALLER's dict, whose size the pool does not control.
+#: Naming the first few sorted keys is what makes the refusal diagnosable; naming all of an
+#: arbitrary number of them would make trace retention unbounded for no extra diagnostic value.
+_MAX_RECEIPT_CONTEXT_KEYS = 8
+
+
 @dataclass(frozen=True)
 class JudgeCapability:
     """Deployment-reviewed eligibility for one concrete judge adapter.
@@ -157,16 +173,33 @@ class JudgeCapability:
     ``latency_slo_s`` is a declared/measured routing ceiling, not a timeout.
     Reflex routing considers a route only when this value fits the pool's hard
     deadline.  The hard deadline is enforced independently at runtime.
+
+    ``context_keys`` is the JUDGE CONTEXT this route has agreed to receive.  It defaults to
+    :data:`~percept.judge_context_producers.RESERVED_CONTEXT_KEYS` -- the registry's public keys --
+    which admits everything the runtime actually emits while refusing anything unregistered.  That
+    unregistered case is the leak the registry exists for: an arbitrary caller key had no structural
+    barrier and rendered into the prompt under a sentence telling the model to trust it over its own
+    read.  Narrowing a route BELOW the default (a judge that cannot honour ``claim_mode``, say) is
+    an opt-in a deployment chooses; it is deliberately not a migration every caller is forced
+    through, because a ``frozenset()`` default would break every existing declaration and land most
+    of them at "paste the full set" anyway.
+
+    A key declared here must itself be registered.  A route declaring a key nothing emits is a typo,
+    and construction is a cheaper place to learn that than selection, where it would present as an
+    unexplained ``no_route``.  ``_percept_`` transport keys need not be declared -- they are
+    admitted by prefix at selection -- and declaring one is redundant rather than wrong.
     """
 
     evidence_shapes: frozenset[EvidenceShape]
     latency_slo_s: float
     modes: frozenset[LatencyMode] = frozenset({"deliberate"})
     max_inflight: int = 1
+    context_keys: frozenset[str] = RESERVED_CONTEXT_KEYS
 
     def __post_init__(self) -> None:
         shapes = frozenset(self.evidence_shapes)
         modes = frozenset(self.modes)
+        context_keys = frozenset(self.context_keys)
         if not shapes or not shapes.issubset(_EVIDENCE_SHAPES):
             raise ValueError(
                 "JudgeCapability.evidence_shapes must contain only supported "
@@ -193,8 +226,23 @@ class JudgeCapability:
             raise ValueError(
                 "JudgeCapability.max_inflight must be a positive integer"
             )
+        if not all(isinstance(key, str) for key in context_keys):
+            raise ValueError(
+                "JudgeCapability.context_keys must contain only strings"
+            )
+        # Asked of the REGISTRY, never of a local list: `unregistered` is where the
+        # public-key set and the `_percept_` prefix rule both live, and a second spelling of
+        # either here is how the three backends' deny-lists drifted apart in the first place.
+        undeclared = unregistered({key: None for key in context_keys})
+        if undeclared:
+            raise ValueError(
+                "JudgeCapability.context_keys must contain only keys the judge-context "
+                "registry declares (percept/judge_context_producers.py); "
+                f"got undeclared {sorted(undeclared)!r}"
+            )
         object.__setattr__(self, "evidence_shapes", shapes)
         object.__setattr__(self, "modes", modes)
+        object.__setattr__(self, "context_keys", context_keys)
         object.__setattr__(self, "latency_slo_s", float(self.latency_slo_s))
 
 
@@ -243,6 +291,16 @@ class JudgeRouteReceipt:
     deadline_s: float
     confidence: float | None = None
     exception_type: str | None = None
+    #: Which context keys emptied the eligible set.  This is what distinguishes the two ways a
+    #: ``no_route`` happens: empty means no route could serve the EVIDENCE SHAPE at all, non-empty
+    #: means routes existed for the shape and the request carried context none of them accepts.
+    #: Without it both refusals read identically in a trace, and the second one -- the fail-closed
+    #: path this field exists to explain -- is the one an operator has to act on.  A distinct
+    #: ``outcome`` was considered and rejected: the refusal is still "nothing may serve this", it
+    #: reuses the existing no-route path exactly, and a new outcome value would silently escape any
+    #: deployment's configured ``terminal_outcomes={"no_route"}``.  Key NAMES only, never a value,
+    #: and capped at :data:`_MAX_RECEIPT_CONTEXT_KEYS`.
+    refused_context_keys: tuple[str, ...] = ()
 
 
 @dataclass
@@ -276,6 +334,34 @@ def _valid_verdict(value: Any) -> bool:
         and 0.0 <= float(confidence) <= 1.0
         and isinstance(evidence, str)
     )
+
+
+def _context_refusals(
+    capability: JudgeCapability,
+    context: dict | None,
+) -> frozenset[str]:
+    """The keys in ``context`` this capability has not agreed to receive.
+
+    There are two kinds and they refuse identically.  A key NOTHING declares is refused by every
+    route -- it is a caller's arbitrary state, and the alternative to refusing it is that it reaches
+    a model framed as an established fact.  A PUBLIC key that this route narrowed away is refused by
+    this route only, and another route in the pool may still take the request.
+
+    A ``_percept_`` transport key is never refused, and that is structural rather than incidental:
+    it is registered by prefix so ``unregistered`` passes it, and it has no ``ContextKeySpec`` so
+    the public-key branch never sees it.  Both facts are asked of the registry helpers rather than
+    re-spelled here, because the pool itself STAMPS one of these keys
+    (:data:`LATENCY_MODE_CONTEXT_KEY`, in :meth:`JudgePool._route_context`) -- a predicate that
+    tested ``RESERVED_CONTEXT_KEYS`` membership directly would refuse the pool's own key and take
+    every reflex route out of service.
+    """
+    refused = set(unregistered(context))
+    refused.update(
+        key
+        for key in (context or {})
+        if spec_for(key) is not None and key not in capability.context_keys
+    )
+    return frozenset(refused)
 
 
 def _evidence_shape(
@@ -452,6 +538,11 @@ class JudgePool:
                         state.route.capability.evidence_shapes
                     ),
                     "modes": sorted(state.route.capability.modes),
+                    # Published for the same reason `evidence_shapes` and `modes` are: it is now a
+                    # fourth input to eligibility, and an operator reading a `no_route` receipt has
+                    # to be able to see which routes would have accepted the key it names. A
+                    # declaration, bounded by the registry -- no adapter object, no secret.
+                    "context_keys": sorted(state.route.capability.context_keys),
                     "latency_slo_s": state.route.capability.latency_slo_s,
                 }
                 for name, state in self._states.items()
@@ -495,7 +586,17 @@ class JudgePool:
             return context
         return {**(context or {}), LATENCY_MODE_CONTEXT_KEY: REFLEX_LATENCY_MODE}
 
-    def _eligible(self, shape: EvidenceShape) -> tuple[JudgeRoute, ...]:
+    def _transport_eligible(
+        self,
+        shape: EvidenceShape,
+    ) -> tuple[JudgeRoute, ...]:
+        """Routes eligible on TRANSPORT alone -- evidence shape, mode, and the reflex SLO fit.
+
+        Split out from :meth:`_eligible` so a refusal can be ATTRIBUTED.  If this is already empty
+        the miss belongs to the evidence shape and no context key caused it; if it is non-empty and
+        ``_eligible`` is not, the context is what emptied the set.  A receipt that guessed between
+        those two would be worse than one that said nothing.
+        """
         return tuple(
             route
             for route in self._routes
@@ -506,6 +607,41 @@ class JudgePool:
                 or route.capability.latency_slo_s <= self._deadline_s
             )
         )
+
+    def _eligible(
+        self,
+        shape: EvidenceShape,
+        context: dict | None = None,
+    ) -> tuple[JudgeRoute, ...]:
+        """Routes that may serve this request: transport, plus the context they accept.
+
+        The fourth predicate reads the CALLER's context, not the one :meth:`_route_context` hands
+        the adapter.  The pool stamps its own transport key on the latter, and route eligibility
+        must never turn on something the pool itself added.
+        """
+        return tuple(
+            route
+            for route in self._transport_eligible(shape)
+            if not _context_refusals(route.capability, context)
+        )
+
+    def _refused_context_keys(
+        self,
+        shape: EvidenceShape,
+        context: dict | None,
+    ) -> tuple[str, ...]:
+        """The context keys that emptied the eligible set, or ``()`` if the evidence shape did.
+
+        The union across every route that WAS transport-eligible: with two routes refusing
+        different keys, no route survives and both keys are implicated in why.
+        """
+        transport_eligible = self._transport_eligible(shape)
+        if not transport_eligible:
+            return ()
+        refused: set[str] = set()
+        for route in transport_eligible:
+            refused.update(_context_refusals(route.capability, context))
+        return tuple(sorted(refused))[:_MAX_RECEIPT_CONTEXT_KEYS]
 
     def _reserve(self, route: JudgeRoute) -> bool:
         with self._state_lock:
@@ -646,8 +782,18 @@ class JudgePool:
             audio=audio,
             context=context,
         )
-        eligible = self._eligible(shape)
+        eligible = self._eligible(shape, context)
         if not eligible:
+            # An unaccepted context key is a ROUTING miss, not a new kind of failure: nothing may
+            # serve the request, which is what `no_route` already means and already fails closed.
+            # Only the receipt and the wording distinguish it, so a deployment that made `no_route`
+            # terminal still stops here, and one that did not still degrades to UNKNOWN.
+            refused = self._refused_context_keys(shape, context)
+            detail = (
+                "no route accepts context key(s) " + ", ".join(refused)
+                if refused
+                else "no eligible route"
+            )
             self._record(
                 JudgeRouteReceipt(
                     route=None,
@@ -656,15 +802,19 @@ class JudgePool:
                     outcome="no_route",
                     latency_s=0.0,
                     deadline_s=self._deadline_s,
+                    refused_context_keys=refused,
                 )
             )
             if "no_route" in self._terminal_outcomes:
                 error = RuntimeError(
-                    f"judge pool has no eligible {shape} route"
+                    f"judge pool has no {shape} route accepting context "
+                    f"key(s) {', '.join(refused)}"
+                    if refused
+                    else f"judge pool has no eligible {shape} route"
                 )
                 self._set_terminal_error(error)
                 raise error
-            return self._unknown(shape, "no eligible route")
+            return self._unknown(shape, detail)
 
         kwargs = {
             "roi": roi,
