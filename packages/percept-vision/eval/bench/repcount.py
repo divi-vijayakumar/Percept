@@ -375,9 +375,38 @@ def percept_e2e_rep_count(
 
 
 # Observability gates (mirror hero_ab so a counting-track run honours the same blind-count policy).
+#
+# `_TAU_KP` used to serve BOTH gates below, which was a latent error: `channel_coverage` is a mean
+# keypoint confidence and `hero_track_coverage` is a frame ratio. One constant cannot be calibrated
+# for two incommensurable quantities, and only one of them has ever been measured. Split.
 _TAU_KP = float(os.environ.get("PERCEPT_HERO_TAU_KP", "0.3"))    # prior-channel coverage < this → silhouette
 _TAU_SIL = float(os.environ.get("PERCEPT_HERO_TAU_SIL", "0.3"))  # silhouette period conf floor to accept it
 _TAU_CONF = float(os.environ.get("PERCEPT_HERO_TAU_CONF", "0.4"))  # period conf < this → BLIND (escalate)
+
+#: Track-coverage trigger for the blind-count VLM escalation. **0.0 = disabled, and that is the
+#: measured optimum**, not a placeholder.
+#:
+#: This gate had never fired: `hero_track_coverage` was pinned at 1.0 by a denominator bug
+#: (BUG-A-06-01), so it was never calibrated — its input was constant. Fixing the denominator armed
+#: it, so it was measured before being trusted. Full RepCount-A, 77 clips, 311 live gemini-2.5-flash
+#: windows, $0.63:
+#:
+#:     escalation rule                    escalates   blended MAPE
+#:     none                                    0/76         48.3%   <- best
+#:     hero_track_coverage < 0.3 (was)         5/76         50.3%
+#:     period_conf < 0.4 (still live)         54/76         52.8%
+#:     shipped OR of both                     55/76         53.3%
+#:
+#: There is no threshold at which this pays for itself. The VLM beats pose on 20/76 clips (26%),
+#: under-counts on 95%, and its median count is 0.36x the truth — because `_vlm_recount` sends 6
+#: frames per 7 s window, so the model sees a median of 2.4 frames per repetition. A rep is a full
+#: cycle; at ~2 frames per cycle the evidence for "that was one rep, not two" is not in the payload.
+#: That is a sampling-budget error, not a model limitation, and it is a redesign rather than a
+#: threshold — see the backlog item on a rate-scaled frame budget.
+#:
+#: Deliberately NOT applied to `_TAU_KP` above: the silhouette route keys on `channel_coverage`, a
+#: different quantity that this run says nothing about. It keeps its 0.3.
+_TAU_HERO_COV = float(os.environ.get("PERCEPT_HERO_TAU_TRACK_COV", "0.0"))
 
 
 def _hero_e2e_rep_count(
@@ -463,7 +492,10 @@ def _hero_e2e_rep_count(
 
     # The OBSERVABILITY verdict: a low-confidence (or still-low-coverage) count is BLIND → escalate-worthy
     # (arm C). We surface it; we do NOT silently report it as a clean count.
-    escalate = (period_conf or 0.0) < _TAU_CONF or res.hero_track_coverage < _TAU_KP
+    # `_TAU_HERO_COV` is 0.0 by measurement, so the coverage arm is inert and `period_conf` is the
+    # sole live trigger. Kept as an expression rather than deleted: the arm is re-armable from the
+    # environment for anyone re-measuring it after the backstop is redesigned.
+    escalate = (period_conf or 0.0) < _TAU_CONF or res.hero_track_coverage < _TAU_HERO_COV
     if escalate and blind_reason is None:
         blind_reason = "low_period_conf" if (period_conf or 0.0) < _TAU_CONF else "low_track_coverage"
 
