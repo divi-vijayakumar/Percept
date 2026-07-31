@@ -31,33 +31,30 @@ With an episode:
 - an already-emitted episode **does not consult the Gate again**, so a TTL sweep or a re-minted
   entity id cannot manufacture a duplicate notification
 
-Those three hold wherever episodes exist at all. A fourth one does not, and it is the one most
-people assume:
-
-- on **some** drivers the open episode is serialised into the judge's context, so the model
-  answering "is the bag still there?" knows there is an *it* to still be there
+- the open episode is serialised into the judge's context, so the model answering "is the bag still
+  there?" knows there is an *it* to still be there
 
 ## Where the judge sees the episode
 
-**Putting the open episode in the judge's prompt is not general.** There are two judgment paths in
-this codebase, and only one of them injects it. Which one a Watch takes is decided by how you drive
-it and by the goal's modality — not by anything you configure:
+All four hold on every driver. That was not always true: the split judgment path — the one
+`percept.run()` takes for a vision or fused goal — opened, folded and suppressed episodes correctly
+but never put one in the prompt or in the cache key, so a camera Watch re-answered its condition from
+each frame alone. That gap is closed, and this table is here so the claim stays checkable:
 
 | driver | goals | episode in the judge's context | episode in the cache key |
 |---|---|---|---|
 | `percept.watch()`, `Percept.perceive_judged()`, the tier-0 harness loop | all | yes | yes |
 | `percept.run()` | audio-only | yes | n/a — audio evidence never enters the single-frame cache |
-| `percept.run()` | vision, fused | **no** | **no** |
+| `percept.run()` | vision, fused | yes | yes |
 
-`percept.run()` is the shipped runtime and a camera Watch is a vision goal, so **the example below
-does not put the episode in the prompt** — and neither dispatch mode changes that, since
-`judge_dispatch="async"` and `"inline"` both take the same path for vision.
+Neither dispatch mode changes it: `judge_dispatch="async"` and `"inline"` take the same path for
+vision, and both carry the episode.
 
-Everything above this section still happens on that path: the episode is opened, folded in place,
-and consulted for suppression exactly as described. What is missing is the *prompt*. The model
-re-answers the condition from the frame alone every time it is asked, with no record that it is
-continuing an occurrence rather than seeing one for the first time. For a condition phrased so a
-single frame decides it ("a package is on the porch") that costs nothing. For one phrased to lean on
+The one thing that still differs between the two paths is **concurrency** — the split path judges a
+frame's admitted goals in series, deliberately, because a route that declares terminal outcomes must
+spend no further provider call once one latches, and that is only enforceable between jobs. It has no
+bearing on what the judge is told. For a condition phrased so a
+single frame decides it ("a package is on the porch") the episode in the prompt costs nothing. For one phrased to lean on
 continuity ("is the bag *still* there?") the wording has to carry itself, because the episode will
 not.
 
@@ -110,7 +107,7 @@ judged for the same concern, subject and condition.
 The two layers have to compose, and how they compose depends on which path you are on — the same
 split as the table above.
 
-**Where the judge context carries the open episode**, a verdict formed under one episode state must
+An open episode is serialised into the judge context, so a verdict formed under one episode state must
 never be re-served under a different one. The cache handles that by **putting the episode state in the
 key**, not by refusing to cache: the key carries a hash of the episode's *answer-affecting* state —
 its identity, status, subject, value and the changes recorded against it — while the parts that move
