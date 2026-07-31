@@ -75,11 +75,7 @@ from .identity_policy import (
     transition_latch_key,
     watch_reducer_entity_id,
 )
-from .episode_memory import (
-    UNCOVERED_CONTEXT,
-    episode_context_and_fingerprint,
-    with_open_episode,
-)
+from .episode_memory import episode_context_and_fingerprint, with_open_episode
 from .judge_context import (
     JUDGE_OPEN_EPISODE_KEY,
     JUDGE_STATIC_CONTEXT_KEY,
@@ -3395,11 +3391,6 @@ class Percept:
         adapter, bound = self._select_judge_adapter(goal)
         audio = self._audio_clip(candidate.token.source_id, spec)
         context: dict[str, Any] = {}
-        # This pipeline does not inject the open episode, so it declares an episode bundle that
-        # accounts for nothing. Binding it HERE, beside the context it is about, is the point: the
-        # cache-eligibility question below is then asked of a producer rather than of a bare emptiness
-        # test, and giving this pipeline episode memory becomes one edit that moves both halves.
-        episode_bundle = UNCOVERED_CONTEXT
         process_qa = bool(goal.state.get("process_qa"))
         if process_qa:
             context.update(
@@ -3445,6 +3436,34 @@ class Percept:
                 context[EXTRACTOR_CONTEXT_KEY] = prior
         if bound is not None and bound.static_context is not None:
             context[JUDGE_STATIC_CONTEXT_KEY] = bound.static_context.decoded_text
+        # THE OPEN EPISODE, on the split protocol. Until this landed, a vision or fused goal under
+        # ``run()`` maintained an EpisodeLog it never read: the judge re-answered "is it still there?"
+        # every tick with no memory of the occurrence it was continuing, while the legacy path (audio,
+        # ``watch()``, the tier-0 harness) had that memory all along. One ``run()`` delivered two
+        # judgment contracts selected by modality.
+        #
+        # Bound HERE, after the static context, because the fingerprint folds that text in — the
+        # projection is of the whole answer-affecting context, not only of the episode.
+        #
+        # THE INJECTION AND THE KEY ARE ONE EDIT. The fingerprint travels in the same bundle and
+        # reaches ``CacheKey`` below; injecting without keying would serve a verdict formed under one
+        # episode state under a different one. That is why the bundle is a single value and why the
+        # cache fence asks it rather than testing ``context`` for emptiness.
+        episode_bundle = episode_context_and_fingerprint(
+            self.episodes.get(goal.id),
+            static_context=(
+                bound.static_context.decoded_text
+                if bound is not None and bound.static_context is not None
+                else None
+            ),
+        )
+        if episode_bundle.text is not None:
+            if JUDGE_OPEN_EPISODE_KEY in context:
+                raise ReservedContextKeyError(
+                    f"goal {goal.id!r} judge context already carries the reserved key "
+                    f"{JUDGE_OPEN_EPISODE_KEY!r}; the open episode cannot be injected over it"
+                )
+            context = with_open_episode(context, episode_bundle.text)
         if self._resolved_identity_policy(goal) == "claim_slot":
             context["claim_mode"] = True
         if goal.state.get("rearm") == "each_event":

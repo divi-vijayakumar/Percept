@@ -11,8 +11,12 @@ in the suite crossed between them:
   dispatch lanes (the inline loop in ``percept.runtime.worker``, and the same worker's
   ``_JudgeScheduler`` lane, which is the ``judge_dispatch="async"`` default).
 
-They disagree on three things a client can observe. This file drives the SAME goal, the SAME frame
-and the SAME scripted verdict through both and asserts on every one of them.
+They disagreed on three things a client can observe. TWO ARE NOW CLOSED: the split pipeline injects
+the open episode and keys the cache fingerprint on it, so a vision or fused goal under ``run()`` gets
+the memory the legacy path always had. What remains is CONCURRENCY, and that one is deliberate --
+generation 2 stays sequential because its terminal-outcome guarantee (once a route latches, spend no
+further provider call) is only enforceable between jobs. This file drives the SAME goal, the SAME
+frame and the SAME scripted verdict through both and asserts on all three axes.
 
 HOW TO READ THE TEST NAMES. The prefix is the claim, and the two are not interchangeable:
 
@@ -411,9 +415,15 @@ class OpenEpisodeContextTests(unittest.TestCase):
         self.assertIn("an unattended black backpack", injected)
         self.assertNotIn("opaque-exemplar-payload", injected)  # pixel-free, as the contract says
 
-        # Generation 2: nothing about the episode reached the model.
-        self.assertEqual(generation_2.calls_carrying_an_open_episode, 0)
-        self.assertNotIn(JUDGE_OPEN_EPISODE_KEY, generation_2.contexts[0] or {})
+        # Generation 2: CONVERGED. This block used to assert the opposite — that nothing about the
+        # episode reached the model — and it was the sharpest statement of the divergence in this
+        # file. The split pipeline now injects too, so a vision or fused goal under ``run()`` gets the
+        # same memory the legacy path always had.
+        self.assertEqual(generation_2.calls_carrying_an_open_episode, 1)
+        injected_2 = generation_2.contexts[0][JUDGE_OPEN_EPISODE_KEY]
+        self.assertIn("subject_a", injected_2)
+        self.assertIn("an unattended black backpack", injected_2)
+        self.assertNotIn("opaque-exemplar-payload", injected_2)  # pixel-free on this path too
 
         # ...and both pipelines DID hold an episode open, so the difference is purely what was sent
         # to the judge, not whether there was an episode to send. (Generation 1's fold also opens
@@ -422,19 +432,20 @@ class OpenEpisodeContextTests(unittest.TestCase):
         self.assertGreaterEqual(generation_1.open_episodes, 1)
         self.assertGreaterEqual(generation_2.open_episodes, 1)
 
-    def test_divergence_holds_on_the_runtime_scheduler_lane_too(self):
-        """RECORDED, NOT ENDORSED — and it is not an artefact of how the harness drives it.
+    def test_the_injection_holds_on_the_runtime_scheduler_lane_too(self):
+        """CONVERGED on both lanes, which is what makes it a property of the pipeline.
 
         ``judge_dispatch="async"`` (the ``percept.run`` default) reaches the prepared-job path
-        through the worker's own ``_JudgeScheduler``. Same absence of injection, so the divergence
-        belongs to the pipeline and not to the lane.
+        through the worker's own ``_JudgeScheduler``. This once recorded the same ABSENCE of
+        injection on that lane; it now records the same presence, so the convergence belongs to the
+        pipeline and not to how the harness drives it.
         """
         judge = RecordingJudge()
         core = parity_core(judge)
         open_an_episode(core, "g1", value="an unattended black backpack")
         run = asyncio.run(drive_generation_2(core, judge, lane="scheduler"))
         self.assertEqual(run.judge_calls, 1)
-        self.assertEqual(run.calls_carrying_an_open_episode, 0)
+        self.assertEqual(run.calls_carrying_an_open_episode, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -501,9 +512,16 @@ class CacheKeyFingerprintTests(unittest.TestCase):
         # fingerprint really does describe context that was sent.
         self.assertEqual(generation_1.calls_carrying_an_open_episode, 1)
 
-        # Generation 2 keyed nothing: one slot for the whole run, spanning both episode states.
-        self.assertEqual(generation_2.cache_fingerprints, (None,))
-        self.assertEqual(generation_2.calls_carrying_an_open_episode, 0)
+        # Generation 2 CONVERGED. This asserted ``(None,)`` -- one slot for the whole run, spanning
+        # both episode states -- which was the cache half of the divergence. It now keys the episode
+        # like generation 1, so a close and a reopen no longer share a slot. The injection and the key
+        # move together by construction: both come from one bundle.
+        self.assertEqual(len(generation_2.cache_fingerprints), 2)
+        self.assertIn(None, generation_2.cache_fingerprints)
+        minted_2 = [f for f in generation_2.cache_fingerprints if f is not None]
+        self.assertEqual(len(minted_2), 1)
+        self.assertIsInstance(minted_2[0], str)
+        self.assertEqual(generation_2.calls_carrying_an_open_episode, 1)
 
 
 # ---------------------------------------------------------------------------
