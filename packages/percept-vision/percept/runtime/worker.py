@@ -996,10 +996,12 @@ class _LegacyJudgeScheduler:
     """Off-loop judge dispatch (``run(judge_dispatch="async")``): the capture loop never awaits a
     network judgment.
 
-    The inline path (``async for … perceive_judged(…)`` at the admit site) makes perception wait on
-    cognition — one slow VLM turn stalls capture, the gate, the absence checks, and every subscriber
-    (the 47s-stall class of bugs). This scheduler moves the judgment onto an ``asyncio`` task with a
-    strict budget shape:
+    An inline lane makes perception wait on cognition — one slow VLM turn stalls capture, the gate,
+    the absence checks, and every subscriber (the 47s-stall class of bugs). That is a property of
+    AWAITING a judgment on the frame loop, not of any one protocol: ``run(judge_dispatch="inline")``
+    awaits ``core.dispatch_judgment`` per job at the admit site, and ``percept.watch()`` awaits
+    ``perceive_judged``. Both stall the same way. This scheduler moves the judgment onto an
+    ``asyncio`` task with a strict budget shape:
 
     - **single-flight** — at most ONE judgment in flight per source (``run()`` drives one source, so
       one scheduler instance; completion order == submission order, preserving on_incident ordering);
@@ -1029,8 +1031,10 @@ class _LegacyJudgeScheduler:
     pending discarded on a goals-revision change) — each carrying an explicit ``reason``.
 
     Degrade-loud + backpressure, INSIDE this scheduler (not an inline guard: with
-    ``judge_dispatch="async"`` the admit site never awaits ``perceive_judged`` directly, so a guard
-    planted there is simply never on the path a slow/wedged judge actually takes). Two more
+    ``judge_dispatch="async"`` the admit site hands the judgment to this scheduler rather than
+    awaiting one itself, so a guard planted there is simply never on the path a slow/wedged judge
+    actually takes. Nor is ``perceive_judged`` that path on either lane — see the modality split in
+    ``_run_worker``'s ``judge_dispatch`` bullet). Two more
     bound-driven, edge-triggered, TRACED conditions on top of the two above:
 
     - **stalled active judgment** (a hang) — the in-flight task has been outstanding, from ITS OWN
@@ -4344,16 +4348,24 @@ async def _run_worker(
     - ``disposition_log`` — optional :class:`~percept.labelstore.DispositionLog`. When set, every
       gate ``FIRE``/``ASK`` appends a ``{incident_id, verdict_ref, disposition, ts}`` row (the escalation
       meter's raw feed, distinct from ``Verdict.usage``). Default ``None`` → nothing written, byte-for-byte.
-    - ``judge_dispatch`` — how an admitted frame's cloud judgment is driven. ``"async"`` (default)
-      hands it to a single-flight :class:`_JudgeScheduler` (one in flight + one latest-pending; the
-      capture loop NEVER awaits a network judgment — one slow VLM turn no longer stalls capture, the
-      gate, or the absence checks). ``"inline"`` awaits ``perceive_judged`` at the admit site —
-      byte-for-byte the historical loop, kept for one release as the escape hatch for consumers that
-      depend on fires being emitted before the next frame is read. The admit condition is unchanged
-      either way; in async mode fires trail the admitting frame by ≤1 frame interval + the judge
-      duration (``incident.ts`` stays the admission ``t``), a stale in-flight judgment aborts when
-      goals change mid-flight (see ``Percept.perceive_judged`` ``expected_goals_revision``), and
-      ``stats.judge_superseded`` / ``stats.judge_revision_dropped`` count the frames
+    - ``judge_dispatch`` — which LANE an admitted frame's cloud judgment runs on. It does not pick
+      the judge protocol; the goal's MODALITY does. ``"async"`` (default) hands the frame's ordinary
+      VISION goals to a single-flight :class:`_JudgeScheduler` (one in flight + one latest-pending;
+      the capture loop NEVER awaits a network judgment — one slow VLM turn no longer stalls capture,
+      the gate, or the absence checks). ``"inline"`` drives the SAME split protocol from the admit
+      site instead — ``core.launch_judgments``, then one awaited ``core.dispatch_judgment`` per
+      job — as the escape hatch, kept for one release, for consumers that depend on fires being
+      emitted before the next frame is read. NEITHER lane reaches ``perceive_judged``: an AUDIO-ONLY
+      goal is the one that still takes a legacy whole-frame dispatch, and it takes
+      ``core.perceive_audio_judged`` (scheduled in async mode, awaited at the admit site in inline
+      mode), while a FUSED goal takes the split protocol on BOTH lanes through a per-goal scheduler
+      this knob does not gate — so ``"inline"`` leaves fused judgments off the frame loop too. The
+      comment in ``_JudgeScheduler._dispatch`` carries that per-modality argument in full.
+      The admit condition is unchanged either way; in async mode fires trail the admitting frame by
+      ≤1 frame interval + the judge duration (``incident.ts`` stays the admission ``t``), a stale
+      in-flight judgment aborts when goals change mid-flight (the admitting goals revision is pinned
+      into the job at preparation, and passed as ``expected_goals_revision`` on the legacy lane),
+      and ``stats.judge_superseded`` / ``stats.judge_revision_dropped`` count the frames
       overload/goal-changes discarded. A ``RuntimeHealthEvent("judge_dispatch")`` announces the mode
       once at start; escalation health events carry live ``judge_active``/``judge_pending`` (each
       0/1) in async mode. The scheduler also degrades LOUD — ``"judge_scheduler_stalled"``

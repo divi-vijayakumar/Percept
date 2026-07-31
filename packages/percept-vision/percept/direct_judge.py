@@ -29,11 +29,24 @@ internal target once a goal is compiled) is NEVER read here and MUST NOT become 
 selects a direct rule — that field is free to change shape across compiler internals; the public
 contract is ``applies_to``.
 
-**Stakes-derived verify cadence.** A confident streak is not exempt from ever seeing a real
-judge: :attr:`DirectJudge.verify_cadence` maps a caller-supplied ``stakes`` label to "verify for
-real every N confident answers" (``0`` = never force). A HIGH-stakes condition gets a tighter
-cadence than a LOW-stakes one by default; a caller may override the whole map. This is what keeps
-an unconditionally-confident-but-wrong rule from running forever unverified.
+**Stakes-derived verify cadence — WHAT IT DOES, AND WHAT IT DOES NOT.**
+:attr:`DirectJudge.verify_cadence` maps a caller-supplied ``stakes`` label to "spend a real judge
+call every N confident answers" (``0`` = never force). A HIGH-stakes condition gets a tighter
+cadence than a LOW-stakes one by default; a caller may override the whole map.
+
+It **forces the call. It does not check the rule.** The Nth confident answer is downgraded to
+``uncertain``, so the caller runs a real judge — and the rule's own verdict is discarded at that
+point. Nothing here receives the judge's answer, nothing compares the two, and no divergence is
+counted. So a rule that is confidently wrong produces a periodic real call whose result agrees or
+disagrees with it *unobserved*.
+
+**Verification is therefore still the caller's job**, and a caller relying on this as a correctness
+backstop is relying on something that is not implemented. Contrast
+:class:`~percept.cache.framehash.FrameHashLayer`'s audit, which is the shape a real backstop takes:
+re-perceive a sampled fraction, compare ``satisfied``, count the divergence, and let the fresh read
+win. Closing that gap here means feeding the judge's answer back and comparing it; that is a
+DECISION, not an oversight, and it is recorded in the backlog rather than hidden behind this
+docstring.
 """
 
 from __future__ import annotations
@@ -181,9 +194,16 @@ class DirectJudge:
         streak = self._streak.get(cadence_key, 0) + 1
         self._streak[cadence_key] = streak
         if cadence and streak % cadence == 0:
-            # Stakes-derived forced re-verify: the Nth confident-in-a-row answer on THIS cadence
-            # is deliberately downgraded to "uncertain" so the caller spends one real judge call
-            # instead of trusting the direct rule forever unverified.
+            # Stakes-derived forced re-verify: the Nth confident answer on THIS cadence is
+            # deliberately downgraded to "uncertain" so the caller spends one real judge call.
+            #
+            # ``result.verdict`` IS DISCARDED HERE, and that is the limit of the mechanism: the
+            # judge's answer is never returned to this object, so the rule is never checked against
+            # it. This forces a call; it does not verify anything. See the module docstring.
+            #
+            # (Also note the counter is cumulative, not consecutive — it is incremented only on
+            # ``confident`` and never reset by an intervening ``uncertain``/``degraded``, so this is
+            # "every Nth confident answer ever" rather than "N in a row".)
             return DirectResult(
                 outcome="uncertain", facts=result.facts,
                 reason=f"stakes-derived verify cadence reached (stakes={stakes!r}, every {cadence})",
