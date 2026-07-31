@@ -108,6 +108,49 @@ class DirectResultTests(unittest.TestCase):
             DirectResult(outcome="sure-why-not")
 
 
+class DirectHitCountsAsJudgedTests(unittest.TestCase):
+    """A confident direct hit is a FRESH answer for this frame, so the fold must count it as judged.
+
+    ``_observation_was_judged`` gates whether ``Episode.judged_observations`` advances, and its
+    docstring names this exact case: "a caller that reached a fold without going through ``_judge``,
+    e.g. a DirectJudge read - counts as judged". The flag it reads is written by ``_judge``, which a
+    confident direct hit skips entirely, so on the inline path the goal used to keep whatever the
+    PREVIOUS tick left behind. After a cache serve that value is True, and a fresh rule answer was
+    then folded as "not judged".
+
+    The split path has always set the flag unconditionally before its fold. These two paths are meant
+    to be twins; this pins that they agree.
+    """
+
+    def test_a_direct_hit_is_judged_even_after_a_cache_serve_left_the_flag_set(self):
+        vision = _RaisingVision()
+        dj = DirectJudge([_ConfidentRule()])
+        core = Percept.create(vision=vision, direct_judge=dj, discover_plugins=False)
+        core.add_goal(Goal(id="g1", condition="screen.ocr.total_exceeds", say="alert"))
+        # Stand in for the state a cache serve leaves behind on the previous tick.
+        core._verdict_from_cache["g1"] = True
+
+        _drive(core, "frame1", 1)
+
+        self.assertIs(
+            core._observation_was_judged("g1"), True,
+            "a confident direct hit formed a fresh answer for this frame and must fold as judged",
+        )
+        self.assertEqual(vision.calls, 0, "the premise: no provider was consulted")
+
+    def test_the_flag_is_cleared_on_every_direct_hit_not_just_the_first(self):
+        vision = _RaisingVision()
+        dj = DirectJudge([_ConfidentRule()])
+        core = Percept.create(vision=vision, direct_judge=dj, discover_plugins=False)
+        core.add_goal(Goal(id="g1", condition="screen.ocr.total_exceeds", say="alert"))
+
+        for tick in range(3):
+            core._verdict_from_cache["g1"] = True  # re-dirty it between ticks
+            _drive(core, f"frame{tick}", 1)
+            with self.subTest(tick=tick):
+                self.assertIs(core._observation_was_judged("g1"), True)
+
+
 class DirectJudgeRoutingTests(unittest.TestCase):
     def test_route_confident_zero_vision_calls(self):
         vision = _RaisingVision()

@@ -5025,6 +5025,14 @@ class Percept:
                     # concurrency slot: there is no provider call to bound.
                     judgment_timing.mark_judge_started()
                     self.metrics.incr("direct_judge.hit")
+                    # A fresh answer for THIS frame, so the fold must count it as judged.
+                    # ``_judge`` is the only writer of this flag on this path and it is skipped here,
+                    # so without this line the goal keeps the PREVIOUS tick's value — a direct hit
+                    # arriving after a cache serve is folded as "not judged" and
+                    # ``Episode.judged_observations`` silently stalls. The split path already sets it
+                    # unconditionally before its fold; these two are meant to be twins.
+                    # ``_observation_was_judged`` names this exact case in its docstring.
+                    self._verdict_from_cache[goal.id] = False
                     direct_verdict = direct_result.verdict
                     judgment_timing.mark_judge_completed()
                     judge_task = None
