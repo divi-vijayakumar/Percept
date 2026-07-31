@@ -21,6 +21,7 @@ import re
 from typing import Any
 
 from ..adapters import Box, Goal, Observation, Verdict
+from ..observability import get_logger
 from ._resilience import CircuitBreaker, with_retry
 from .gemini import _gemini_key, _require_genai
 
@@ -183,10 +184,49 @@ class GeminiLiveVision:
         return await with_retry(_call, breaker=self._breaker)
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
+        """No detection on this backend — and it says so, once, instead of looking like an empty scene.
+
+        The live model answers a spoken question; it has no grounded object-detection call to make.
+        Returning ``[]`` is therefore correct for the ADAPTER and wrong for the CALLER, because the
+        runtime cannot tell "this backend does not detect" from "the frame contained nothing". The
+        entity graph stays empty for the whole run, and three shipped behaviours degrade silently:
+
+        * **multi-subject occurrences collapse** — two subjects both satisfying a condition fire once
+          with ``entity_id=None``, not twice with distinct ids;
+        * **per-entity transition goals go permanently idle** — they never dispatch and never fire;
+        * **user corrections are dropped** — ``assert_attribute`` needs ``graph.in_focus()``, so with
+          no graph it returns ``None`` and the correction never reaches the next judgment.
+
+        None of that is a defect of this adapter; it is the cost of selecting a backend that cannot
+        populate an entity graph, and the caller is entitled to know they are paying it. Latched to
+        one warning per instance: a 24/7 run must not emit this per frame.
+        """
+        self._warn_no_detection_once(
+            "detect", "no entity graph is built, so multi-subject identity, per-entity transitions "
+            "and user corrections are all inert for this run",
+        )
         return []
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:
+        """No event detection on this backend. Same reasoning and same latch as :meth:`detect`."""
+        self._warn_no_detection_once(
+            "detect_events", "no event boundaries are proposed, so an event-chain goal sees none",
+        )
         return []
+
+    def _warn_no_detection_once(self, method: str, consequence: str) -> None:
+        """Warn the first time an absent detection seam is called on this instance."""
+        if getattr(self, "_no_detection_warned", None) is None:
+            self._no_detection_warned = set()
+        if method in self._no_detection_warned:
+            return
+        self._no_detection_warned.add(method)
+        get_logger("percept.backends").warning(
+            "backend.no_detection: the %r vision backend does not implement %s and returns an empty "
+            "result — %s. This is indistinguishable downstream from a frame that genuinely contained "
+            "nothing. Select a backend with a detection seam if any goal needs per-entity identity.",
+            "gemini-live", method, consequence,
+        )
 
     def _build_parts(self, condition: str, frame: Any, types_mod, *, frames: list | None = None,
                      exemplar: Any = None, corrections: dict | None = None) -> list:
