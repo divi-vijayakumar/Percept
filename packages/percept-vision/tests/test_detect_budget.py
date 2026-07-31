@@ -27,6 +27,7 @@ No provider or network calls: the parser is pure and is driven directly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import unittest
@@ -115,6 +116,59 @@ class TestAnUnreadableReplyIsNotSilentlyEmpty(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].label, "person")
         self.assertAlmostEqual(out[0].confidence, 0.9)
+
+
+class TestTheEventSeamSaysItIsUnimplemented(unittest.TestCase):
+    """No shipped backend proposes temporal event boundaries, and each one says so once.
+
+    ``detect_events`` is OPTIONAL by contract -- ``Vision`` documents it "Phase 5; defaults to []"
+    and the conformance suite accepts ``[]``. These adapters are conformant, which is exactly why the
+    silence was easy to miss: the honesty lived at the protocol and not where anyone reads.
+
+    It matters because ``Percept.perceive_events`` iterates precisely what this returns, and nothing
+    refuses a ``type="event"`` goal at ``add_goal``. So such a goal arms, admits frames, spends
+    tier-0 work, and never fires -- indistinguishable, from outside, from a window in which nothing
+    happened. The return value is unchanged; only the silence is.
+    """
+
+    CALLERS = ("anthropic", "gemini", "openrouter")
+
+    def _adapter(self, module: str):
+        import importlib
+        mod = importlib.import_module(f"percept.backends.{module}")
+        cls = next(
+            getattr(mod, n) for n in dir(mod)
+            if n.endswith("Vision") and hasattr(getattr(mod, n), "detect_events")
+        )
+        return cls.__new__(cls)  # detect_events makes no call, so no key or SDK is needed
+
+    def test_every_backend_warns_the_first_time(self):
+        for module in self.CALLERS:
+            with self.subTest(module=module):
+                adapter = self._adapter(module)
+                with self.assertLogs("percept.backends", level=logging.WARNING) as caught:
+                    self.assertEqual(asyncio.run(adapter.detect_events([], [])), [])
+                self.assertTrue(any("backend.no_event_detection" in line for line in caught.output))
+
+    def test_the_warning_is_latched_per_adapter(self):
+        # A 24/7 watch calls this every window. One warning is a signal; one per window is noise
+        # nobody reads -- which is how the deaf audio gate survived as long as it did.
+        for module in self.CALLERS:
+            with self.subTest(module=module):
+                adapter = self._adapter(module)
+                with self.assertLogs("percept.backends", level=logging.WARNING):
+                    asyncio.run(adapter.detect_events([], []))
+                with self.assertNoLogs("percept.backends", level=logging.WARNING):
+                    self.assertEqual(asyncio.run(adapter.detect_events([], [])), [])
+
+    def test_the_contract_answer_is_unchanged(self):
+        # `[]` is a valid answer and `None` is not -- the conformance suite pins that. Warning must
+        # not have changed what the seam returns.
+        for module in self.CALLERS:
+            with self.subTest(module=module):
+                out = asyncio.run(self._adapter(module).detect_events([], []))
+                self.assertIsInstance(out, list)
+                self.assertEqual(out, [])
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -39,6 +39,7 @@ from .anthropic import (
     _detect_max_tokens,
     _judge_max_tokens,
     _parse_observations,
+    _warn_events_unimplemented,
     _parse_verdict,
     _terse_reply,
 )
@@ -465,6 +466,12 @@ class OpenRouterVision:
         return _parse_observations(_text_of(resp))
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:
+        """No temporal event boundaries from this backend -- and it says so, once.
+
+        Optional by contract (``Vision.detect_events`` is documented "Phase 5; defaults to []"), so
+        this is conformant. See :func:`_warn_events_unimplemented` for why it still warns.
+        """
+        _warn_events_unimplemented(self, "openrouter")
         return []
 
     def _build_content(

@@ -623,7 +623,12 @@ class AnthropicVision:
         return _parse_observations(_text_of(resp))
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:
-        """Temporal events land in Phase 5; this adapter defers (returns ``[]``)."""
+        """No temporal event boundaries from this backend -- and it says so, once.
+
+        Optional by contract (``Vision.detect_events`` is documented "Phase 5; defaults to []"), so
+        this is conformant. See :func:`_warn_events_unimplemented` for why it still warns.
+        """
+        _warn_events_unimplemented(self, "claude")
         return []
 
     # -- prompt construction ----------------------------------------------
@@ -933,6 +938,33 @@ def _parse_verdict(text: str, *, claim_mode: bool = False) -> Verdict:
         if salvaged is not None:
             return salvaged
         return Verdict(satisfied=False, confidence=0.0, evidence=f"unparsed: {text[:120]}")
+
+
+def _warn_events_unimplemented(adapter: Any, backend: str) -> None:
+    """Say once, per adapter, that this backend proposes no temporal event boundaries.
+
+    ``detect_events`` is OPTIONAL by contract -- ``percept.contracts.Vision`` documents it as
+    "Phase 5; defaults to []", and the conformance suite accepts ``[]`` as a valid answer. No shipped
+    backend implements it, so these adapters are conformant, not broken.
+
+    But ``Percept.perceive_events`` iterates exactly what this returns, so an empty list means a
+    ``type="event"`` goal ARMS, admits frames, spends tier-0 work, and never fires -- and nothing
+    refuses the goal at ``add_goal``. From the caller's side that is indistinguishable from a stream
+    in which no event ever happened.
+
+    The honesty already exists at the protocol; this puts it where someone reading the adapter will
+    see it. Return value unchanged, and latched so a 24/7 run says it once.
+    """
+    if getattr(adapter, "_events_unimplemented_warned", False):
+        return
+    adapter._events_unimplemented_warned = True
+    get_logger("percept.backends").warning(
+        "backend.no_event_detection: %r does not implement detect_events (Phase 5) and returns an "
+        "empty list, so a type='event' goal will arm and never fire on this backend. This is "
+        "indistinguishable downstream from a window in which nothing happened. Supply an adapter "
+        "that implements the seam if a watch depends on temporal event boundaries.",
+        backend,
+    )
 
 
 def _parse_observations(text: str) -> list[Observation]:
