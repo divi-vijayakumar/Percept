@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from .adapters import Goal, Verdict
 from .concern import resolution_ready
@@ -367,12 +367,73 @@ def _fingerprint_fields(d: dict, *, other_open: int) -> "list[str]":
     return fields
 
 
+#: The context keys an episode bundle's fingerprint ACCOUNTS FOR. A judgment whose context stays
+#: inside this set may take the cache path, because the key moves whenever those keys' answer-affecting
+#: state moves. Anything outside it must bypass: the key would not describe what was sent.
+#:
+#: This is the generalisation of a set literal that used to live inline at the dispatch site, where
+#: nothing linked it to the producer that decides what the fingerprint covers. Widening one without
+#: the other is how a cached verdict gets served across a state change it never saw.
+FINGERPRINT_COVERED_CONTEXT_KEYS: "frozenset[str]" = frozenset({JUDGE_OPEN_EPISODE_KEY})
+
+
+class EpisodeContextBundle(NamedTuple):
+    """The injected episode text and the cache fingerprint of that SAME reading, as one value.
+
+    Co-production was already true — both halves come from a single
+    :meth:`~percept.episodes.Episode.to_judge_dict` snapshot. What this type adds is CO-TRANSPORT and
+    a SELF-ANSWERING eligibility question, because co-production alone was not enough: the two halves
+    used to travel ~80 lines apart as independent locals, and dropping one of them still compiled,
+    still type-checked, and silently reintroduced the bug the fingerprint exists to prevent.
+
+    It is a 2-tuple on purpose. Every existing caller destructures ``text, fingerprint = ...`` or
+    indexes ``[0]``, and all of them keep working byte-for-byte — the behaviour hangs off methods, not
+    off extra fields.
+
+    :meth:`covers` is the third property: "may this judgment take the cache path?" is answered BY the
+    producer that decided the fingerprint, not by a set literal maintained by hand beside it. Adding a
+    context key is then a test failure rather than a silent widening.
+    """
+
+    text: "str | None"
+    fingerprint: "str | None"
+
+    def covers(self, context: "Any") -> bool:
+        """Whether every key in ``context`` is accounted for by :attr:`fingerprint`.
+
+        Empty context is covered trivially. A key outside
+        :data:`FINGERPRINT_COVERED_CONTEXT_KEYS` is not, and its judgment must bypass the cache.
+        """
+        return not context or set(context) <= FINGERPRINT_COVERED_CONTEXT_KEYS
+
+
+class _UncoveredContextBundle(NamedTuple):
+    """A bundle that declares it accounts for NOTHING — the shape a pipeline uses before it injects.
+
+    Same interface as :class:`EpisodeContextBundle`, and deliberately not the same answer: with no
+    episode injected there is no fingerprint, so ANY context key at all puts a judgment outside what
+    the key describes. That makes ``covers`` equivalent to the bare ``not context`` test such a
+    pipeline would otherwise be doing by accident — but it is now a DECLARATION, and the day the
+    pipeline starts injecting, changing this binding and passing the fingerprint are the same edit.
+    """
+
+    text: "str | None" = None
+    fingerprint: "str | None" = None
+
+    def covers(self, context: "Any") -> bool:
+        return not context
+
+
+#: The "I account for nothing" bundle. See :class:`_UncoveredContextBundle`.
+UNCOVERED_CONTEXT: "_UncoveredContextBundle" = _UncoveredContextBundle()
+
+
 def episode_context_and_fingerprint(
     log: "EpisodeLog | None",
     *,
     static_context: "str | None" = None,
     **kwargs: Any,
-) -> "tuple[str | None, str | None]":
+) -> "EpisodeContextBundle":
     """``(open-episode text, cache fingerprint)`` for this log — from ONE reading of the episode.
 
     The pairing is the correctness argument, not a convenience: both halves are derived from a single
@@ -394,7 +455,7 @@ def episode_context_and_fingerprint(
     """
     episode = open_episode_of(log)
     if episode is None and static_context is None:
-        return None, None
+        return EpisodeContextBundle(None, None)
     fields = [_FINGERPRINT_VERSION]
     text: "str | None" = None
     if episode is None:
@@ -408,7 +469,7 @@ def episode_context_and_fingerprint(
         fields.extend(_fingerprint_fields(d, other_open=other_open))
     fields.append(_opt(static_context))
     digest = hashlib.blake2s(_framed(fields).encode("utf-8"), digest_size=16)
-    return text, digest.hexdigest()
+    return EpisodeContextBundle(text, digest.hexdigest())
 
 
 def episode_judge_context(log: "EpisodeLog | None", **kwargs: Any) -> "str | None":
@@ -502,6 +563,9 @@ __all__ = [
     "judge_episode_memory",
     "open_episode_of",
     "episode_context_text",
+    "EpisodeContextBundle",
+    "FINGERPRINT_COVERED_CONTEXT_KEYS",
+    "UNCOVERED_CONTEXT",
     "episode_context_and_fingerprint",
     "episode_judge_context",
     "with_open_episode",

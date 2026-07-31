@@ -75,7 +75,11 @@ from .identity_policy import (
     transition_latch_key,
     watch_reducer_entity_id,
 )
-from .episode_memory import episode_context_and_fingerprint, with_open_episode
+from .episode_memory import (
+    UNCOVERED_CONTEXT,
+    episode_context_and_fingerprint,
+    with_open_episode,
+)
 from .judge_context import (
     JUDGE_OPEN_EPISODE_KEY,
     JUDGE_STATIC_CONTEXT_KEY,
@@ -3391,6 +3395,11 @@ class Percept:
         adapter, bound = self._select_judge_adapter(goal)
         audio = self._audio_clip(candidate.token.source_id, spec)
         context: dict[str, Any] = {}
+        # This pipeline does not inject the open episode, so it declares an episode bundle that
+        # accounts for nothing. Binding it HERE, beside the context it is about, is the point: the
+        # cache-eligibility question below is then asked of a producer rather than of a bare emptiness
+        # test, and giving this pipeline episode memory becomes one edit that moves both halves.
+        episode_bundle = UNCOVERED_CONTEXT
         process_qa = bool(goal.state.get("process_qa"))
         if process_qa:
             context.update(
@@ -3458,13 +3467,26 @@ class Percept:
         )
         if direct_hit:
             local_verdict = _VerdictSnapshot.capture(direct_result.verdict)
-        elif not strip and not context and audio is None:
+        # This pipeline injects no episode, so it mints no fingerprint, so its key accounts for NO
+        # context key at all — which is what ``UNCOVERED_CONTEXT`` declares. Behaviour is identical to
+        # the bare ``not context`` test this replaces; the difference is that it is now a DECLARATION
+        # rather than an accident, asked of the same producer the other pipeline asks.
+        #
+        # WHY THAT MATTERS MORE THAN IT LOOKS: the day this pipeline starts injecting the episode, the
+        # binding below and the ``context_fingerprint`` argument are the same edit. Change one without
+        # the other and the fence bypasses the cache — a cost regression, loud in ``cache.hit`` —
+        # instead of serving a verdict formed under one episode state under a different one, which is
+        # silent. The failure mode is converted before the code that could cause it exists.
+        elif not strip and episode_bundle.covers(context) and audio is None:
             cache_key = CacheKey(
                 goal_id=goal.id,
                 frame=candidate.frame,
                 roi=roi,
                 entity_id=base_key[1],
                 condition=goal.condition,
+                # Written down explicitly, though it is ``None`` today: its absence used to be
+                # invisible in review. See the note above.
+                context_fingerprint=episode_bundle.fingerprint,
             )
             hit = self.cache.resolve(cache_key)
             if hit.status == "HIT" and hit.verdict is not None:
@@ -6838,12 +6860,17 @@ class Percept:
         # "the key describes the context that was actually sent" true by construction instead of by
         # two readings of the log agreeing to stay in step. Passed straight into the cache key below;
         # ``percept.cache`` never interprets it, so the projection stays this side of the seam.
-        episode_context, context_fingerprint = episode_context_and_fingerprint(
+        # ONE value, not two locals. The text and the fingerprint are consumed ~80 lines apart, and as
+        # separate locals dropping either one still compiled and still type-checked while silently
+        # reintroducing the bug the fingerprint exists to prevent. Keeping the bundle whole is what
+        # makes the cache-eligibility question below answerable BY the producer.
+        episode_bundle = episode_context_and_fingerprint(
             self.episodes.get(goal.id),
             static_context=(
                 bound.static_context.decoded_text if force_context else None
             ),
         )
+        episode_context, context_fingerprint = episode_bundle
         if episode_context is not None:
             if context is not None and JUDGE_OPEN_EPISODE_KEY in context:
                 raise ReservedContextKeyError(
@@ -6884,7 +6911,14 @@ class Percept:
         # call sites build already sets one of the flags above, so this fence fires for nobody today —
         # it is here so that adding a context key cannot silently widen what a slot may be served for.
         # (``JUDGE_STATIC_CONTEXT_KEY`` needs no entry: its only writer also sets ``force_context``.)
-        unkeyed_context = bool(context) and not set(context) <= {JUDGE_OPEN_EPISODE_KEY}
+        #
+        # THE PRODUCER ANSWERS IT, not a set literal maintained here. This used to be an inline
+        # ``set(context) <= {JUDGE_OPEN_EPISODE_KEY}`` sitting ~50 lines from the call that decides
+        # what the fingerprint actually covers, with nothing linking the two: widening the fingerprint's
+        # projection without widening this literal serves a cached verdict across state the key never
+        # saw, and widening this literal without the projection does the same. Asking the bundle makes
+        # them one fact.
+        unkeyed_context = not episode_bundle.covers(context)
         if (
             frames or audio or process_mode or claim_mode or event_mode or force_context
             or unkeyed_context
