@@ -22,10 +22,16 @@ import json
 import math
 import os
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from ..adapters import Box, Goal, Observation, Verdict
 from ..contracts import ClipEvent
+# The ONE declaration of what a judge context key means and how it may be said to a model. Every
+# backend renders through it (see ``_judge_context_sentences``) instead of carrying its own
+# hand-copied deny-list — three such lists had already drifted apart, and the keys none of them
+# remembered were being announced to the model as facts to trust over its own read.
+from ..judge_context_producers import PRIVATE_KEY_PREFIX, spec_for
 from ..observability import get_logger
 from ._resilience import CircuitBreaker, with_retry
 # The router publishes the latency mode of the route it selected; this module owns the
@@ -332,6 +338,112 @@ def _clip_timeline_sentence(
     )
 
 
+# ==================================================================================================
+# THE JUDGE-CONTEXT REGION OF THE PROMPT — one renderer, three backends
+# ==================================================================================================
+#
+# ``Vision.judge(context={...})`` carries the structured state a frame cannot show. Each backend used
+# to render it with a hand-copied deny-list of keys to skip, and the three lists disagreed: only the
+# ``_percept_`` PREFIX was structural, so every public key was filtered BY NAME and a key nobody
+# remembered — ``running_answer`` was in no list at all — fell through into one sentence announcing it
+# as a specialist model's report to trust over the model's own read.
+#
+# That sentence is honest for exactly one key. The open episode is this system's OWN record of an
+# occurrence it is already tracking; the static context is a deployment's standing rubric, which can be
+# a megabyte of policy. Neither is a third party's claim about the frame, and both were said to be one.
+#
+# So the render dispatches on the TREATMENT each key is declared with in
+# ``percept.judge_context_producers``, and all three backends call this one function: a key added to
+# the registry is spoken correctly everywhere on the same commit, and the three cannot drift again.
+
+#: The extractor's framing, and only the extractor's. Left byte-for-byte as it shipped — it was
+#: written for a specialist's structured report and is correct for one.
+_SPECIALIST_FACTS_SENTENCE = (
+    "A specialist model has reported these structured facts (trust them over your own read): "
+    "{facts}. "
+)
+
+#: The open episode's framing. Provenance first: this is the watch's own accumulated record, so the
+#: model is told to use it for CONTINUITY and to answer the question from the evidence in front of it.
+#: Framing it as an outside report (as the generic sentence did) invites the model to treat its own
+#: earlier verdict as fresh corroboration and ratchet a stale episode forward.
+_OPEN_EPISODE_BLOCK = (
+    "This watch has already established the following about the occurrence it is tracking. It is "
+    "this system's own record, accumulated from earlier judgments of this same stream — not a new "
+    "observation, and not another model's claim: {episode}. Use it only to tell a continuation of "
+    "that occurrence from a fresh one; decide the question above from the evidence in front of you. "
+)
+
+#: The deployment's standing rubric. Delimited rather than inlined: it is an instruction to apply, it
+#: can be large (up to ``percept.judge_context.DEFAULT_MAX_BYTES``), and its bytes are arbitrary — run
+#: into a sentence of semicolon-joined facts it would read as one enormous observed fact, and any
+#: imperative inside it would be indistinguishable from this prompt's own.
+_STATIC_CONTEXT_BLOCK = (
+    "The deployment that installed this watch supplies the standing rubric below. It is policy to "
+    "apply when deciding — not an observation of this scene and not a claim about the evidence.\n"
+    "--- BEGIN STANDING RUBRIC ---\n{policy}\n--- END STANDING RUBRIC ---\n"
+)
+
+
+def _judge_context_sentences(
+    context: "Mapping | None", *, specialist_sentence: str = _SPECIALIST_FACTS_SENTENCE
+) -> str:
+    """Render ``context`` into prompt text, each key under the framing its treatment declares.
+
+    ``specialist_sentence`` is the one piece a backend may vary — the OpenRouter adapter's phrasing
+    of it predates this function and is kept byte-for-byte, because changing shipped prompt wording
+    for a key that was already framed correctly would move eval results for no reason.
+
+    Treatments (see :mod:`percept.judge_context_producers`):
+
+    * ``specialist_facts`` — the extractor. Joined into ``specialist_sentence``.
+    * ``episode`` / ``policy`` — their own blocks, above.
+    * ``own_block`` (``claim_mode``, ``event_chain``) — stripped here; the caller emits the
+      purpose-built contract text for them, and ``event_chain`` also selects the evidence shape.
+    * ``early_return`` (``process_qa``, ``observe_step``, ``running_answer``) — stripped. They select
+      a different request entirely and must never reach the ordinary prompt.
+    * ``transport`` (the ``_percept_`` prefix) — stripped by rule, so a private key that does not
+      exist yet is still never rendered.
+
+    An UNREGISTERED key renders as a specialist fact, which is the shipped behaviour and the
+    documented meaning of a caller's own ``context={...}``. Refusing it is route selection's job
+    (``percept.judge_context_producers.unregistered``), deliberately not an adapter's — the published
+    conformance suite passes an undeclared probe key straight into an adapter to prove the seam
+    accepts a caller's context.
+
+    Accepts any ``Mapping``. The three backends' guards disagreed here too: OpenRouter tested
+    ``isinstance(context, dict)`` and so rendered NOTHING for a ``MappingProxyType`` that Anthropic
+    rendered in full. A read-only view of a context is still a context.
+    """
+    if not context or not isinstance(context, Mapping):
+        return ""
+    facts: list[str] = []
+    episode: list[str] = []
+    policy: list[str] = []
+    for key, value in context.items():
+        if key.startswith(PRIVATE_KEY_PREFIX):
+            continue
+        spec = spec_for(key)
+        treatment = spec.treatment if spec is not None else "specialist_facts"
+        if treatment == "specialist_facts":
+            facts.append(f"{key}={value}")
+        elif treatment == "episode":
+            episode.append(str(value))
+        elif treatment == "policy":
+            policy.append(str(value))
+        # own_block / early_return / anything a future treatment names: not prompt facts here.
+    rendered = ""
+    # The rubric first: it is the standing frame the rest is read against, and putting the largest
+    # block last would push the reply contract far from the end of the prompt.
+    for text in policy:
+        rendered += _STATIC_CONTEXT_BLOCK.format(policy=text)
+    if facts:
+        rendered += specialist_sentence.format(facts="; ".join(facts))
+    for text in episode:
+        rendered += _OPEN_EPISODE_BLOCK.format(episode=text)
+    return rendered
+
+
 # CLAIM-MODE contract addendum (1.5). Appended to the per-frame question ONLY when the caller marks
 # the goal claim-mode (``context["claim_mode"]`` — set in ``agent.perceive_judged`` when the concern's
 # resolved identity policy is ``claim_slot``). It advertises the OPTIONAL mutation-channel fields the
@@ -568,19 +680,10 @@ class AnthropicVision:
                 f"The user has told you these authoritative facts (trust them over your own "
                 f"read): {facts}. "
             )
-        if context:
-            # ``claim_mode`` is a RESERVED control key (not a specialist fact) — never surface it as one.
-            spec_facts = "; ".join(
-                f"{k}={v}"
-                for k, v in context.items()
-                if k not in ("claim_mode", "event_chain")
-                and not k.startswith("_percept_")
-            )
-            if spec_facts:
-                question += (
-                    f"A specialist model has reported these structured facts (trust them over your own "
-                    f"read): {spec_facts}. "
-                )
+        # Each context key under the framing its registry treatment declares — see
+        # :func:`_judge_context_sentences`. ``claim_mode``/``event_chain`` keep their own contract
+        # blocks below; nothing here invents a specialist for the episode or the rubric.
+        question += _judge_context_sentences(context)
         if context and context.get("event_chain"):
             span_s = context.get("_percept_temporal_span_s")
             if isinstance(span_s, (int, float)) and not isinstance(span_s, bool):

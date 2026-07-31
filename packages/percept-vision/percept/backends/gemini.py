@@ -35,6 +35,7 @@ from .anthropic import (
     _bounded_strip,
     _clip_timeline_sentence,
     _is_reflex,
+    _judge_context_sentences,
     _judge_max_frames,
     _detect_max_tokens,
     _judge_max_tokens,
@@ -521,18 +522,10 @@ class GeminiVision(_GeminiBase):
                 f"The user has told you these authoritative facts (trust them over your own read): "
                 f"{facts}. "
             )
-        if context:
-            # ``claim_mode`` is a RESERVED control key (not a specialist fact) — never surface it as one.
-            spec_facts = "; ".join(
-                f"{k}={v}"
-                for k, v in context.items()
-                if k not in ("claim_mode", "event_chain") and not k.startswith("_percept_")
-            )
-            if spec_facts:
-                question += (
-                    f"A specialist model has reported these structured facts (trust them over your own "
-                    f"read): {spec_facts}. "
-                )
+        # Each context key under the framing its registry treatment declares — the SAME renderer the
+        # Anthropic and OpenRouter adapters call, so the three cannot drift apart again.
+        # ``claim_mode``/``event_chain`` keep their own contract blocks below.
+        question += _judge_context_sentences(context)
         if context and context.get("event_chain"):
             question += _clip_timeline_sentence(
                 context.get("_percept_temporal_span_s"),

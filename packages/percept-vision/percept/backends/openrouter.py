@@ -34,12 +34,21 @@ from .anthropic import (
     _clip_timeline_sentence,
     _coerce_json,
     _is_reflex,
+    _judge_context_sentences,
     _judge_max_frames,
     _detect_max_tokens,
     _judge_max_tokens,
     _parse_observations,
     _parse_verdict,
     _terse_reply,
+)
+
+#: This adapter's phrasing of the extractor's structured report — shorter than the Claude/Gemini one
+#: and deliberately unchanged from what shipped. It is the ONE judge-context key the generic sentence
+#: was ever honest about, so there is no reason to reword it; everything else this adapter used to
+#: sweep into it now renders through its own treatment (see :func:`_judge_context_sentences`).
+_SPECIALIST_FACTS_SENTENCE = (
+    "A specialist model reported these structured facts (trust them): {facts}. "
 )
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -568,16 +577,13 @@ class OpenRouterVision:
         if corrections:
             facts = "; ".join(f"{k}={v}" for k, v in corrections.items())
             question += f"Trust these authoritative facts over your own read: {facts}. "
-        if context and isinstance(context, dict):
-            # ``process_qa``/``claim_mode`` are RESERVED control keys, never surfaced as specialist facts.
-            spec = "; ".join(
-                f"{k}={v}"
-                for k, v in context.items()
-                if k not in ("process_qa", "claim_mode", "event_chain")
-                and not k.startswith("_percept_")
-            )
-            if spec:
-                question += f"A specialist model reported these structured facts (trust them): {spec}. "
+        # Each context key under the framing its registry treatment declares — the SAME renderer the
+        # Anthropic and Gemini adapters call. This adapter's specialist sentence is shorter than
+        # theirs and stays that way: it is the one key that was already framed honestly, and
+        # rewording a shipped prompt for an open-weight model sweep would move results for nothing.
+        question += _judge_context_sentences(
+            context, specialist_sentence=_SPECIALIST_FACTS_SENTENCE
+        )
         if event_chain:
             question += _clip_timeline_sentence(
                 (context or {}).get("_percept_temporal_span_s"),
