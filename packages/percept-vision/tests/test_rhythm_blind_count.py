@@ -15,6 +15,12 @@ whether it ever fires in production: **that a genuinely blind stream actually me
 and a real rhythm above it.** A separation that does not hold turns the whole tier into decoration,
 and the counter reports a fabricated number as clean. That is the failure this file exists to catch.
 
+The confidence that separates them is ``HeroResult.periodicity`` — measured by the route itself from
+the performer's ``signal``. This file pins BOTH sides of the choice that field records: that
+``periodicity`` escalates every blind stream and no clean one, and that ``regularity``, the
+neighbouring confidence-shaped float, still cannot do either — so nothing quietly re-wires the
+escalation onto it.
+
 Everything here is a synthetic scalar stream — a sine for a rhythm, seeded Gaussian noise for the
 blind case — so there is no media, no provider, no key and no numpy: the honesty contract is
 asserted on the pure-stdlib measurement layer the route already ships.
@@ -58,6 +64,11 @@ def _rhythm_state(**extra) -> dict:
     state = {"type": "rhythm", "count": 0, "rhythm": {"channel": CHANNEL}}
     state.update(extra)
     return state
+
+
+#: Clean-rhythm shapes the confidence must stay above tau on — a rep every 1.3 s through every 4 s, and
+#: two clip lengths — so "a real rhythm reads confident" is a property of rhythms, not of one lucky stream.
+RHYTHM_SHAPES = tuple((period, n) for period in (8, 10, 12, 18, 24) for n in (N_SAMPLES, 96))
 
 
 def _sine(n: int = N_SAMPLES, period: int = PERIOD_SAMPLES) -> list[float]:
@@ -117,13 +128,14 @@ def _hero_result(values):
     return hero.result()
 
 
-def _confidence(signal) -> float:
-    """The periodicity confidence of a performer's channel stream, in ``[0, 1]``.
+def _independent_confidence(signal) -> float:
+    """The periodicity confidence recomputed from a raw stream, INDEPENDENTLY of the hero.
 
-    This is what ``HeroResult.signal`` is published for — its own field comment says the stream is
-    carried "so a periodicity confidence can be measured downstream". ``periodicity_score`` is the
-    package's canonical answer to "how periodic is this", it is pure stdlib, and it is rate-invariant
-    by construction, so it is the measure a keyless deployment can actually feed ``escalate_count``.
+    The route publishes this number itself as ``HeroResult.periodicity``; every behavioural assertion
+    below reads that published field, because a confidence a caller has to recompute is exactly the
+    gap this tier fell into. This helper exists only as the oracle the field is checked against, so
+    "``periodicity`` is ``periodicity_score`` of ``signal``, on the tracker's own band and canonical
+    grid" is pinned as a wiring fact rather than assumed.
     """
 
     return periodicity_score(
@@ -194,13 +206,12 @@ class BlindCountEscalationTests(unittest.TestCase):
 
     def test_a_real_rhythm_measures_confident_and_keeps_the_edge_count(self):
         result = _hero_result(_sine())
-        confidence = _confidence(result.signal)
-        self.assertGreaterEqual(confidence, TAU)
+        self.assertGreaterEqual(result.periodicity, TAU)
 
         def recount():  # pragma: no cover - a confident count must not reach the backstop
             raise AssertionError("a confident count must never spend the backstop")
 
-        count, escalated = escalate_count(confidence, result.count, recount, tau=TAU)
+        count, escalated = escalate_count(result.periodicity, result.count, recount, tau=TAU)
         self.assertFalse(escalated)
         self.assertEqual(count, result.count)
         self.assertEqual(count, N_SAMPLES // PERIOD_SAMPLES)
@@ -214,25 +225,33 @@ class BlindCountEscalationTests(unittest.TestCase):
             calls.append(1)
             return -1  # a sentinel the edge counter could never produce
 
-        count, escalated = escalate_count(_confidence(result.signal), result.count, recount, tau=TAU)
+        count, escalated = escalate_count(result.periodicity, result.count, recount, tau=TAU)
         self.assertTrue(escalated)
         self.assertEqual(count, -1)  # the reported number came from the backstop, not the edge
         self.assertEqual(len(calls), 1)
 
     def test_the_confidence_separates_rhythm_from_noise_on_every_seed(self):
-        # One lucky seed proves nothing — a threshold is only a threshold if the two populations do
-        # not overlap it. Pinned across a seed sweep with the observed margin on both sides, so a
-        # regression that merely narrows the gap fails here rather than in a client's rep count.
-        rhythm_confidence = _confidence(_hero_result(_sine()).signal)
-        blind = [_confidence(_hero_result(_noise(seed)).signal) for seed in range(20)]
-        self.assertGreater(rhythm_confidence, 0.6)
+        # One lucky seed proves nothing, and neither does one lucky cadence — a threshold is only a
+        # threshold if the two populations do not overlap it. Pinned across a noise-seed sweep AND a
+        # sweep of rep periods and clip lengths, with the observed margin between the WORST rhythm
+        # and the BEST noise, so a regression that merely narrows the gap fails here rather than in
+        # a client's rep count. Measured: rhythms score 0.67-0.92 (worst at the slowest cadence, a
+        # 4 s rep seen 3 times), noise 0.11-0.35 over 200 seeds — a floor-to-ceiling gap of 0.31.
+        rhythm = [
+            _hero_result(_sine(n=n, period=period)).periodicity for period, n in RHYTHM_SHAPES
+        ]
+        blind = [_hero_result(_noise(seed)).periodicity for seed in range(20)]
+        self.assertGreater(min(rhythm), 0.6)
         self.assertLess(max(blind), TAU)
-        self.assertGreater(rhythm_confidence - max(blind), 0.25)
+        self.assertGreater(min(rhythm) - max(blind), 0.25)
 
     def test_the_hero_publishes_the_stream_the_confidence_is_measured_from(self):
         # The wiring the separation depends on: `signal` must be the performer's own per-frame
         # channel stream as timestamped pairs, complete and in order. A truncated or index-keyed
-        # stream would still score, just meaninglessly, and the tier would fail silently.
+        # stream would still score, just meaninglessly, and the tier would fail silently. And the
+        # published `periodicity` must BE that stream's score on the tracker's band and canonical
+        # grid — recomputed here independently, so the field cannot drift into measuring something
+        # else while the separation numbers in this class go on passing.
         result = _hero_result(_sine())
         self.assertEqual(len(result.signal), N_SAMPLES)
         self.assertEqual(result.prior_channel, CHANNEL)
@@ -242,36 +261,50 @@ class BlindCountEscalationTests(unittest.TestCase):
         self.assertAlmostEqual(times[-1] - times[0], (N_SAMPLES - 1) / FPS, places=6)
         self.assertGreater(result.hero_track_coverage, 0.9)
         self.assertGreater(result.channel_coverage, 0.9)
+        self.assertEqual(result.periodicity, _independent_confidence(result.signal))
 
-    @unittest.expectedFailure
-    def test_the_core_native_regularity_escalates_a_blind_count(self):
-        """The obvious composition, which does not work — expected to FAIL until the measure changes.
+    def test_the_published_confidence_escalates_a_blind_count_but_regularity_cannot(self):
+        """The composition a deployment actually writes, and the one next to it that looks identical.
 
-        ``HeroResult.regularity`` is the only confidence-shaped scalar the route itself computes, it
-        sits in the dataclass whose docstring says a count scoring low on these fields is blind, and
-        it is documented in-field as "core-native periodicity". A deployment wiring the honesty tier
-        with what it has therefore writes ``escalate_count(result.regularity, result.count, ...)``
-        and gets a counter that never escalates.
+        ``escalate_count(result.periodicity, result.count, recount)`` is the wiring the route is for,
+        and it escalates every blind stream here: broadband noise with no cycle at all scores
+        0.11-0.35 (200 seeds), comfortably under ``tau``, on counts of 2 to 9 reps the counter would
+        otherwise have reported clean.
 
-        It cannot escalate: ``regularity`` is ``1 / (1 + CV)`` over *confirmed inter-rep intervals*,
-        and those intervals survive a prominence gate that already discards the irregular excursions,
-        so their coefficient of variation stays well under 1 even on pure noise. The value is
-        effectively floored around 0.5, while ``tau`` defaults to 0.4 — reaching it would require a
-        CV above 1.5. Measured over 20 noise seeds the minimum is 0.62 and the branch fires 0 times,
-        each on a count of 3 to 7 reps fabricated from a signal with no cycle.
+        ``escalate_count(result.regularity, ...)`` is the same expression one field over and it
+        escalates NOTHING — not one of those seeds. ``regularity`` is ``1 / (1 + CV)`` over
+        *confirmed inter-rep intervals*, and those intervals survive a prominence gate that has
+        already discarded the irregular excursions, so their coefficient of variation stays small
+        even on pure noise; clearing ``tau``'s 0.4 downward would take a CV above 1.5. Measured over
+        200 noise seeds it ranges 0.4775 to 1.0 — it reaches the same 1.0 a flawless sine does, so it
+        does not merely sit too high, it does not separate the populations at all.
 
-        The route's usable confidence is measured from ``HeroResult.signal`` instead (see
-        ``_confidence``), which is what the tests above pin. When ``regularity`` is made a real
-        periodicity measure, or the field is renamed so it cannot be mistaken for one, this test
-        starts passing and is reported as an unexpected success — delete the marker then.
+        Both halves are asserted together on the SAME results, because the fix is not "a number moved"
+        but "these two fields answer different questions". Swapping the escalation back onto
+        ``regularity`` fails the first half; quietly redefining ``regularity`` as a periodicity
+        measure — which would strand its existing consumers reading interval spacing — fails the
+        second.
         """
 
         for seed in range(20):
-            result = _hero_result(_noise(seed))
-            _, escalated = escalate_count(
-                result.regularity, result.count, lambda: -1, tau=TAU
-            )
-            self.assertTrue(escalated, f"seed {seed}: regularity {result.regularity:.4f} >= {TAU}")
+            with self.subTest(seed=seed):
+                result = _hero_result(_noise(seed))
+                self.assertGreater(result.count, 0)  # a fabricated count, from a signal with no cycle
+
+                _, escalated = escalate_count(result.periodicity, result.count, lambda: -1, tau=TAU)
+                self.assertTrue(
+                    escalated, f"seed {seed}: periodicity {result.periodicity:.4f} >= {TAU}"
+                )
+
+                _, regularity_escalated = escalate_count(
+                    result.regularity, result.count, lambda: -1, tau=TAU
+                )
+                self.assertFalse(
+                    regularity_escalated,
+                    f"seed {seed}: regularity {result.regularity:.4f} < {TAU} — if interval "
+                    "regularity has become a real periodicity measure, the escalation should read "
+                    "it and HeroResult should stop publishing two confidences",
+                )
 
 
 class RhythmRefusalEdgeTests(unittest.TestCase):
@@ -303,6 +336,32 @@ class RhythmRefusalEdgeTests(unittest.TestCase):
         self.assertEqual(_observe(core, []), [])
         self.assertIsNone(core.rhythm.get("reps"))
         self.assertEqual(core.goals.get("reps").state["count"], 0)
+
+    def test_a_hero_that_measured_nothing_reports_no_confidence_and_escalates(self):
+        # The default must fall the safe way. A hero with no signal — nobody observed at all, or a
+        # goal that named no prior channel for the stream to be accumulated on — has no evidence of a
+        # cycle, so its confidence is 0.0 and the count escalates. The dangerous alternative is the
+        # 1.0 an "empty series is trivially self-similar" reading would give, which would assert a
+        # never-measured count as clean; this pins that it does not.
+        empty = RhythmHero(_core(), "reps", prior_channel=CHANNEL).result()
+        self.assertEqual(empty.signal, [])
+        self.assertEqual(empty.periodicity, 0.0)
+        _, escalated = escalate_count(empty.periodicity, empty.count, lambda: -1, tau=TAU)
+        self.assertTrue(escalated)
+
+        core = _core()  # a real rhythm, but no prior channel: counted, and honestly not confident
+        hero = RhythmHero(core, "reps")
+        for i, v in enumerate(_sine()):
+            hero.observe(
+                i / FPS,
+                [PersonMeasure(box=(0.2, 0.2, 0.1, 0.4), channels={CHANNEL: v}, pose_conf=0.9,
+                               coverage={CHANNEL: 0.95}, person_id="0")],
+                frame=None,
+            )
+        result = hero.result()
+        self.assertGreater(result.count, 0)
+        self.assertEqual(result.signal, [])
+        self.assertEqual(result.periodicity, 0.0)
 
     def test_a_flat_stream_counts_nothing_and_reports_no_confidence(self):
         # A still subject: no channel is ever selected, so there is nothing to be confident about.

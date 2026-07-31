@@ -10,13 +10,22 @@ brain SELECTS the performer (the entity with the most reps on the prior channel 
 
 It also accumulates the OBSERVABILITY a count needs to be honest: how much of the clip the performer was
 actually tracked (``hero_track_coverage``), how visible the prior channel's keypoints were
-(``channel_coverage`` — the measured phase-source gate), and the performer's raw channel ``signal`` (so a
-periodicity confidence can be measured downstream). A count that scores low on these is a BLIND count — the
-two-tier design escalates it to the VLM rather than reporting it clean ("coverage ≠ correctness").
+(``channel_coverage`` — the measured phase-source gate), and the performer's raw channel ``signal``, from
+which it MEASURES the count's ``periodicity`` — the confidence :func:`escalate_count` consumes. A count that
+scores low on these is a BLIND count — the two-tier design escalates it to the VLM rather than reporting it
+clean ("coverage ≠ correctness").
 
-Pure-stdlib: it only orchestrates the core. The numpy/cv2 periodicity confidence, the silhouette fallback,
-and the live VLM recount live in the eval layer that consumes this. Reusable beyond the benchmark — this is
-the runtime shape of the rhythm hero, not benchmark glue.
+Measuring that confidence *here* is what makes the honesty tier usable on the KEYLESS path. The signal was
+always published "so a periodicity confidence can be measured downstream", but downstream meant the eval
+layer's numpy autocorrelation, so a shipped deployment had no periodicity measure to pass and the only
+confidence-shaped float within reach — ``regularity`` — cannot fall below ``tau`` even on pure noise (see
+:class:`HeroResult`). ``percept.measurement.periodicity_score`` is the package's own answer to "how periodic
+is this", it is pure stdlib and rate-invariant, so the route can now tell a rhythm from noise with no model,
+no numpy and no benchmark harness in the loop.
+
+Pure-stdlib: it only orchestrates the core and the canonical measurement layer. The silhouette fallback and
+the live VLM recount live in the eval layer that consumes this. Reusable beyond the benchmark — this is the
+runtime shape of the rhythm hero, not benchmark glue.
 """
 
 from __future__ import annotations
@@ -24,16 +33,45 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .adapters import Box, Observation
+from .measurement import MeasurementSeries, periodicity_score
+from .rhythm import RhythmTracker
 
 
 @dataclass
 class HeroResult:
+    """The selected performer's count, plus the observability that says whether to believe it.
+
+    Two fields in here are shaped like a confidence and only ONE of them is one:
+
+    * ``periodicity`` — measured from ``signal`` by :func:`percept.measurement.periodicity_score`: the
+      height of the dominant autocorrelation peak of the performer's channel stream. It reads the RAW
+      stream, so a stream with no cycle in it scores near zero however many excursions were counted off
+      it. **This is the confidence :func:`escalate_count` takes.**
+    * ``regularity`` — the tracker's ``1 / (1 + CV)`` over the performer's *confirmed inter-rep intervals*.
+      Those intervals are measured only across excursions that already cleared the counter's prominence
+      gate, i.e. exactly the subset whose spacing is regular, so their CV stays small even when there was
+      no cycle at all. On broadband noise it reads 0.4775 to 1.0 (measured, 200 seeds) — never under
+      ``escalate_count``'s default ``tau`` of 0.4 — so it CANNOT discriminate a blind count. It stays a
+      published field because interval regularity is a real diagnostic in its own right and the eval layer
+      reports it, but it answers "were the reps I counted evenly spaced?", never "was there a rhythm?".
+
+    Both are published, rather than one replacing the other, so a reader can see the two answers disagree
+    instead of guessing which meaning a single ``regularity`` carried. ``tests/test_rhythm_blind_count.py``
+    pins the separation and the trap.
+    """
+
     count: int                          # the SELECTED performer's confirmed-rep tally (the pose-path count)
     subject: str | None                 # the performer entity id (mirrors goal.state["subject"])
     channel_coverage: float             # mean prior-channel keypoint visibility for the performer (gate)
     hero_track_coverage: float          # fraction of processed frames the performer was actually tracked
-    regularity: float                   # core-native periodicity 1/(1+CV) of the performer; 0.0 if <2 reps
-    signal: list                        # the performer's prior-channel (t, value) stream (for autocorr conf)
+    periodicity: float                  # [0,1] periodicity of the performer's ``signal`` — THE escalate_count
+    #                                     confidence. 0.0 when no signal was accumulated (no performer, or no
+    #                                     prior channel to accumulate one on): no evidence is not confidence,
+    #                                     so such a count escalates rather than being asserted.
+    regularity: float                   # 1/(1+CV) of the performer's confirmed inter-rep INTERVALS; 0.0 if
+    #                                     <2 reps. A count-SHAPE diagnostic, not a periodicity confidence —
+    #                                     see the class docstring before passing it anywhere.
+    signal: list                        # the performer's prior-channel (t, value) stream (periodicity's input)
     reps: list                          # the performer's Rep spans (start/peak/stop) — the VLM active span
     n_entities: int                     # distinct people tracked over the clip (a crowd-size proxy)
     prior_channel: str | None
@@ -92,9 +130,29 @@ class RhythmHero:
 
         return HeroResult(
             count=count, subject=subject, channel_coverage=channel_coverage,
-            hero_track_coverage=htc, regularity=regularity, signal=signal, reps=reps,
+            hero_track_coverage=htc, periodicity=measure_periodicity(signal, self.prior, tracker),
+            regularity=regularity, signal=signal, reps=reps,
             n_entities=len(self._present), prior_channel=self.prior,
         )
+
+
+def measure_periodicity(signal, channel: str | None = None, tracker: object = None) -> float:
+    """How periodic a performer's ``(t, value)`` stream is, ∈ [0, 1] — the blind-count confidence.
+
+    Scored on the SAME canonical grid and plausible rep-period band the tracker judges a channel by
+    (:attr:`~percept.rhythm.RhythmTracker.select_hz` / ``select_band_s``), so "confident" means confident
+    about a cycle the counter would itself have been willing to call a rep — not about some faster or
+    slower cycle it would have ignored. ``tracker=None`` falls back to those same class defaults.
+
+    An empty or too-short stream scores ``0.0``: no evidence is not confidence, and the resulting count
+    escalates rather than being asserted.
+    """
+
+    if not signal:
+        return 0.0
+    band = getattr(tracker, "select_band_s", RhythmTracker.select_band_s)
+    hz = getattr(tracker, "select_hz", RhythmTracker.select_hz)
+    return periodicity_score(MeasurementSeries.from_pairs(channel or "", signal), band_s=band, hz=hz)
 
 
 def escalate_count(confidence: float, edge_count: int, recount, *, tau: float = 0.4):
@@ -102,10 +160,15 @@ def escalate_count(confidence: float, edge_count: int, recount, *, tau: float = 
     otherwise the count is BLIND (occluded / non-periodic / wrong subject) — defer to ``recount`` (a VLM
     backstop in production, injected so the core stays model-free). Returns ``(count, escalated)``.
 
+    ``confidence`` is :attr:`HeroResult.periodicity`. Pass nothing else off a result:
+    :attr:`HeroResult.regularity` is the neighbouring confidence-shaped float and it sits well above
+    ``tau`` even on pure noise, so wiring *it* here builds a counter that never escalates and reports
+    fabricated reps as clean — the exact failure this policy exists to prevent (see :class:`HeroResult`).
+
     This is the keystone: the hero need not be perfect, it must KNOW when it is unsure and ask."""
     if confidence < tau:
         return recount(), True
     return edge_count, False
 
 
-__all__ = ["RhythmHero", "HeroResult", "escalate_count"]
+__all__ = ["RhythmHero", "HeroResult", "escalate_count", "measure_periodicity"]
