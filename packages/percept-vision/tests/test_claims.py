@@ -154,6 +154,160 @@ class ClaimStateTests(unittest.TestCase):
         self.assertEqual(s.normalized_value, 25000)
 
 
+class IdenticalValueReplaceTests(unittest.TestCase):
+    """— re-asserting the SAME value: `applied` is a value DIFF, so a genuine speech act vanishes.
+
+    `apply_operation` decides "did this write?" by diffing the slot. A speaker who says "$25K" again
+    — a real, deliberate re-assertion of the agreed number — moves no bytes, so the fold reports
+    `applied=False`, mints no revision, and the utterance leaves NO trace on the timeline. That is
+    documented behavior and these tests pin it; the sharp edge worth naming is that the very same
+    outcome still fills in `supersedes` with the head revision it did not supersede.
+
+    The slot being diffed is the PAIR `(value, normalized_value)` (BUG-B-05-01), so "no bytes moved"
+    now means no bytes moved in EITHER field — an omitted normalization is not a cleared one, and a
+    normalized-only correction is a real write.
+    """
+
+    def setUp(self) -> None:
+        logging.disable(logging.CRITICAL)
+
+    def tearDown(self) -> None:
+        logging.disable(logging.NOTSET)
+
+    @staticmethod
+    def _established() -> ClaimState:
+        """A slot established at $25K by an `assert` — one revision, `c1#r1` at the head."""
+        s = ClaimState(claim_id="c1")
+        out = apply_operation(s, "assert", value="$25K")
+        # Guard the premise: the contrast below is only meaningful against a REAL first write.
+        assert (out.applied, out.revision_id, out.supersedes) == (True, "c1#r1", None)
+        assert (s.revisions, s.revision_id) == (1, "c1#r1")
+        return s
+
+    def test_replace_with_an_identical_value_mints_no_revision(self):
+        """The row: re-stating the established value is not a write, so the ledger does not move."""
+        s = self._established()
+        out = apply_operation(s, "replace", value="$25K")
+
+        self.assertFalse(out.applied)  # applied is `state.value != before`, and it did not differ
+        self.assertIsNone(out.revision_id)  # nothing minted — the re-assertion is off the timeline
+        self.assertEqual(s.value, "$25K")  # the value itself is intact
+        self.assertEqual(s.revisions, 1)  # still ONE revision after TWO assertions of $25K
+        self.assertEqual(s.revision_id, "c1#r1")  # the head never advanced
+        self.assertEqual(out.effective, "replace")  # not downgraded — it was permitted and ran
+
+    def test_an_unapplied_replace_still_names_a_predecessor_it_never_superseded(self):
+        """The asymmetry. `supersedes` is read off the head BEFORE the value fold and is returned
+        regardless of whether anything was written, so the outcome says "I superseded c1#r1" while
+        `c1#r1` is still the live head and no successor exists to have replaced it."""
+        s = self._established()
+        out = apply_operation(s, "replace", value="$25K")
+
+        self.assertEqual(out.supersedes, "c1#r1")  # a predecessor IS named…
+        self.assertEqual(s.revision_id, "c1#r1")  # …and it is also still the head
+        self.assertIsNone(out.revision_id)  # …with nothing minted to have superseded it
+        # Stated as the invariant it breaks: a named `supersedes` normally implies a successor.
+        self.assertEqual((out.supersedes is not None, out.revision_id is not None), (True, False))
+
+    def test_three_assertions_of_one_value_leave_a_one_row_timeline(self):
+        """The user-visible consequence: repetition is compressed away entirely. Say "$25K" three
+        times and the revision chain records a single write, so a reader of the ledger cannot tell a
+        value that was stated once from one that was re-affirmed twice."""
+        s = self._established()
+        second = apply_operation(s, "replace", value="$25K")
+        third = apply_operation(s, "replace", value="$25K")
+
+        self.assertEqual([second.applied, third.applied], [False, False])
+        self.assertEqual([second.revision_id, third.revision_id], [None, None])
+        self.assertEqual(s.revisions, 1)
+
+    def test_replace_with_a_different_value_does_mint_the_next_revision(self):
+        """The control, so the assertions above are not passing for a trivial reason: the SAME call
+        shape with a genuinely different value writes, mints `c1#r2`, and supersedes `c1#r1`."""
+        s = self._established()
+        out = apply_operation(s, "replace", value="$30K")
+
+        self.assertTrue(out.applied)
+        self.assertEqual(s.value, "$30K")
+        self.assertEqual(s.revisions, 2)
+        self.assertEqual(out.revision_id, "c1#r2")
+        self.assertEqual(s.revision_id, "c1#r2")
+        self.assertEqual(out.supersedes, "c1#r1")
+
+    def test_a_no_op_replace_does_not_burn_a_revision_number(self):
+        """And the no-op leaves no hole: the next REAL correction is still `c1#r2` superseding
+        `c1#r1`, so an identical re-assertion cannot desynchronize the chain."""
+        s = self._established()
+        apply_operation(s, "replace", value="$25K")  # the no-op
+        out = apply_operation(s, "replace", value="$30K")  # the real correction, right after
+
+        self.assertEqual(out.revision_id, "c1#r2")  # no gap, no skipped number
+        self.assertEqual(out.supersedes, "c1#r1")
+        self.assertEqual(s.revisions, 2)
+
+    def test_an_unapplied_replace_leaves_the_whole_state_untouched(self):
+        """`applied=False` means "nothing happened" — over the WHOLE slot (BUG-B-05-01).
+
+        The fold used to write `normalized_value` unconditionally while `applied` was computed from
+        `value` alone, so a `replace` restating $25K without repeating the normalization — exactly
+        what `Verdict.normalized_value` defaulting to `None` produces — kept the display value and
+        dropped the machine-readable 25000, with no revision and no `applied` flag to notice it by.
+
+        Fixed on the omission side: `None` means NOT STATED, so the canonical form survives.
+        """
+        s = ClaimState(claim_id="c1")
+        apply_operation(s, "assert", value="$25K", normalized_value=25000)
+        before = (s.value, s.normalized_value, s.revisions, s.revision_id)
+
+        out = apply_operation(s, "replace", value="$25K")  # same value, normalization not restated
+
+        self.assertFalse(out.applied)
+        self.assertEqual(
+            (s.value, s.normalized_value, s.revisions, s.revision_id),
+            before,  # ("$25K", 25000, 1, "c1#r1")
+        )
+        self.assertEqual(out.normalized_after, 25000)  # and the outcome reports the live form
+
+    def test_an_omitted_normalization_on_assert_also_never_clears_one(self):
+        """The same asymmetry lived on the `assert` branch, which the bug report missed. `assert`
+        only establishes an EMPTY value slot, but it wrote `normalized_value` unconditionally when
+        it did, so an establish that omits the canonical form could wipe one already present."""
+        s = ClaimState(claim_id="c1", normalized_value=25000)  # a canonical form with no display text
+        out = apply_operation(s, "assert", value="$25K")  # establishes; normalization not restated
+
+        self.assertEqual(s.value, "$25K")
+        self.assertEqual(s.normalized_value, 25000)  # kept — None was an omission, not a clear
+        self.assertTrue(out.applied)
+
+    def test_a_normalized_only_correction_is_a_real_write_that_mints_a_revision(self):
+        """The behavior change `applied` over the pair buys: a correction that moves ONLY the
+        canonical form (the display text was already right, the parse was wrong) is a genuine write.
+        It used to change state invisibly — no `applied`, no revision, nothing on the timeline."""
+        s = ClaimState(claim_id="c1")
+        apply_operation(s, "assert", value="$25K", normalized_value=2500)  # a bad parse
+
+        out = apply_operation(s, "replace", value="$25K", normalized_value=25000)
+
+        self.assertTrue(out.applied)
+        self.assertEqual(s.normalized_value, 25000)
+        self.assertEqual(out.revision_id, "c1#r2")
+        self.assertEqual(out.supersedes, "c1#r1")
+        self.assertEqual(s.revisions, 2)
+
+    def test_a_retraction_still_clears_the_canonical_form_unconditionally(self):
+        """The one place an unconditional clear is correct: a retraction is an EXPLICIT clear, not
+        an omission, so both fields go to None even though `retract` carries no values at all."""
+        s = ClaimState(claim_id="c1")
+        apply_operation(s, "assert", value="$25K", normalized_value=25000)
+
+        out = apply_operation(s, "retract")
+
+        self.assertIsNone(s.value)
+        self.assertIsNone(s.normalized_value)  # NOT preserved — a retraction means "there is none"
+        self.assertTrue(out.applied)
+        self.assertIsNone(out.normalized_after)
+
+
 class AuthorityDowngradeTests(unittest.TestCase):
     def test_unauthorized_replace_is_downgraded_not_applied(self):
         logging.disable(logging.CRITICAL)

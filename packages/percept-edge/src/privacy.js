@@ -29,16 +29,13 @@ import {
   HARD_CATEGORIES,
   MED_CATEGORIES,
 } from "./privacy-constants.js";
+import { finiteNumber, positiveDim, unitInterval } from "./numeric.js";
 
 export { PRIVACY_CATEGORIES, PRIVACY_ACTIONS } from "./privacy-constants.js";
 
 /** Version of the PrivacyScreen capability. Distinct from the wire CONTRACT_VERSION (PrivacyVerdict is
  *  a package-local shape, not a Python↔JS message). */
 export const PRIVACY_SCREEN_VERSION = "0.7.0";
-
-function isFiniteNumber(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
 
 /**
  * Build + validate a PrivacyVerdict. Mirrors the make-and-validate style in contract.js. There is no
@@ -51,7 +48,7 @@ export function makePrivacyVerdict({ sensitive, categories = [], score = 0, span
   for (const c of categories) {
     if (!PRIVACY_CATEGORIES.has(c)) throw new TypeError(`makePrivacyVerdict: unknown category "${c}"`);
   }
-  if (!isFiniteNumber(score) || score < 0 || score > 1) {
+  if (!unitInterval(score)) {
     throw new TypeError("makePrivacyVerdict: score must be a finite number in [0,1]");
   }
   if (!PRIVACY_ACTIONS.includes(action)) {
@@ -94,11 +91,18 @@ export class PrivacyScreen {
   } = {}) {
     const confirm = bands?.confirm ?? threshold;
     const drop = bands?.drop ?? Math.max(0.6, confirm);
-    if (!(confirm >= 0 && confirm <= 1) || !(drop >= confirm && drop <= 1)) {
+    if (!unitInterval(confirm) || !unitInterval(drop) || !(drop >= confirm)) {
       throw new RangeError("PrivacyScreen: require 0 <= confirm <= drop <= 1");
     }
     if (!PRIVACY_ACTIONS.includes(failAction)) {
       throw new TypeError(`PrivacyScreen: failAction must be one of ${PRIVACY_ACTIONS.join("|")}`);
+    }
+    // The bands were validated and this was not, which is a worse hole than it looks: a NaN (or 0, or
+    // negative) budget makes the image tier's setTimeout fire at 0ms, so the timeout wins the race on
+    // EVERY frame, every image verdict is fail-closed, and with the default failAction every image is
+    // dropped at egress — silently, and indistinguishably from a genuinely hung model.
+    if (!positiveDim(imageBudgetMs)) {
+      throw new RangeError("PrivacyScreen: imageBudgetMs must be a finite number > 0");
     }
     this.bands = { confirm, drop };
     this._clock = clock;
@@ -169,7 +173,11 @@ export class PrivacyScreen {
     return makePrivacyVerdict({
       sensitive: action !== "allow",
       categories: part.categories || [],
-      score: part.score || 0,
+      // NOT `part.score || 0`: that was a truthiness test, so it quietly rewrote a NaN score to 0 and
+      // made makePrivacyVerdict's finite check above — the one guard that would have caught a broken
+      // tier — unreachable. An explicit finite test says out loud that a non-finite score is being
+      // discarded; the tiers no longer produce one (see privacy-audio.js bandMembership).
+      score: finiteNumber(part.score) ? part.score : 0,
       spans: part.spans || [],
       action,
     });
@@ -193,7 +201,7 @@ export class PrivacyScreen {
     if (part.failed) return this._failAction;
 
     const { confirm, drop } = this.bands;
-    const s = part.score || 0;
+    const s = finiteNumber(part.score) ? part.score : 0; // same explicit test as _verdict, not `|| 0`
     const hasSpans = Array.isArray(part.spans) && part.spans.length > 0;
     const sev = severityOf(part.categories || []);
 

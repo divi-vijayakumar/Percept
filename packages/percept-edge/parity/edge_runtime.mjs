@@ -3,11 +3,17 @@
 // percept-harness route (same frozen contract, same algorithms), and to measure edge frame latency.
 //
 //   in : { motionSignals: number[][], energySignals: number[][],
-//          framePairs: [{w,h,a:number[],b:number[]}], latency?: {width,height,frames} }
+//          framePairs: [{w,h,a:number[],b:number[]}],
+//          saliencePairs: [{w,h,a,b,stat?,region?,blockGrid?}],   // blockGrid defaults to [8,6]
+//          egoPairs: [{w,h,a,b,k?,region?}],                        // region defaults to null
+//          wakeCases: [{signals:object, policy?:object|null}],       // policy defaults to null
+//          latency?: {width,height,frames} }
 //   out: { motionBoundaries: Boundary[][], onsetBoundaries: Boundary[][], motionScores: number[],
+//          saliences: number[], egoScores: number[],
+//          wakeScores: number[], wakeTopChannels: (string|null)[], wakeFlags: boolean[],
 //          latency?: {frames,width,height,totalMs,perFrameUs,fps} }
 
-import { MotionPeriodicity, AcousticOnset } from "../src/skills.js";
+import { MotionPeriodicity, AcousticOnset, wakeScore, shouldWake } from "../src/skills.js";
 import { motionScore, egoResidualScore } from "../src/motion.js";
 import { Edge } from "../src/edge.js";
 import { OrderedAudioBuffer, pcm16Energy } from "../src/vad.js";
@@ -43,13 +49,21 @@ const result = {
       { stat: stat ?? "mean", region: region ?? null, blockGrid: blockGrid ?? [8, 6] }
     )
   ),
-  egoScores: (cases.egoPairs || []).map(({ w, h, a, b, k }) =>
+  egoScores: (cases.egoPairs || []).map(({ w, h, a, b, k, region }) =>
     egoResidualScore(
       { width: w, height: h, data: a },
       { width: w, height: h, data: b },
-      { k: k ?? 4 }
+      { k: k ?? 4, region: region ?? null }
     )
   ),
+  // The wake fusion. `wakeScore` and `shouldWake` are compared separately on purpose: the score and
+  // the top channel used to be computed from two different populations, so a runtime could agree on
+  // one and fork on the other.
+  wakeScores: (cases.wakeCases || []).map(({ signals, policy }) => wakeScore(signals, policy ?? null)),
+  wakeTopChannels: (cases.wakeCases || []).map(
+    ({ signals, policy }) => shouldWake(signals, policy ?? null).top_channel,
+  ),
+  wakeFlags: (cases.wakeCases || []).map(({ signals, policy }) => shouldWake(signals, policy ?? null).wake),
   audioEnergies: (cases.audioEnergyVectors || []).map(({ samples }) => pcm16Energy(samples)),
   audioTimelines: (cases.audioTimelineVectors || []).map(({ units }) => {
     const timeline = new OrderedAudioBuffer({ seconds: 10 });

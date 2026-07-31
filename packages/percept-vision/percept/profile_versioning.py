@@ -356,26 +356,74 @@ def _flatten(payload: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
     return flat
 
 
+class _Absent:
+    """The type of :data:`ABSENT`. A singleton object, deliberately NOT a value of any field type.
+
+    ``None`` is ruled out below because it is a legitimate field value. By exactly that argument a
+    string sentinel is ruled out too: ``notes`` has no validation at all (watchprofile.py), and
+    ``name``/``environment``/``goal_type``/``state`` are unconstrained strings, so any string
+    whatsoever — including ``"<absent>"``, which this used to be — is a legitimate value that would
+    alias the sentinel in the ``before``/``after`` slot. An object of a private type cannot be
+    authored into a profile, so the collision is closed by construction rather than by forbidding a
+    literal in the profile contract (which would push a diff-format artifact into that contract).
+
+    ``repr`` is unquoted so :meth:`FieldDelta.describe` renders ``notes: '' -> (absent)`` for a
+    genuine removal and ``notes: '' -> '<absent>'`` for a field that really holds that text.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "(absent)"
+
+    def __bool__(self) -> bool:
+        return False
+
+
 #: Sentinel for a dotted path that exists on only ONE side of a field-level diff (e.g. a
 #: ``stat_thresholds`` entry that was added). Distinct from ``None``, which is a legitimate value
 #: (``goal_density_guidance.max_recommended_goals``).
-ABSENT = "<absent>"
+ABSENT = _Absent()
 
 
 @dataclass(frozen=True)
 class FieldDelta:
     """One knob's change: a dotted ``path`` and its ``before`` / ``after`` values (:data:`ABSENT` when the
-    path exists on only one side)."""
+    path exists on only one side).
+
+    One-sidedness is carried by :attr:`before_absent`/:attr:`after_absent`, which are DERIVED from
+    the sentinel's identity rather than stored — so the flag and the value slot cannot disagree, and
+    :meth:`inverse` stays correct by swapping the values alone.
+    """
 
     path: str
     before: Any
     after: Any
 
+    @property
+    def before_absent(self) -> bool:
+        """True when this path did not exist on the *before* side at all."""
+        return self.before is ABSENT
+
+    @property
+    def after_absent(self) -> bool:
+        """True when this path does not exist on the *after* side at all."""
+        return self.after is ABSENT
+
     def inverse(self) -> "FieldDelta":
         return FieldDelta(path=self.path, before=self.after, after=self.before)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"path": self.path, "before": self.before, "after": self.after}
+        """JSON-shaped. The sentinel is reported by its FLAG and rendered ``None`` in the value slot
+        — a serialized record must stay JSON-serializable, and a consumer reads one-sidedness from
+        the flag, never by pattern-matching the value against a magic token."""
+        return {
+            "path": self.path,
+            "before": None if self.before_absent else self.before,
+            "after": None if self.after_absent else self.after,
+            "before_absent": self.before_absent,
+            "after_absent": self.after_absent,
+        }
 
     def describe(self) -> str:
         return f"{self.path}: {self.before!r} -> {self.after!r}"

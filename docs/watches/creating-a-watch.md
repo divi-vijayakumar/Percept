@@ -323,7 +323,7 @@ playback — is in [command-seam.md](driving-a-live-watch.md).
 - `audio_wake` — treat a wake phrase on the audio channel as an escalation.
 - `on_utterance` — sink for finalized speech utterances.
 - `vad`, `utterance_threshold`, `utterance_hangover_frames`, `utterance_min_speech_frames` — voice-activity / endpointing tuning.
-- `wake_policy` — the weighted edge wake policy (fuse `audio_event`, `presence`, `change`, … into one cheap score). See [reference/edge-policy.md](../admission/wake-policy.md).
+- `wake_policy` — the weighted edge wake policy (fuse `motion`, `structural`, `semantic`, `audio` and any channel you supply into one cheap score). It arms the fusion; a goal spends it by authoring `state["cadence"]["gate_on"] = "fused"`, and a goal on any other `gate_on` is unaffected. See [wake-policy.md](../admission/wake-policy.md).
 
 **Runtime control & durability**
 - `paused` / `muted` — start paused (no judging) or muted (judge, but suppress alerts).

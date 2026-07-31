@@ -49,7 +49,13 @@ from .duration_routes import duration_policy, require_duration_routes
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
-from .contracts import JudgmentEvent, JudgmentTimingBuilder, SubjectRef, judgment_event_id
+from .contracts import (
+    JudgmentEvent,
+    JudgmentTimingBuilder,
+    SubjectRef,
+    judgment_event_id,
+    verdict_defect,
+)
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
@@ -71,6 +77,7 @@ from .identity_policy import (
     SCENE_IDENTITY,
     folds_on_scene_scope,
     identity_policy_of,
+    is_entity_scoped,
     select_identity_policy,
     transition_latch_key,
     watch_reducer_entity_id,
@@ -375,7 +382,13 @@ class _VerdictSnapshot:
 
     @classmethod
     def capture(cls, verdict: Verdict) -> "_VerdictSnapshot":
-        if not _is_valid_verdict(verdict):
+        defect = verdict_defect(verdict, require_exact_type=True)
+        if defect == "usage_not_dict":
+            # Kept as its own message rather than folded into the generic one: a provider that
+            # emitted token-count PAIRS instead of a mapping is a specific, common, fixable
+            # integration mistake, and ``judge_usage`` is what reads the field.
+            raise ValueError("provider Verdict usage must be a mapping")
+        if defect is not None:
             raise ValueError("provider returned a malformed Verdict")
         usage = _freeze_provider_value(verdict.usage)
         if type(usage) is not _FrozenMapping:
@@ -842,12 +855,17 @@ def _is_valid_verdict(obj: Any) -> bool:
     """Shape-validate a judge response BEFORE any caller dereferences ``.confidence``/``.satisfied``
     (ADR-001 §10 invariant 4). The backend contract is :class:`Verdict`; anything else — a
     plain/garbled object (malformed), or a ``Verdict``-shaped-but-incomplete response with the wrong
-    field types (partial/truncated JSON) — must be rejected here, never dereferenced blindly."""
-    return (
-        isinstance(obj, Verdict)
-        and isinstance(obj.satisfied, bool)
-        and isinstance(obj.confidence, (int, float))
-    )
+    field types (partial/truncated JSON) — must be rejected here, never dereferenced blindly.
+
+    A one-line alias for the single authority in :mod:`percept.contracts.verdict_validation`, kept
+    as a named local so its three call sites read the same as they always did. It used to be its own
+    three-term implementation, and it disagreed with the pool's six-term twin on exactly the terms
+    that matter: it accepted a ``nan`` / ``inf`` / ``7.5`` / ``True`` confidence, which
+    ``percept.gate.classify`` then reads as a confident ``"yes"`` (``nan < threshold`` is ``False``)
+    — invariant 4's "never to FIRE", violated by a garbled number. ``require_exact_type=True``
+    because this side guards the agent's own cognition path, where the contract is the dataclass.
+    Call :func:`percept.contracts.verdict_defect` instead wherever the REASON is reported."""
+    return verdict_defect(obj, require_exact_type=True) is None
 
 
 _GATE_HEALTH_LOG_MAX = 256
@@ -1282,8 +1300,13 @@ class Percept:
     _claim_hwm: dict = field(default_factory=dict)  # goal_id -> highest t governed so far
     _claim_episode_id: dict = field(default_factory=dict)  # goal_id -> episode id
     edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
-    rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (the SELECTED subject's; brain count)
-    _rhythm_multi: dict = field(default_factory=dict)  # (goal_id, entity_id) -> RhythmTracker (per-person streams)
+    # ``_rhythm_multi`` is the OWNED STORE — one tracker per (goal_id, entity_id), where ``entity_id`` is
+    # ``None`` for the unattributed single-subject stream (that IS its identity, and it is already the
+    # argument's own vocabulary). ``rhythm`` is a DERIVED MIRROR of whichever tracker last published a
+    # count for the goal, kept because ~40 call sites read ``core.rhythm[goal_id]``; it is never storage,
+    # so the two producers can no longer adopt or discard each other's state through it.
+    rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (derived mirror; NOT the store)
+    _rhythm_multi: dict = field(default_factory=dict)  # (goal_id, entity_id | None) -> RhythmTracker (the store)
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     audio_windows: dict = field(default_factory=dict)  # source -> AudioWindow (fused/acoustic perception)
     # Source-continuity generation per runtime source. Async judgments capture this value at launch
@@ -2277,6 +2300,34 @@ class Percept:
             kw["canonical_select"] = True
         return RhythmTracker(prior_channel=prior.get("channel"), expected_rom=prior.get("expected_rom"), **kw)
 
+    def _tracker(self, goal, entity_id: str | None) -> RhythmTracker:
+        """The ONE construction site for a rhythm tracker: ``_rhythm_multi[(goal_id, entity_id)]``.
+
+        ``entity_id=None`` keys the unattributed single-subject stream. It used to be stored in
+        ``self.rhythm[goal_id]`` instead — the same slot the per-entity path assigns its selected performer
+        to — so one dict entry had two owners with incompatible contracts: the legacy branch treated it as
+        OWNED STATE and *adopted* whatever the other producer had left there, while the per-entity branch
+        treated it as a DERIVED MIRROR and overwrote it unconditionally. Reproduced exactly: a 72-frame
+        unattributed stream DOUBLED the selected performer's count (12 vs 6), and one ``hero.observe()``
+        dropped ``goal.state['count']`` from 4 to 0 mid-clip. Keying the store by identity — with ``None``
+        being an identity — is what makes both impossible; ``self.rhythm[goal_id]`` is then only ever a
+        published mirror."""
+        key = (str(getattr(goal, "id", "")), entity_id)
+        tracker = self._rhythm_multi.get(key)
+        if tracker is None:
+            tracker = self._rhythm_multi[key] = self._rhythm_tracker(goal)
+        return tracker
+
+    def rhythm_tracker(self, goal_id: str, entity_id: str | None = None):
+        """The tracker owning one goal-and-subject's reps, or ``None`` if that stream has never been fed.
+
+        The public read of the store above. ``entity_id=None`` asks for the unattributed single-subject
+        stream, which is a DIFFERENT stream from any entity's — never a synonym for "whichever one is
+        published in ``core.rhythm``". A consumer reporting a count beside per-subject observability
+        (``percept.rhythm_hero.RhythmHero.result``) must read through here, so the count and the
+        observability beside it describe the same entity."""
+        return self._rhythm_multi.get((goal_id, entity_id))
+
     def _fire_rep(self, goal, n: int, stop_t: float) -> FireEvent | None:
         fired = self.executor.fire_episode(goal, program_of(goal), n=n, is_new=True, t=stop_t)
         if fired is None:
@@ -2285,7 +2336,8 @@ class Percept:
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
     def perceive_rhythm(
-        self, goal_id: str, *, t: float, channels: dict[str, float], entity_id: str | None = None
+        self, goal_id: str, *, t: float, channels: dict[str, float], entity_id: str | None = None,
+        scale_floored: bool = False,
     ) -> FireEvent | None:
         """The **rhythm sense** (the brain-counts half done right): fold one frame's measured pose/motion
         CHANNELS into the goal's :class:`~percept.rhythm.RhythmTracker` and fire only when a *complete* rep
@@ -2299,15 +2351,20 @@ class Percept:
         ``entity_id`` makes counting PER-PERSON: each subject gets its own tracker and the brain SELECTS the
         performer (the entity with the most reps on the prior channel — a still bystander reps ~0), so the
         goal's reported count is the performer's. ``None`` (the default) is the legacy single-subject stream
-        the benchmark/runtime read directly; behaviour there is unchanged."""
+        the benchmark/runtime read directly, and it is now a KEY in the same store rather than a second
+        owner of ``self.rhythm[goal_id]`` (see :meth:`_tracker`): an unattributed stream can never be
+        elected "the performer", and it can neither inflate nor discard a performer's tally.
+
+        ``scale_floored`` forwards the eye's report that this frame's channels were normalized by the pose
+        clamp rather than by the body (``PersonMeasure.scale_floored`` / ``PoseChannels._last_floored``), so
+        the tracker can decline an absolute amplitude gate stated in units the clamp redefined."""
         goal = self.goals.get(goal_id)
         if goal is None or not channels:
             return None
-        if entity_id is None:  # legacy single-subject stream — unchanged
-            tracker = self.rhythm.get(goal_id)
-            if tracker is None:
-                tracker = self.rhythm[goal_id] = self._rhythm_tracker(goal)
-            rep = tracker.observe(t, channels)
+        if entity_id is None:  # the unattributed single-subject stream — its own keyed tracker
+            tracker = self._tracker(goal, None)
+            self.rhythm[goal_id] = tracker  # published mirror: this stream's tracker is what a reader gets
+            rep = tracker.observe(t, channels, scale_floored=scale_floored)
             if rep is None:
                 return None
             n = tracker.count
@@ -2316,11 +2373,12 @@ class Percept:
             return self._fire_rep(goal, n, rep.stop_t)
         # per-entity: the brain selects the performer (most reps for this goal) and reports their count
         key = (goal_id, entity_id)
-        tracker = self._rhythm_multi.get(key)
-        if tracker is None:
-            tracker = self._rhythm_multi[key] = self._rhythm_tracker(goal)
-        rep = tracker.observe(t, channels)
-        perf_key, perf = max(((k, tr) for k, tr in self._rhythm_multi.items() if k[0] == goal_id),
+        tracker = self._tracker(goal, entity_id)
+        rep = tracker.observe(t, channels, scale_floored=scale_floored)
+        # Candidates are the ATTRIBUTED streams only: an unattributed one belongs to nobody the graph
+        # tracked, so it can never be elected the performer whose subject id is published beside the count.
+        perf_key, perf = max(((k, tr) for k, tr in self._rhythm_multi.items()
+                              if k[0] == goal_id and k[1] is not None),
                              key=lambda kt: kt[1].count)
         self.rhythm[goal_id] = perf  # so core.rhythm[goal_id] / .count read the SELECTED subject uniformly
         n = perf.count
@@ -5033,6 +5091,12 @@ class Percept:
                     # unconditionally before its fold; these two are meant to be twins.
                     # ``_observation_was_judged`` names this exact case in its docstring.
                     self._verdict_from_cache[goal.id] = False
+                    # NOT validated here, deliberately: this dispatch pass is wrapped in a bare
+                    # try/finally with no ``except _JudgeDegraded``, so raising the degrade signal
+                    # from inside it would escape ``perceive_judged`` entirely — a crash, which
+                    # invariant 4 forbids as squarely as a wrong fire. The check rides with the
+                    # value into the apply pass below, inside the try that already owns the
+                    # degrade handler. See the guard beside ``prepared["direct_verdict"]``.
                     direct_verdict = direct_result.verdict
                     judgment_timing.mark_judge_completed()
                     judge_task = None
@@ -5102,6 +5166,19 @@ class Percept:
                     )
                     if verdict is _BATCH_STALE:
                         break  # queued behind the bound when the revision moved: never dispatched
+                    if judge_task is None and not _is_valid_verdict(verdict):
+                        # The DirectJudge seam is a judge seam (ADR-001 §7: the backend contract is
+                        # Verdict and nothing else) — a third-party rule's answer is exactly as
+                        # untrusted as a provider's. Every OTHER route into this classify/gate call
+                        # has already been validated: the pool path by ``_safe_timed_judge``, the
+                        # SPLIT pipeline's own direct-judge branch by ``_VerdictSnapshot.capture``.
+                        # This one alone reached ``classify`` having passed nothing, so a rule
+                        # returning ``{"satisfied": True, "confidence": float("nan")}`` fired
+                        # confidently. Degrading here — rather than validating at dispatch — puts it
+                        # in the handler two lines down, so a malformed direct hit takes the exact
+                        # same ASK/SILENT abstention and the same telemetry as a malformed provider
+                        # response, which is what makes the two direct-judge paths twins again.
+                        raise _JudgeDegraded(verdict)
                 except _JudgeDegraded as degraded:
                     if _stale():
                         break  # stale transport/goal work cannot alter the degradation breaker either
@@ -5569,11 +5646,17 @@ class Percept:
             # malformed result. Preserve that factual receipt while keeping
             # the invalid object out of cognition.
             usage = judge_usage(provider_verdict)
-            if not _is_valid_verdict(provider_verdict):
+            defect = verdict_defect(provider_verdict, require_exact_type=True)
+            if defect is not None:
+                # Name WHICH term of the contract failed (a closed
+                # ``percept.contracts.VERDICT_DEFECTS`` token — a vocabulary, never provider data,
+                # so it is safe in a diagnostic per ADR-001 §1). "malformed data" alone left an
+                # operator unable to tell a truncated response from a backend emitting confidence
+                # on a 0-100 scale, which are different bugs with different fixes.
                 failure = _ProviderFailure(
                     kind="malformed_response",
                     exception_type=type(provider_verdict).__name__,
-                    safe_message="judgment provider returned malformed data",
+                    safe_message=f"judgment provider returned malformed data ({defect})",
                 )
                 verdict = _VerdictSnapshot.capture(
                     Verdict(
@@ -7157,7 +7240,18 @@ class Percept:
         without bound on a source whose track ids churn. Both halves are swept together now, at the
         one site that means the entity is genuinely gone; every other reset path (a re-arm, a
         confident-false, the correction path's ``reset_goal``) deliberately leaves the witness
-        standing."""
+        standing.
+
+        NON-ENTITY SCOPES ARE REFUSED HERE, once, so gate + executor + cache all inherit the same
+        answer (:func:`~percept.identity_policy.is_entity_scoped`). This is the shared hook both
+        halves of the transition latch are called from, and it used to be the place the policy was
+        NOT stated: ``forget_entity`` refused the scene sentinel and ``gate.reset_entity`` did not,
+        so a minted id colliding with the sentinel dropped the scene singleton's gate key — which
+        also discarded the ``no_evict`` exemption ``transition_decide`` registered for it. An absent
+        gate key defaults to ARMED, so a still-held ``to`` state re-notified. The two callees keep
+        their own guards for direct calls; this is the one that makes the policy structural."""
+        if not is_entity_scoped(entity_id):
+            return
         self.gate.reset_entity(entity_id)
         # Read the private slot, never the ``executor`` property: this hook must not CONSTRUCT an
         # executor for a run that never had one. No executor means no witness to reclaim.
@@ -7533,7 +7627,15 @@ class Percept:
         duration base, so it cannot be rebased. Accepting it silently would leave the concern with no
         ``deadline_at`` and it would never fire again — the exact silent-inertness this pass exists to
         kill. So a legacy ``deadline_s`` is handled LOUDLY: a warning + metric, then re-resolved as a
-        duration-from-restore-now so the concern still fires."""
+        duration-from-restore-now so the concern still fires.
+
+        **Staged, so a failure part-way leaves the core as it was.** Each sub-restore is individually
+        validate-then-swap (``GoalRegistry.restore``, ``EntityGraph.restore``, ``Gate.restore``), but
+        three atomic steps in sequence are not an atomic sequence: a snapshot with good goals and a
+        truncated entity list used to leave the core holding the NEW goals against the OLD entities,
+        a combination no snapshot ever described. So the pre-restore state of all four stores is
+        captured first and reinstated if any step raises, and the exception is re-raised for the
+        caller to see. The failure is then all-or-nothing, and always loud."""
         # v1 vs v2 is detected structurally (a v2 goal carries deadline_at_epoch; a v1 goal a legacy
         # deadline_s), so a missing/renumbered version field can never silently mis-route a deadline.
         # Compiled Watch snapshots are refused by snapshot(); restore therefore only accepts the
@@ -7548,11 +7650,26 @@ class Percept:
         ledger = getattr(self, "_watchplan_applied_hashes", None)
         if isinstance(ledger, dict):
             ledger.clear()
-        self.goals.restore(snap.get("goals", []))
-        self.graph.restore(snap.get("entities", []))
-        self.action_log = ActionLog()
-        for rd in snap.get("action_log", []):
-            self.action_log.record(ActionRecord(**rd))
+        # The rollback staging area: what this core holds RIGHT NOW, in the same wire shapes the
+        # sub-restores read, so reinstating it is the identical code path and cannot itself be novel.
+        prior_goals = self.goals.snapshot()
+        prior_entities = self.graph.snapshot()
+        prior_gate = self.gate.snapshot()
+        prior_action_log = self.action_log
+        try:
+            self.goals.restore(snap.get("goals", []))
+            self.graph.restore(snap.get("entities", []))
+            restored_log = ActionLog()
+            for rd in snap.get("action_log", []):
+                restored_log.record(ActionRecord(**rd))
+            self.action_log = restored_log
+        except Exception:
+            self.goals.restore(prior_goals)
+            self.graph.restore(prior_entities)
+            self.gate.restore(prior_gate)
+            self.action_log = prior_action_log
+            self.metrics.incr("snapshot.restore_rolled_back")
+            raise
 
         now_mono = self.clock()
         now_epoch = time.time()

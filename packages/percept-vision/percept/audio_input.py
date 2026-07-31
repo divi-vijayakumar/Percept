@@ -599,17 +599,27 @@ def validate_audio_units_for_provider(
 
     if not units:
         raise ValueError("audio judgment requires at least one retained unit")
-    first = units[0]
-    sample_rate = first.sample_rate
-    channels = first.channels
-    if sample_rate is None or channels is None:
-        raise ValueError("canonical audio units require rate and channel metadata")
+    # No pre-read of units[0]. The head's rate/channels are established INSIDE the loop, after the
+    # exact-type guard has passed for that same element — reading them first meant a non-AudioUnit
+    # at index 0 raised a bare AttributeError while the identical object at index 1 raised
+    # ValueError, one defect wearing two exception classes chosen by position. The runtime's
+    # fail-closed audio gate catches (RuntimeError, ValueError, TypeError), so the AttributeError
+    # escaped it. Establishing the reference here also removes the duplicated notion of "the head
+    # element", so the shape cannot come back.
     total = 0
     previous = None
+    sample_rate: Any = None
+    channels: Any = None
     for unit in units:
+        if type(unit) is not AudioUnit:
+            raise ValueError("audio judgment units must be homogeneous canonical s16le PCM")
+        if previous is None:
+            sample_rate = unit.sample_rate
+            channels = unit.channels
+            if sample_rate is None or channels is None:
+                raise ValueError("canonical audio units require rate and channel metadata")
         if (
-            type(unit) is not AudioUnit
-            or unit.sample_rate != sample_rate
+            unit.sample_rate != sample_rate
             or unit.channels != channels
             or unit.sample_format != "s16le"
             or type(unit.chunk) is not AudioFrame

@@ -12,8 +12,14 @@ with N beyond the declared count bound.
 import unittest
 
 from percept.agent import Percept
-from percept.episodes import EvidenceHandle, EpisodeLog, evidence_handle
+from percept.episodes import (
+    _MAX_INLINE_EVIDENCE_BYTES,
+    EvidenceHandle,
+    EpisodeLog,
+    evidence_handle,
+)
 from percept.events import frame_nbytes
+from percept.harness.tier0 import gray_frame
 
 # ALWAYS_NEW: every observation opens a fresh episode (exercises the OPEN store path, and lets us
 # drive the count bound). The judge never inspects the frame here — it is not asserting intelligence.
@@ -29,6 +35,11 @@ _FRAME_BYTES = _FRAME_W * _FRAME_H
 def _frame(seed: int) -> bytes:
     """A distinct, MEASURABLE decoded frame (~300 KB) — the thing that must not be retained."""
     return bytes([seed % 251]) * _FRAME_BYTES
+
+
+def _payload(nbytes: int) -> bytes:
+    """A payload ``frame_nbytes`` measures at EXACTLY ``nbytes`` — the boundary probe."""
+    return b"x" * nbytes
 
 
 class TestEvidenceHandleConversion(unittest.TestCase):
@@ -79,6 +90,81 @@ class TestEvidenceHandleConversion(unittest.TestCase):
         for s in log.summaries():
             self.assertNotIn("exemplar", s)
             self.assertNotIn("representative", s)
+
+
+class TestTheInlineByteBoundaryIsInclusive(unittest.TestCase):
+    """The 512 B cut is ``<=`` (``episodes.py:163``) — AT the bound is cheap, one byte over is not.
+
+    An off-by-one here is silent in both directions and neither shows up as an error. Slipping to
+    ``<`` wraps an exemplar measured at exactly the bound in a handle, and a handle is NOT the
+    object it stands in for: the subject/mutation reads the counting path does on a retained
+    descriptor stop finding their attributes. Slipping to ``>=`` (or moving the constant) lets a
+    decoded frame past the backstop, which is the resolution-scaled retention this whole module
+    exists to prevent. So the boundary is pinned on the exact byte, from both sides, and pinned to
+    the ``max_inline_bytes`` PARAMETER rather than to the literal 512 — the bound has to travel
+    with the argument, or a caller that narrows it is silently ignored.
+    """
+
+    def test_shipped_bound_is_512_bytes(self):
+        # the two pairs below are only a boundary test if this is the boundary
+        self.assertEqual(_MAX_INLINE_EVIDENCE_BYTES, 512)
+
+    def test_exactly_512_bytes_is_retained_as_is(self):
+        at_bound = _payload(512)
+        # the probe really does measure 512 under the function the cut uses
+        self.assertEqual(frame_nbytes(at_bound), 512)
+        retained = evidence_handle(at_bound)
+        # ...and comes back byte-for-byte: the SAME object, not a copy and not a descriptor
+        self.assertIs(retained, at_bound)
+        self.assertNotIsInstance(retained, EvidenceHandle)
+
+    def test_513_bytes_is_replaced_by_a_handle(self):
+        over_bound = _payload(513)
+        self.assertEqual(frame_nbytes(over_bound), 513)
+        handle = evidence_handle(over_bound)
+        # one byte over the bound is a decoded frame: descriptor in, pixels not retained
+        self.assertIsInstance(handle, EvidenceHandle)
+        self.assertEqual(handle.source_nbytes, 513)
+        self.assertEqual(frame_nbytes(handle), 0)
+
+    def test_the_bound_travels_with_the_max_inline_bytes_parameter(self):
+        # the same inclusive rule, one bound the shipped default cannot explain: if 512 were
+        # hard-coded at the cut, BOTH of these would come back as-is and the override would be inert
+        at_override = _payload(64)
+        over_override = _payload(65)
+        self.assertIs(evidence_handle(at_override, max_inline_bytes=64), at_override)
+        self.assertNotIsInstance(
+            evidence_handle(at_override, max_inline_bytes=64), EvidenceHandle
+        )
+        narrowed = evidence_handle(over_override, max_inline_bytes=64)
+        self.assertIsInstance(narrowed, EvidenceHandle)
+        self.assertEqual(narrowed.source_nbytes, 65)
+        # and the shipped default still keeps 65 B inline — proving the split above was the
+        # argument's doing, not a property of the payload
+        self.assertIs(evidence_handle(over_override), over_override)
+
+    def test_idempotency_holds_at_the_boundary(self):
+        # re-wrapping is the double-conversion the choke point at :160 forbids. A handle measures 0
+        # bytes, so a second pass would otherwise fall in the CHEAP arm and read as a fresh decision
+        # — the identity assertion is what proves the short-circuit ran first.
+        handle = evidence_handle(_payload(513))
+        self.assertIsInstance(handle, EvidenceHandle)
+        self.assertIs(evidence_handle(handle), handle)
+        # ...and it stays the same handle whichever side of the bound the argument would place it on
+        self.assertIs(evidence_handle(handle, max_inline_bytes=0), handle)
+        self.assertIs(evidence_handle(handle, max_inline_bytes=10**9), handle)
+
+    def test_the_boundary_is_measured_by_frame_nbytes_not_by_len(self):
+        # a harness Frame carries no ``nbytes`` and is not ``bytes``: it is measured w*h. The bound
+        # has to hold for it on the same byte, or the backstop only guards raw-buffer sources.
+        at_bound = gray_frame(32, 16, 0.5)  # 512 px == 512 B
+        over_bound = gray_frame(27, 19, 0.5)  # 513 px == 513 B
+        self.assertEqual(frame_nbytes(at_bound), 512)
+        self.assertEqual(frame_nbytes(over_bound), 513)
+        self.assertIs(evidence_handle(at_bound), at_bound)
+        handle = evidence_handle(over_bound)
+        self.assertIsInstance(handle, EvidenceHandle)
+        self.assertEqual(handle.source_nbytes, 513)
 
 
 class TestEvidenceSoak(unittest.TestCase):

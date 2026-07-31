@@ -1,6 +1,6 @@
 ---
 title: Percept documentation
-updated: 2026-07-30
+updated: 2026-07-31
 applies_to: percept-vision 1.0.0
 status: stable
 generated_by: tools/build_docs_index.py
@@ -99,7 +99,7 @@ The architecture diagram is **generated from the code**
 | [Run an optimization](configuration/optimize.md) | `percept-optimize` — safe-tunable search into a validated `OptimizationLock`. | 2026-07-23 |
 | [Configuration reference — everything you can tune](configuration/overview.md) | **Everything you can tune** — the `Settings` tree, every env var, and resolver precedence. | 2026-07-28 |
 | [Create a custom configuration for your use case](configuration/profiles.md) | Author a `SourceProfile` / `WatchProfile` for your use case. | 2026-07-23 |
-| [Tunables](configuration/tunables.md) | **All 157 tunables, and the 31 an optimizer may search.** Generated from the registry. | 2026-07-30 |
+| [Tunables](configuration/tunables.md) | **All 157 tunables, and the 31 an optimizer may search.** Generated from the registry. | 2026-07-31 |
 
 ## Observability
 

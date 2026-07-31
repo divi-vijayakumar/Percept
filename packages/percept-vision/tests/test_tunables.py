@@ -27,9 +27,16 @@ from percept import tunables
 from percept.config import Settings
 
 #: Settings fields deliberately NOT represented as a ``Settings.*`` tunable path, each with a reason.
-#: Empty today — every Settings field maps 1:1 to a registry path. Add an entry here (never silently
-#: skip a field) if a future Settings field is genuinely not owner-classifiable.
-_EXCLUDED_SETTINGS_FIELDS: dict[str, str] = {}
+#: Every OTHER Settings field maps 1:1 to a registry path. Add an entry here (never silently skip a
+#: field) if a future Settings field is genuinely not owner-classifiable.
+_EXCLUDED_SETTINGS_FIELDS: dict[str, str] = {
+    "Settings.env_rejections": (
+        "not a tunable: it is the load-time DIAGNOSTIC ledger of PERCEPT_* overrides the loader "
+        "refused (percept/config.py `_EnvRejection`). Nobody sets it, nothing optimizes it, and it "
+        "has no owner, default or bounds to declare — it is an output of reading the environment, "
+        "not an input to it."
+    ),
+}
 
 
 def _settings_leaf_paths(instance: object, prefix: str = "Settings") -> set[str]:

@@ -275,8 +275,18 @@ class EntityGraph:
         ]
 
     def restore(self, dumps: list[dict]) -> None:
-        self._entities = {}
-        self._last_frame_ids = []
+        """Rehydrate from :meth:`snapshot` — **validate into locals, then swap.**
+
+        The order here is the whole point. This used to blank ``self._entities`` FIRST and build into
+        it, so a ``KeyError`` on a truncated record left the graph WIPED rather than merely
+        half-restored — and a wiped graph is worse than a stale one: every subject becomes a NEW
+        subject, every ``(goal_id, entity_id)`` gate key is a fresh edge, and a 24/7 watch re-notifies
+        the entire scene. Building into a local means a raise costs the restore and nothing else.
+
+        A malformed record raises rather than being skipped: unlike a gate key or a delivery-ledger
+        row, a missing entity is not a suppression that degrades safely — it is a subject the runtime
+        would silently re-mint under a new id. The caller decides what to do about that."""
+        restored: dict[str, Entity] = {}
         max_n = 0
         for d in dumps:
             entity = Entity(
@@ -289,9 +299,12 @@ class EntityGraph:
                 sources=set(d.get("sources", [])),
                 appearance=d.get("appearance"),
             )
-            self._entities[entity.id] = entity
+            restored[entity.id] = entity
             if entity.id.startswith("e") and entity.id[1:].isdigit():
                 max_n = max(max_n, int(entity.id[1:]))
+        # The swap. Nothing above this line has touched live state.
+        self._entities = restored
+        self._last_frame_ids = []
         self._counter = max_n  # new mints continue past the restored ids
 
 

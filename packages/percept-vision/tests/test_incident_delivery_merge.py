@@ -9,6 +9,11 @@ recall on the occurrence the client already heard about.
 The two properties that make it safe are pinned here as hard assertions: the merge is PER-WATCH (two
 watches firing in the same instant are two keys and both survive), and a stream with no duplicates is
 untouched (every gate decision, reason and fire is identical with the merge on and off).
+
+Two further properties are pinned below the window itself: the anchor map stays bounded even when
+the caller's clock never moves (``_MERGE_MAX_KEYS``), and the episode/rhythm route
+(:meth:`BehaviorExecutor.fire_episode`) bypasses this seam entirely — a fact the window's own
+derivation note declares but nothing used to assert.
 """
 
 from __future__ import annotations
@@ -18,11 +23,13 @@ import unittest
 from percept.adapters import Goal, Verdict
 from percept.behavior import (
     INCIDENT_MERGE_WINDOW_S,
+    _MERGE_MAX_KEYS,
     BehaviorExecutor,
     BehaviorProgram,
     EpisodeFoldResult,
 )
 from percept.gate import FIRE, Gate
+from percept.observability import Metrics
 
 YES = Verdict(satisfied=True, confidence=0.95, evidence="yes")
 NO = Verdict(satisfied=False, confidence=0.95, evidence="no")
@@ -262,6 +269,239 @@ class GateIsUntouchedTests(unittest.TestCase):
         ex.fire_judged(goal, YES, ("g", "scene"), prog, t=0.4, fold=_new_episode("e2"))
 
         self.assertEqual(ex.ctx("g").count, 1)  # the merged one was never counted
+
+
+class DegenerateClockBackstopTests(unittest.TestCase):
+    """``_MERGE_MAX_KEYS`` — the only thing bounding the anchor map when the clock never moves.
+
+    ``_note_merge_anchor`` retires a stamp with ``t - v < window``, which can only ever fire once
+    ``t`` has moved past it. A caller handing the executor a constant ``t`` — a stalled source
+    clock, a batch replay that forgot to thread time — therefore prunes NOTHING, and the map would
+    otherwise grow one permanent entry per distinct gate key. The cap is the backstop. What follows
+    pins that the bound holds, and which direction it errs in when it drops a stamp.
+    """
+
+    #: Comfortably past the cap, so the eviction runs many times over.
+    _OVERFLOW = _MERGE_MAX_KEYS + 200
+
+    def _flood(self, ex, goal, stamp_of):
+        """One distinct occurrence per key. Every key is fresh, so every one is a real gate fire
+        and none of them is eligible to merge — the map fills purely from delivered occurrences."""
+        return sum(
+            ex.fire_judged(goal, YES, ("g", f"cup-{i}"), PROG, t=stamp_of(i)) is not None
+            for i in range(self._OVERFLOW)
+        )
+
+    def test_a_clock_that_never_advances_cannot_grow_the_anchor_map_without_bound(self):
+        ex = BehaviorExecutor(Gate())
+        fires = self._flood(ex, _goal(), lambda i: 7.5)
+
+        # Every one of them was a distinct watch-key occurrence, so the merge suppressed nothing.
+        self.assertEqual(fires, self._OVERFLOW)
+        self.assertLessEqual(len(ex._merge_anchors), _MERGE_MAX_KEYS)
+        # ...and the cap is doing all of the work: under a frozen clock ``t - v`` is always 0, so
+        # the prune retires nothing and the map would otherwise hold every key ever delivered.
+        self.assertEqual(len(ex._merge_anchors), _MERGE_MAX_KEYS)
+
+    def test_the_bound_also_holds_for_a_clock_that_moves_backwards(self):
+        # Source time walking backwards. Every stamp already in the map is in the FUTURE of ``t``,
+        # so ``t - v`` is negative and the prune deliberately keeps it (a future stamp is another
+        # key's clock running ahead, not a stale one) — the cap is again the only bound.
+        ex = BehaviorExecutor(Gate())
+        fires = self._flood(ex, _goal(), lambda i: 10_000.0 - i)
+
+        self.assertEqual(fires, self._OVERFLOW)
+        self.assertLessEqual(len(ex._merge_anchors), _MERGE_MAX_KEYS)
+
+    def test_an_evicted_anchor_fails_open_and_never_suppresses_a_real_occurrence(self):
+        # The safety direction. Losing an anchor may cost a notification-volume saving; it must
+        # never cost a notification. A dropped anchor has to DELIVER, exactly as a key that never
+        # fired before does.
+        ex = BehaviorExecutor(Gate())
+        goal = _goal()
+        self._flood(ex, goal, lambda i: 7.5)
+
+        # Oldest-stamped-first: the FIRST keys flooded in are the ones the cap gave up.
+        evicted = ("g", "cup-0")
+        retained = ("g", f"cup-{self._OVERFLOW - 1}")
+        self.assertNotIn(evicted, ex._merge_anchors)
+        self.assertIn(retained, ex._merge_anchors)
+
+        # A fresh episode on each key re-arms the gate, so both reach the delivery seam and the
+        # only thing that can differ between them is the anchor.
+        after_eviction = ex.fire_judged(goal, YES, evicted, PROG, t=7.5, fold=_new_episode("x"))
+        still_anchored = ex.fire_judged(goal, YES, retained, PROG, t=7.5, fold=_new_episode("y"))
+
+        self.assertIsNotNone(after_eviction)  # dropped anchor -> delivered, never silently swallowed
+        self.assertIsNone(still_anchored)     # a live anchor still merges — nothing else changed
+
+    def test_the_cap_keeps_the_most_recently_stamped_keys_when_every_timestamp_is_equal(self):
+        """BUG-D-06-01, closed. The survivors are the LAST ``_MERGE_MAX_KEYS`` stamped.
+
+        Under a frozen clock every stamp ties, so a sort by timestamp has nothing to order by:
+        Python's sort is stable and its reverse sort does not reorder equal elements, so
+        ``sorted(..., reverse=True)[:1024]`` kept the 1024 EARLIEST-inserted keys — "newest wins"
+        was true only for a clock that moves, i.e. exactly not the case the cap exists for. The
+        bound is now insertion-ordered (``BoundedRecencyMap``), which is a total order whatever the
+        clock does.
+        """
+        ex = BehaviorExecutor(Gate())
+        for i in range(self._OVERFLOW):
+            ex._note_merge_anchor(("g", f"cup-{i}"), 7.5)
+
+        kept = list(ex._merge_anchors)
+        self.assertEqual(len(kept), _MERGE_MAX_KEYS)
+        self.assertEqual(kept[0], ("g", f"cup-{self._OVERFLOW - _MERGE_MAX_KEYS}"))
+        self.assertEqual(kept[-1], ("g", f"cup-{self._OVERFLOW - 1}"))
+
+    def test_the_backstop_keeps_the_stamp_it_just_took(self):
+        ex = BehaviorExecutor(Gate())
+        for i in range(self._OVERFLOW):
+            ex._note_merge_anchor(("g", f"cup-{i}"), 7.5)
+
+        newest = ("g", f"cup-{self._OVERFLOW - 1}")
+        self.assertIn(newest, ex._merge_anchors)
+
+    def test_a_key_restamped_under_a_frozen_clock_is_moved_back_out_of_the_eviction_line(self):
+        """Recency is refreshed on every stamp, not only on first insert.
+
+        Without the pop-then-reinsert a key that fires on every tick would sit at the front of the
+        map forever, holding its ORIGINAL position, and be evicted ahead of a neighbour that has not
+        been seen since it was created — under a frozen clock, where the timestamps cannot break the
+        tie, that is the whole difference between an LRU and a FIFO.
+        """
+        ex = BehaviorExecutor(Gate())
+        hot = ("g", "cup-0")
+        for i in range(_MERGE_MAX_KEYS):
+            ex._note_merge_anchor(("g", f"cup-{i}"), 7.5)
+        ex._note_merge_anchor(hot, 7.5)          # re-stamped -> moves to the back
+        ex._note_merge_anchor(("g", "cup-new"), 7.5)  # overflows by one
+
+        self.assertIn(hot, ex._merge_anchors, "the re-stamped key must not be the one evicted")
+        self.assertNotIn(("g", "cup-1"), ex._merge_anchors, "…the next-oldest goes instead")
+        self.assertEqual(len(ex._merge_anchors), _MERGE_MAX_KEYS)
+
+    def test_every_capped_drop_is_reported_with_a_reason(self):
+        """ADR-001 §9: a drop forced by a bound is never a silent truncation.
+
+        The old three-line truncation dropped up to 200 anchors per call with no log, no metric and
+        no reason. Each drop now reaches the executor's metrics AND a structured log line — losing
+        an anchor fails open, so it costs a duplicate notification, which is cheap but not free.
+        """
+        metrics = Metrics()
+        ex = BehaviorExecutor(Gate(), metrics)
+        with self.assertLogs("percept.behavior", level="INFO") as caught:
+            for i in range(_MERGE_MAX_KEYS + 3):
+                ex._note_merge_anchor(("g", f"cup-{i}"), 7.5)
+
+        self.assertEqual(metrics.get("merge_anchor.evicted"), 3)
+        reasons = [getattr(rec, "fields", {}).get("reason") for rec in caught.records]
+        self.assertEqual(reasons, ["max_keys"] * 3)
+        self.assertTrue(all("merge_anchor.evicted" in line for line in caught.output))
+
+    def test_the_window_prune_is_not_an_eviction_and_stays_quiet(self):
+        """The other half of the same rule, in the other direction. A stamp older than the window
+        has no suppressing power left, so retiring it costs nothing and must NOT be reported —
+        otherwise every ordinary delivery on a moving clock emits a drop line."""
+        metrics = Metrics()
+        ex = BehaviorExecutor(Gate(), metrics)
+        ex._note_merge_anchor(("g", "a"), 0.0)
+        ex._note_merge_anchor(("g", "b"), 100.0)  # 'a' is far outside the 0.7s window
+
+        self.assertEqual(dict(ex._merge_anchors), {("g", "b"): 100.0})
+        self.assertEqual(metrics.get("merge_anchor.evicted"), 0)
+
+
+class _MergeSpy(BehaviorExecutor):
+    """Records every consultation of the delivery merge, so "this route never touches it" is an
+    assertion about calls made and not merely about an end state that happens to look empty."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.merge_checks: list = []
+        self.anchor_stamps: list = []
+
+    def _merges_into_prior_delivery(self, key, t, *args, **kwargs):
+        self.merge_checks.append((key, t))
+        return super()._merges_into_prior_delivery(key, t, *args, **kwargs)
+
+    def _note_merge_anchor(self, key, t):
+        self.anchor_stamps.append((key, t))
+        return super()._note_merge_anchor(key, t)
+
+
+class EpisodeRouteBypassesTheMergeTests(unittest.TestCase):
+    """``fire_episode`` — the episode/rhythm route — goes straight to the gate.
+
+    The merge window's derivation note names this route as the one that bypasses the seam, and that
+    exemption is load-bearing in both directions: an episode fire must not be swallowed by a judged
+    delivery's anchor, and must not leave an anchor that swallows a later judged delivery.
+    """
+
+    _EPISODE = BehaviorProgram(sense="episode")
+
+    #: The singleton gate key ``fire_episode`` folds every episode of one goal onto.
+    _KEY = ("g", "__episode__")
+
+    def test_two_new_episodes_inside_the_window_both_fire(self):
+        ex = BehaviorExecutor(Gate())
+        goal = _goal()
+
+        first = ex.fire_episode(goal, self._EPISODE, n=1, is_new=True, t=0.0, episode_id="e1")
+        second = ex.fire_episode(goal, self._EPISODE, n=2, is_new=True, t=0.2, episode_id="e2")
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertEqual([first.action, second.action], [FIRE, FIRE])
+        self.assertEqual([first.entity_id, second.entity_id], [1, 2])
+
+        # The control that keeps this from passing for the wrong reason: the SAME 0.2s spacing on
+        # the judged route, with the same re-arm, is merged away.
+        self.assertLess(0.2, INCIDENT_MERGE_WINDOW_S)
+        control, judged_goal = BehaviorExecutor(Gate()), _goal("judged")
+        self.assertIsNotNone(control.fire_judged(judged_goal, YES, ("judged", "scene"), PROG,
+                                                 t=0.0, fold=_new_episode("e1")))
+        self.assertIsNone(control.fire_judged(judged_goal, YES, ("judged", "scene"), PROG,
+                                              t=0.2, fold=_new_episode("e2")))
+
+    def test_the_episode_route_never_consults_or_stamps_the_merge(self):
+        ex = _MergeSpy(Gate())
+        goal = _goal()
+
+        # The spy is live — the judged route does both.
+        ex.fire_judged(goal, YES, ("g", "scene"), PROG, t=0.0)
+        self.assertEqual(ex.merge_checks, [(("g", "scene"), 0.0)])
+        self.assertEqual(ex.anchor_stamps, [(("g", "scene"), 0.0)])
+
+        ex.merge_checks.clear()
+        ex.anchor_stamps.clear()
+        for i, t in enumerate((0.1, 0.2, 0.3), start=1):
+            self.assertIsNotNone(
+                ex.fire_episode(goal, self._EPISODE, n=i, is_new=True, t=t, episode_id=f"e{i}")
+            )
+
+        self.assertEqual(ex.merge_checks, [])
+        self.assertEqual(ex.anchor_stamps, [])
+
+    def test_an_episode_fire_neither_suppresses_nor_is_suppressed_by_a_judged_delivery(self):
+        ex = BehaviorExecutor(Gate())
+        goal = _goal()
+
+        episode = ex.fire_episode(goal, self._EPISODE, n=1, is_new=True, t=0.0, episode_id="e1")
+        self.assertIsNotNone(episode)
+        self.assertEqual(ex._merge_anchors, {})  # it left nothing behind to suppress with
+
+        # ...so a judged delivery on the very same key 0.1s later is delivered, not merged away.
+        judged = ex.fire_judged(goal, YES, self._KEY, PROG, t=0.1, fold=_new_episode("x"))
+        self.assertIsNotNone(judged)
+        self.assertEqual(ex._merge_anchors, {self._KEY: 0.1})
+
+        # ...and the anchor that judged delivery DID leave cannot reach the episode route: the next
+        # episode lands 0.2s later, well inside the window, and still fires.
+        again = ex.fire_episode(goal, self._EPISODE, n=2, is_new=True, t=0.3, episode_id="e2")
+        self.assertIsNotNone(again)
+        self.assertLess(0.3 - 0.1, INCIDENT_MERGE_WINDOW_S)
+        self.assertEqual(ex._merge_anchors, {self._KEY: 0.1})  # unmoved by the episode fire
 
 
 if __name__ == "__main__":  # pragma: no cover

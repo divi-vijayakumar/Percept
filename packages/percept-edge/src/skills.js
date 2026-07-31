@@ -28,6 +28,7 @@
 
 // Boundary is a wire shape — defined (with validation) in the frozen contract; skills emit it.
 import { makeBoundary } from "./contract.js";
+import { clamp01 } from "./numeric.js";
 
 // ---------------------------------------------------------------------------
 // Detectors — stateful streaming DSP: push(t, value) -> Boundary[]
@@ -87,15 +88,52 @@ export class MotionPeriodicity {
 }
 
 /**
+ * Shipped wake bar for `AcousticOnset`, in MEAN-SQUARE ENERGY (not amplitude, not dB). The twin of
+ * Python `percept.harness.detectors.ACOUSTIC_ONSET_HIGH`, which carries the full measurement.
+ *
+ * THE PREVIOUS DEFAULT WAS 0.09 — `0.3 ** 2`, an RMS amplitude of 0.3 (~-10 dBFS sustained). Measured
+ * against 987 s / 3,973 capture chunks of human-annotated sound (Perception Test `sound_localisation`,
+ * 53 cases), the LOUDEST chunk in the whole corpus reached energy 0.0277, so that gate woke ZERO times
+ * and matched 0 of 204 annotated sound events. It could not be crossed by the material it exists to
+ * hear. 0.001 is RMS 0.032 (~-30 dBFS) with a re-arm bar at RMS 0.016 (~-36 dBFS) — the conventional
+ * "something audible started" bar, a measured point on that corpus's frontier (0.294 recall at 1.8% of
+ * chunks admitted). The argmax (5e-05) was deliberately NOT taken: it sits below the noise floor of
+ * most live microphones, where it would wake once and never re-arm.
+ */
+export const ACOUSTIC_ONSET_HIGH = 0.001;
+
+/** Re-arm bar, energy. Held at `ACOUSTIC_ONSET_HIGH / 4` — a factor of 4 in energy is a factor of 2 in
+ * amplitude, the same hysteresis relationship the original `0.09`/`0.0225` pair encoded. */
+export const ACOUSTIC_ONSET_LOW = ACOUSTIC_ONSET_HIGH / 4.0;
+
+/**
  * Detects energy onsets (a hiss/grunt/beep starting) — one `onset` boundary per rising spike.
  * Hysteresis: fire when energy crosses `high` having been below `low` (armed), then re-arm only after
  * it falls back under `low`. Pure DSP on the mic-energy stream. Faithful port of `AcousticOnset`.
+ *
+ * BAND ORDERING. `low` must not sit ABOVE `high`: the re-arm bar is by definition below the fire bar,
+ * and an inverted pair makes the two swap roles — every sample in `[high, low)` both fires (`v >= high`)
+ * and re-arms (`v < low`), so a dead-steady room tone oscillates the state machine at half the sample
+ * rate and mints a phantom onset every other sample. An onset is "a sound STARTING", and a level that
+ * never changes contains exactly one start whatever the bars are, so this is refused in the constructor
+ * rather than left to the caller to notice.
+ *
+ * `low === high` stays PERMITTED: it is the degenerate no-band configuration, not the defect. No sample
+ * can be both `>= high` and `< low` when they are equal, so the oscillation is unreachable.
  */
 export class AcousticOnset {
   static signal = "energy";
   static skillName = "acoustic-onset";
 
-  constructor({ high = 0.09, low = 0.0225, refractoryS = 0.0 } = {}) {
+  constructor({ high = ACOUSTIC_ONSET_HIGH, low = ACOUSTIC_ONSET_LOW, refractoryS = 0.0 } = {}) {
+    if (low > high) {
+      throw new Error(
+        `AcousticOnset needs the re-arm bar at or below the fire bar (low <= high); got high=${high}, ` +
+          `low=${low}. An inverted band makes a constant energy level both fire and re-arm on the same ` +
+          `sample, so a steady tone emits a phantom onset every other sample. Both are MEAN-SQUARE ` +
+          `ENERGY, not RMS amplitude.`,
+      );
+    }
     this.high = high;
     this.low = low;
     this.refractoryS = refractoryS;
@@ -144,70 +182,163 @@ export const CATEGORY_SEMANTIC_RELEVANCE = "semantic_relevance";
 // Wake policy — cheap evidence fusion before a VLM call
 // ---------------------------------------------------------------------------
 
-function clamp01(v) {
-  if (typeof v !== "number" || !Number.isFinite(v)) return 0;
-  if (v < 0) return 0;
-  if (v > 1) return 1;
-  return v;
+/** The complete authored surface of a wake policy. Anything else is a typo, refused by name. */
+const WAKE_POLICY_KEYS = new Set(["threshold", "weights", "floor"]);
+
+/**
+ * An authored wake policy this module refuses to run, naming the field that made it unusable. Twin of
+ * Python `UnsupportedWakePolicyError`.
+ *
+ * THE CHOICE, mirrored from the Python module: a wake policy exists to REPLACE the default fusion, so
+ * a policy that silently degrades is indistinguishable from no policy at all while still carrying an
+ * authored threshold. `weigths` used to read as an absent `weights` and leave the calibrated OR quietly
+ * running as `max(signals)`. There is no partially-applied policy: it either ran as authored, or never
+ * constructed.
+ */
+export class WakePolicyError extends Error {
+  constructor(field, value, reason) {
+    super(`wake policy field ${JSON.stringify(field)}=${JSON.stringify(value) ?? String(value)} — ${reason}`);
+    this.name = "WakePolicyError";
+    this.field = field;
+    this.value = value;
+  }
+}
+
+/** One finite number, or a typed refusal naming the field. Mirrors Python `_wake_number`. */
+function wakeNumber(field, value) {
+  if (typeof value === "boolean") {
+    throw new WakePolicyError(field, value, "a bool is not a number");
+  }
+  if (typeof value !== "number") {
+    throw new WakePolicyError(
+      field,
+      value,
+      "must be a finite number; a stringified number is refused rather than parsed, so the two " +
+        "runtimes cannot disagree about what a string is worth",
+    );
+  }
+  if (!Number.isFinite(value)) throw new WakePolicyError(field, value, "must be finite");
+  return value;
 }
 
 function normalizeWakePolicy(policy) {
   if (policy == null) return null;
-  const weights = {};
-  for (const [k, v] of Object.entries(policy.weights ?? {})) {
-    if (typeof k === "string" && typeof v === "number" && Number.isFinite(v)) weights[k] = v;
+  if (typeof policy !== "object" || Array.isArray(policy)) {
+    throw new WakePolicyError("<policy>", policy, "a wake policy is a mapping of threshold/weights/floor");
   }
+  const unknown = Object.keys(policy).filter((k) => !WAKE_POLICY_KEYS.has(k)).sort();
+  if (unknown.length) {
+    throw new WakePolicyError(
+      "<policy>",
+      unknown,
+      "unknown field(s); a wake policy carries exactly floor, threshold, weights. A misspelled key " +
+        "used to read as an absent one, which left the authored threshold in place while the fusion " +
+        "quietly reverted to max(signals)",
+    );
+  }
+  const weightsRaw = policy.weights ?? {};
+  if (typeof weightsRaw !== "object" || Array.isArray(weightsRaw)) {
+    throw new WakePolicyError("weights", weightsRaw, "must be a mapping of channel name -> numeric prior");
+  }
+  const weights = {};
+  for (const [k, v] of Object.entries(weightsRaw)) weights[k] = wakeNumber(`weights[${k}]`, v);
   return {
-    threshold:
-      typeof policy.threshold === "number" && Number.isFinite(policy.threshold) ? policy.threshold : 0.1,
+    threshold: wakeNumber("threshold", policy.threshold ?? 0.1),
     weights,
-    floor: typeof policy.floor === "number" && Number.isFinite(policy.floor) ? policy.floor : 0,
+    floor: wakeNumber("floor", policy.floor ?? 0),
   };
+}
+
+/**
+ * THE fusion, once: the fused score AND the per-channel contribution terms it summed. Twin of Python
+ * `_fuse`. `policy` must already be normalized.
+ *
+ * One walk over the MEASURED channels produces both halves. `score` and `top_channel` used to be
+ * computed from two different populations (the weights table and the raw signals respectively), so a
+ * decision could name a channel that contributed nothing to the number beside it.
+ */
+function fuse(signals, policy) {
+  const clean = {};
+  for (const [k, v] of Object.entries(signals ?? {})) clean[k] = clamp01(v);
+  let contributions;
+  let base;
+  if (policy == null || Object.keys(policy.weights).length === 0) {
+    contributions = clean;
+    const values = Object.values(contributions);
+    base = values.length === 0 ? 0 : Math.max(...values);
+  } else {
+    contributions = {};
+    let miss = 1;
+    for (const [channel, value] of Object.entries(clean)) {
+      const term = clamp01(value * (policy.weights[channel] ?? 1.0));
+      contributions[channel] = term;
+      miss *= 1 - term;
+    }
+    base = 1 - miss;
+  }
+  const floor = policy ? clamp01(policy.floor) : 0;
+  return { score: clamp01(Math.max(base, floor)), contributions };
 }
 
 /**
  * Fuse cheap edge signals into `P(goal)` before spending a heavy perception call.
  *
- * No explicit weights preserves the legacy behavior exactly: `max(signals)`. With weights, this is a
- * noisy-OR over named channels: several weak cues can wake together without making any single detector
- * authoritative.
+ * No explicit weights preserves the legacy behavior exactly: `max(signals)`. With weights this is a
+ * noisy-OR **over every measured channel**, each priced by its weight (default 1.0) — so several weak
+ * cues can wake together without making any single detector authoritative, and adding a weight can
+ * never score below the `max(signals)` it replaced. It used to iterate the WEIGHT table instead, which
+ * deleted every measured channel the policy did not name and made a typo'd channel total deafness.
+ *
+ * A channel named in `weights` but absent from `signals` contributes nothing: an unwired sensor cannot
+ * vote, and "not reporting" is not the same fact as "sees nothing".
  */
 export function wakeScore(signals = {}, policy = null) {
-  const p = normalizeWakePolicy(policy);
-  const clean = {};
-  for (const [k, v] of Object.entries(signals ?? {})) clean[k] = clamp01(v);
-  const values = Object.values(clean);
-  let base = 0;
-  if (values.length === 0) {
-    base = 0;
-  } else if (p == null || Object.keys(p.weights).length === 0) {
-    base = Math.max(...values);
-  } else {
-    let miss = 1;
-    for (const [channel, weight] of Object.entries(p.weights)) {
-      miss *= 1 - clamp01((clean[channel] ?? 0) * weight);
-    }
-    base = 1 - miss;
-  }
-  return clamp01(Math.max(base, p ? clamp01(p.floor) : 0));
+  return fuse(signals, normalizeWakePolicy(policy)).score;
 }
 
 /** Decide whether cheap evidence is strong enough to wake perception. */
 export function shouldWake(signals = {}, policy = null) {
   const p = normalizeWakePolicy(policy);
-  const score = wakeScore(signals, p);
+  const { score, contributions } = fuse(signals, p);
   const threshold = p ? p.threshold : 0.1;
-  const clean = {};
-  for (const [k, v] of Object.entries(signals ?? {})) clean[k] = clamp01(v);
+  // The argmax of the CONTRIBUTIONS, ties taking the first (strict `>` from a 0 baseline). A channel
+  // that contributed exactly nothing can never be named, so a policy that prices none of the measured
+  // channels reports null rather than pointing at an irrelevant sensor.
   let topChannel = null;
-  let topValue = -Infinity;
-  for (const [k, v] of Object.entries(clean)) {
-    if (v > topValue) {
+  let best = 0;
+  for (const [k, term] of Object.entries(contributions)) {
+    if (term > best) {
       topChannel = k;
-      topValue = v;
+      best = term;
     }
   }
   return { wake: score >= threshold, score, threshold, top_channel: topChannel };
+}
+
+/**
+ * The edge's cheap-channel vector — the named producer the wake fusion consumes. Twin of Python
+ * `percept.harness.tier0.cheap_signals`.
+ *
+ * THE INVARIANT: **one physical measurement populates exactly one channel.** Four measurements, four
+ * channels (`motion`, `structural`, `semantic`, `audio`), and no aliases. It used to build SEVEN keys
+ * from those four — `change` aliased `motion`, `semantic_relevance` aliased `semantic`, `audio_event`
+ * aliased `audio`. The noisy-OR assumes its channels are INDEPENDENT cues, so an alias fuses one
+ * measurement with itself: a policy weighting `motion` and `change` at 0.5 each scored 0.51 on one
+ * reading of 0.6, against 0.30 for the same reading on the single channel.
+ *
+ * `audio_event` is absent rather than aliased for a second reason: it names an ACOUSTIC-EVENT class,
+ * and nothing in this build classifies acoustic events. Mapping raw energy onto it claimed a sense that
+ * does not exist.
+ *
+ * `audio` is OMITTED, not zeroed, when there is no energy reading: "no microphone is open" and "the
+ * room is silent" are different facts. `extra` is the caller's overlay — the supported way to add a
+ * channel a real detector measures (`presence`, `pose`, an acoustic-event classifier).
+ */
+export function cheapSignals({ motion, structural, semantic, energy = null, extra = null } = {}) {
+  const out = { motion, structural, semantic };
+  if (energy != null) out.audio = energy;
+  if (extra) Object.assign(out, extra);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,11 +445,22 @@ registerSkill({
  * The edge feeds the cheap signals it already computes; each skill reads its own channel and emits
  * boundaries. A skill whose channel isn't provided this tick simply gets no input.
  *
+ * THE CHANNEL VOCABULARY IS CLOSED: exactly `motion` / `energy` / `frame` (`SkillBank.CHANNELS`),
+ * matching Python `DetectorBank`. It used to be two recognised names plus a catch-all — `const sig =
+ * signal === "energy" ? energy : motion` — so a skill declaring `signal="thermal"`, or a typo like
+ * `"enrgy"`, was silently fed frame-diff motion and emitted boundaries the brain then counted as
+ * coming from the sense it declared. An unrecognised channel is now the same as an absent one: no
+ * input, ever. (`registerSkill` refuses an out-of-vocabulary `signal` at registration, so this is the
+ * second gate, not the only one — a skill can also be constructed and banked directly.)
+ *
  * Lazy local load (#2): `await bank.load()` once on activation initialises any model-backed skill
  * (a skill instance may expose an optional async `load()`); DSP skills are no-ops. Construction
  * (`makeDetector`) never loads a model — that happens here, only when a goal activates the skill.
  */
 export class SkillBank {
+  /** The channels the bank can carry. Closed on purpose — see the class docstring. */
+  static CHANNELS = ["motion", "energy", "frame"];
+
   /** @param {Iterable<string>} names registered skill names the brain selected for this goal */
   constructor(names) {
     this._dets = [...names].map((n) => ({ det: makeDetector(n), signal: signalOf(n) }));
@@ -345,15 +487,16 @@ export class SkillBank {
    * @returns {object[]} Boundary[]
    */
   push(t, { motion = null, energy = null, frame = null } = {}) {
+    const channels = { motion, energy, frame };
     const out = [];
     for (const { det, signal } of this._dets) {
+      // A channel this bank does not carry, or does not have this tick -> no input. Never a fallback.
+      if (!Object.prototype.hasOwnProperty.call(channels, signal) || channels[signal] == null) continue;
       if (signal === "frame") {
-        if (frame != null) out.push(...det.push(t, frame));
-        continue;
+        out.push(...det.push(t, frame)); // frame-backed skill (e.g. pose) — the raw frame, not a scalar
+      } else {
+        out.push(...det.push(t, channels[signal]));
       }
-      const sig = signal === "energy" ? energy : motion;
-      if (sig == null) continue;
-      out.push(...det.push(t, sig));
     }
     return out;
   }

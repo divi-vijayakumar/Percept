@@ -1308,6 +1308,13 @@ def _parse_provider_call_receipt(
     confidence = doc["confidence"]
     evidence = doc["evidence"]
     error = doc["error"]
+    # DELIBERATELY NOT ``percept.contracts.verdict_defect``. This is not a Verdict: it is a
+    # JudgeCall DOCUMENT off disk, whose contract is NULLABLE by design — a recorded call that
+    # errored carries ``satisfied``/``confidence``/``evidence`` all ``None`` and an ``error``
+    # string, which the one verdict authority correctly refuses. The ``status == "success"``
+    # branch below is where "a real answer was recorded" is required. Folding this into the
+    # verdict authority would either reject every error receipt or force nullability into the
+    # live contract that ADR-001 §10.4 depends on being non-null. Different contract, on purpose.
     _require(
         satisfied is None or isinstance(satisfied, bool),
         f"{context}.satisfied must be boolean or null",
@@ -2073,6 +2080,15 @@ def _parse_persisted_manifest(value: Any) -> Mapping[str, Any]:
 
 
 def _parse_verdict(value: Any, context: str) -> _VerdictSpec:
+    """Parse a fixture manifest's ``_VerdictSpec`` — NOT a :class:`percept.contracts.Verdict`.
+
+    DELIBERATELY NOT routed through ``percept.contracts.verdict_defect``, for the same reason as
+    ``_parse_provider_call_receipt`` above: this is the manifest side of the nullable JudgeCall
+    DOCUMENT contract. It carries an ``error`` field the live verdict has no notion of, and it is
+    a scripted fixture answer rather than a provider's, so it is validated by this module's own
+    ``_require``/``_number`` vocabulary — which produces the manifest-shaped error messages the
+    eval CLI reports — rather than by the runtime's fail-closed judge boundary.
+    """
     doc = _object(value, context)
     _exact(doc, _VERDICT_KEYS, context)
     _require(isinstance(doc["satisfied"], bool), f"{context}.satisfied must be boolean")

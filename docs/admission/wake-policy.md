@@ -57,14 +57,27 @@ block_score = sum_abs_diff / (block_px * 255)
 ```
 
 an integer sum over an integer denominator, so the numpy fast path and the pure-stdlib path return
-the same float. A degenerate block (0 px, only reachable when the active area is smaller than the
-grid) contributes `0.0`.
+the same float.
+
+**The grid is fitted to the active area, never padded out to it.** When the area is smaller than the
+grid in either dimension (`aw < Gx` or `ah < Gy`), the effective grid clamps to `min(G, a)`, so every
+block holds at least one real pixel. This matters most for a small `region_hint`: a 10%-square zone
+is 6x4 px at the 48x36 gate raster, and the unclamped partition used to emit 24 zero-pixel blocks
+that each contributed a literal `0.0` to the percentile population — a `p95` ranked over a
+population half of which was padding. A clamped partition warns
+(`DegenerateBlockPartitionWarning`, carrying ADR-002's `PLAN_UNOBSERVABLE` reason code), because the
+statistic you get is computed over a coarser grid than the one you configured.
+
+A **non-positive** `Gx` or `Gy` is a different thing and is refused, not clamped: it describes no
+partition at all, so `motion_score` / `salience_stats` raise `ValueError`, exactly as an unknown
+`stat` name and a non-positive frame dimension do. (`mean` never reads `block_grid`, on either
+runtime, so it is unaffected by a grid it does not consult.)
 
 ### One pass prices all three statistics
 
 `_block_scores` (`percept/harness/tier0.py`) makes **one** pass over the pixels and returns
-`(per_block_scores, total_abs_diff, area_px)`. Every salience statistic in the module is then a
-**pure selector over that list**:
+`(per_block_scores, total_abs_diff, area_px, degenerate)`. Every salience statistic in the module is
+then a **pure selector over that list**:
 
 | stat | selector | note |
 |---|---|---|
@@ -81,8 +94,9 @@ rows and the escalating row come from the same pass. `motion_score(..., stat=s)`
 
 Two different numbers, and conflating them is the most common misreading of a trace:
 
-- **The escalate comparison** uses the condition's resolved `salience_stat` (and its `region_hint`,
-  or the whole-frame ego residual when `ego_compensate` is on) — `_condition_motion`.
+- **The escalate comparison** uses the condition's resolved `salience_stat` (and its `region_hint`;
+  or the ego residual when `ego_compensate` is on, which honours `region_hint` too) —
+  `_condition_motion`.
 - **The reported gauge** `Tier0Signal.motion` is **always the whole-frame `mean`**, whichever
   statistic is active. It stays the plain mean so it is comparable across configs.
 
@@ -515,12 +529,19 @@ full-frame `motion_score`.
 
 Pick it by **camera mount**, not by goal: wearable, glasses, drone, robot, handheld.
 
+**Ego composes with the watch-out zone.** `ego_residual_score(..., region=...)` masks the residual
+sum *and its denominator* to `region ∩ overlap`, so an ego goal carrying a `region_hint` still
+ignores movement outside the zone. The shift search stays whole-frame on purpose: a pan is a
+whole-frame property, and a zone too small, too flat, or too busy to identify a translation would
+otherwise report its own private opinion of how the camera moved.
+
 Two current limits, stated because they change what a trace means:
 
-- **Ego and block do not compose.** `_condition_motion` checks `ego_compensate` first, so an
-  ego-compensated goal gates on the whole-frame residual and the block statistics are not consulted.
-  `percept doctor` says so explicitly with an `EGO_COMPENSATED_GATE` finding — the admitted counts are
-  still the real gate's, but the value columns describe the *uncompensated* frames.
+- **Ego and the block statistics do not compose.** `_condition_motion` checks `ego_compensate`
+  first, so an ego-compensated goal gates on the (optionally region-masked) residual and
+  `block_max` / `p95` are not consulted. `percept doctor` says so explicitly with an
+  `EGO_COMPENSATED_GATE` finding — the admitted counts are still the real gate's, but the value
+  columns describe the *uncompensated* frames.
 - **No IMU fast path.** Device angular velocity is not wired in; the shift search is the only
   estimator.
 
@@ -530,31 +551,54 @@ The gate can treat each detector output as a channel and fuse them into one chea
 (`wake_score`, `percept/harness/detectors.py`):
 
 ```text
-P(goal) = noisy_or(weight[channel] * signal[channel])
+P(goal) = noisy_or(weight[channel] * signal[channel])   over every MEASURED channel
 ```
 
 With **no** policy weights this is exactly `max(signals)` — the legacy path, unchanged. With weights
-it becomes a noisy-OR over the named channels, so several moderate cues can wake the gate together
+it becomes a noisy-OR over the measured channels, so several moderate cues can wake the gate together
 without any single one needing to be decisive. A policy `floor` raises the result to at least that
 value.
 
-Channels the reference gate populates:
+**`weights` is a table of per-channel priors, defaulting to `1.0`, over the channels the gate actually
+measured.** It is not the list of channels to fuse. Two consequences worth stating, because the
+opposite reading is a trap:
+
+- Naming one weight **re-prices** that channel; it does not silence the others. The weighted form is a
+  strict generalization of the unweighted one, so adding a weight can never score below the
+  `max(signals)` it replaced. To actually silence a channel, weight it `0.0` — explicitly.
+- A channel named in `weights` but **absent** from the signals contributes nothing. An unwired sensor
+  casts no vote in either direction; "not reporting" is not the same fact as "sees nothing", and only
+  the second one is evidence.
+
+A malformed policy is **refused by name**, not degraded. An unknown top-level key (`weigths`), a
+stringified number, a bool, or a non-finite value raises `UnsupportedWakePolicyError`. A policy that
+quietly reverts to `max(signals)` while keeping its authored threshold is indistinguishable from no
+policy at all, so there is no such state.
+
+Channels the reference gate populates — **one measurement, one channel; there are no aliases**:
 
 | channel | meaning | source |
 |---|---|---|
-| `motion` / `change` | frame-diff magnitude | the tier-0 gate itself (always available) |
+| `motion` | frame-diff magnitude | the tier-0 gate itself (always available) |
 | `structural` | local geometry/layout salience | an optional structural adapter — `0.0` in the reference gate |
-| `semantic` / `semantic_relevance` | goal-specific image relevance | an optional semantic adapter — `0.0` in the reference gate |
-| `audio` / `audio_event` | acoustic energy | `Tier0Signal.energy`, when an audio source is opened |
+| `semantic` | goal-specific image relevance | an optional semantic adapter — `0.0` in the reference gate |
+| `audio` | acoustic energy | `Tier0Signal.energy` — **absent** when no audio source is open |
 
 > In the **reference** gate shipped here, `structural` and `semantic` are structurally `0.0` — no
 > CLIP/pose adapter is wired. `percept doctor` reports them as `UNAVAILABLE` rather than as zeros you
 > might mistake for measurements. The real `percept-edge` supplies them.
 
+Any other channel — `presence`, `pose`, an acoustic-event classifier — is one **you** supply, through
+the gate's `signals=` overlay, once you have a detector that measures it. The gate does not invent
+one. (`change`, `semantic_relevance` and `audio_event` used to be aliases of `motion`, `semantic` and
+`audio`. The noisy-OR assumes its channels are *independent* cues, so weighting an alias fused one
+reading with itself: `motion` and `change` at 0.5 each scored 0.51 on a single reading of 0.6, against
+0.30 for the same reading on one channel. They are gone.)
+
 Audio is motion-invariant, so it is the most reliable wake when the visual channel is weak: weighting
-`audio_event` makes a loud event escalate at zero motion. On Perception Test **sound** events whose
-source is *not on screen* (`is_visible=0`), motion-only recall is **0.28**; adding the audio channel
-lifts it to **0.70**.
+`audio` makes a loud event escalate at zero motion. On Perception Test **sound** events whose source
+is *not on screen* (`is_visible=0`), motion-only recall is **0.28**; adding the audio channel lifts it
+to **0.70**.
 
 ### `gate_on` — which channel decides
 
@@ -562,7 +606,19 @@ Per goal, via `state["cadence"]["gate_on"]`. `"motion"` (the default) uses the s
 `"fixed"` ignores pixels entirely and escalates every `min_judge_interval` seconds — the right choice
 for content that changes with ~zero pixel motion (reading, menus, screenshares, camera-covered
 checks). `"structural"` / `"semantic"` gate on those channels, which means they can only admit if an
-adapter feeds them.
+adapter feeds them. `"fused"` gates on the wake-policy score above.
+
+> **A wake policy does not override `gate_on`.** Fusion is a channel a goal **opts in** to. Configuring
+> a `wake_policy` arms the fusion; it is the goal's `gate_on: "fused"` that spends it. A goal left on
+> `motion` keeps gating on motion no matter what policy is wired, and a `fused` goal with no policy
+> wired admits nothing (the same answer `fixed` gives with no cadence) rather than quietly falling
+> back to motion.
+>
+> This is a change. Until the wake-fusion contract landed, *any* non-`None` `wake_policy` replaced the
+> `structural`/`semantic`/`motion` branch for **every** goal in the spec, and the admission was then
+> recorded as the goal's own `gate_on` — so a receipt could name `semantic` for a frame whose measured
+> semantic value was `0.0`. If you relied on that, set `gate_on: "fused"` on the goals that should
+> fuse.
 
 ---
 

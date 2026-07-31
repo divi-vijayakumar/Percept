@@ -34,7 +34,7 @@ from dataclasses import dataclass
 
 from .adapters import Box, Observation
 from .measurement import MeasurementSeries, periodicity_score
-from .rhythm import RhythmTracker
+from .rhythm import MeasurementRecord, RhythmTracker
 
 
 @dataclass
@@ -63,7 +63,12 @@ class HeroResult:
     count: int                          # the SELECTED performer's confirmed-rep tally (the pose-path count)
     subject: str | None                 # the performer entity id (mirrors goal.state["subject"])
     channel_coverage: float             # mean prior-channel keypoint visibility for the performer (gate)
-    hero_track_coverage: float          # fraction of processed frames the performer was actually tracked
+    hero_track_coverage: float          # fraction of OBSERVED frames the performer was actually tracked —
+    #                                     every frame handed to observe(), including the ones the eye found
+    #                                     nobody in. It used to divide by the frames that happened to carry
+    #                                     a detection, so numerator and denominator moved together and the
+    #                                     field was pinned at 1.0 for any clip whose only failure mode was
+    #                                     empty detection (measured: 20 detections over 100 frames -> 1.0).
     periodicity: float                  # [0,1] periodicity of the performer's ``signal`` — THE escalate_count
     #                                     confidence. 0.0 when no signal was accumulated (no performer, or no
     #                                     prior channel to accumulate one on): no evidence is not confidence,
@@ -75,6 +80,12 @@ class HeroResult:
     reps: list                          # the performer's Rep spans (start/peak/stop) — the VLM active span
     n_entities: int                     # distinct people tracked over the clip (a crowd-size proxy)
     prior_channel: str | None
+    frames_observed: int = 0            # the EVIDENCE BASE under hero_track_coverage: how many frames the
+    #                                     ratio was taken over, so "0.2 of 100 frames" and "0.2 of 5" stop
+    #                                     reading identically. A ratio without its denominator is not a
+    #                                     measurement; this is the same counter shape
+    #                                     ``percept.rhythm.MeasurementRecord`` carries for the tracker.
+    frames_measured: int = 0            # ...of which carried at least one detected person
 
 
 class RhythmHero:
@@ -88,25 +99,40 @@ class RhythmHero:
         self.core = core
         self.goal_id = goal_id
         self.prior = prior_channel
-        self._frames = 0
+        #: Frames OFFERED vs frames that carried a detection — the denominator under every ratio below.
+        self.measurement = MeasurementRecord()
         self._present: dict[str, int] = {}
         self._cov: dict[str, list[float]] = {}
         self._signal: dict[str, list] = {}
         self.record = record
         self.frames: list = []  # when record=True: [(t, [(entity_id, (x, y, w, h)), ...]), ...] for debug viz
 
+    @property
+    def _frames(self) -> int:
+        """Frames OBSERVED — every frame handed to :meth:`observe`, including the empty ones."""
+        return self.measurement.observed
+
     def observe(self, t: float, measures, frame=None) -> None:
         """Fold one frame's per-person measurements. Detections become ``Observation``s, the graph assigns
-        stable ids (continuity + appearance), and each id's channels drive its own rhythm tracker."""
+        stable ids (continuity + appearance), and each id's channels drive its own rhythm tracker.
+
+        The frame enters the denominator BEFORE the empty-measures exit. A frame the eye found nobody in
+        was still processed, and it is exactly the frame ``hero_track_coverage`` exists to report."""
+        self.measurement.observed += 1
         if not measures:
             return
-        self._frames += 1
+        self.measurement.measured += 1
+        if any(getattr(m, "scale_floored", False) for m in measures):
+            self.measurement.unnormalized += 1
         obs = [Observation("person", Box(*m.box), m.pose_conf) for m in measures]
         entities = self.core.graph.ingest(obs, frame=frame, t=t)  # returned aligned to obs order
         if self.record:
             self.frames.append((t, [(e.id, (e.box.x, e.box.y, e.box.w, e.box.h)) for e in entities]))
         for ent, m in zip(entities, measures):
-            self.core.perceive_rhythm(self.goal_id, t=t, channels=m.channels, entity_id=ent.id)
+            # scale_floored is PER PERSON: two people in one frame can be at different distances, so
+            # "were these channels normalized by a real torso?" is not a frame-level fact.
+            self.core.perceive_rhythm(self.goal_id, t=t, channels=m.channels, entity_id=ent.id,
+                                      scale_floored=bool(getattr(m, "scale_floored", False)))
             self._present[ent.id] = self._present.get(ent.id, 0) + 1
             if self.prior is not None:
                 if self.prior in m.coverage:
@@ -114,18 +140,34 @@ class RhythmHero:
                 if self.prior in m.channels:
                     self._signal.setdefault(ent.id, []).append((t, m.channels[self.prior]))
 
+    def _tracker(self, subject: str | None):
+        """The SUBJECT's own tracker, never a shared slot.
+
+        This used to read ``core.rhythm[goal_id]`` — one entry both rhythm producers write — and never
+        checked that what it found there belonged to ``goal.state['subject']``, so ``count``/``reps``/
+        ``regularity`` could describe one person while ``channel_coverage``/``hero_track_coverage``
+        described another. Reading the store by ``(goal_id, subject)`` is what makes the whole result
+        describe ONE entity."""
+        if subject is None:
+            return None
+        lookup = getattr(self.core, "rhythm_tracker", None)
+        if lookup is not None:
+            return lookup(self.goal_id, subject)
+        return getattr(self.core, "_rhythm_multi", {}).get((self.goal_id, subject))
+
     def result(self) -> HeroResult:
         """Read the SELECTED performer's count + the observability accumulated for them."""
         goal = self.core.goals.get(self.goal_id)
         subject = goal.state.get("subject") if goal is not None else None
-        tracker = self.core.rhythm.get(self.goal_id)  # the per-entity path mirrors the selected performer here
+        tracker = self._tracker(subject)
         count = tracker.count if tracker is not None else 0
         reps = list(tracker.reps) if tracker is not None else []
         regularity = tracker.regularity if tracker is not None else 0.0
 
         cov_samples = self._cov.get(subject, []) if subject else []
         channel_coverage = sum(cov_samples) / len(cov_samples) if cov_samples else 0.0
-        htc = (self._present.get(subject, 0) / self._frames) if (subject and self._frames) else 0.0
+        observed = self.measurement.observed
+        htc = (self._present.get(subject, 0) / observed) if (subject and observed) else 0.0
         signal = self._signal.get(subject, []) if subject else []
 
         return HeroResult(
@@ -133,6 +175,7 @@ class RhythmHero:
             hero_track_coverage=htc, periodicity=measure_periodicity(signal, self.prior, tracker),
             regularity=regularity, signal=signal, reps=reps,
             n_entities=len(self._present), prior_channel=self.prior,
+            frames_observed=observed, frames_measured=self.measurement.measured,
         )
 
 

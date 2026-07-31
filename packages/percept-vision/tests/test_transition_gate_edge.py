@@ -22,12 +22,14 @@ fired, which seam dropped a delivery), and no shipped default is changed anywher
 """
 
 import asyncio
+import copy
 import unittest
 
 from percept.adapters import Goal, Verdict
 from percept.agent import Percept
-from percept.behavior import INCIDENT_MERGE_WINDOW_S, BehaviorExecutor
+from percept.behavior import INCIDENT_MERGE_WINDOW_S, BehaviorExecutor, OccurrenceState
 from percept.gate import GATE_REASONS, FIRE, Gate
+from percept.identity_policy import SCENE_IDENTITY
 from percept.incidents import make_incident
 
 YES = Verdict(True, 0.95, "confident yes")
@@ -511,6 +513,246 @@ class DwellAndTheClocklessCaller(unittest.TestCase):
         self.assertIsNone(ex.fire_transition(goal, NO, YES))
         ex.fire_transition(goal, YES, NO)
         self.assertIsNotNone(ex.fire_transition(goal, NO, YES))
+
+
+# ==================================================================================================
+# Entity death — the OTHER half of the sweep.
+#
+# The latch is split across two owners: the armed/spent edge is the gate's (``Gate.reset_entity``),
+# the ORDERING WITNESS ``seen_from`` is the executor's, because the gate has no vocabulary for "B
+# only counts after A". ``transition_decide`` writes the witness with a ``setdefault`` BEFORE any
+# truth test, so EVERY entity id that ever reaches the transition path leaves an entry behind;
+# sweeping only the gate half left the witness half growing for the life of the process on any
+# source whose track ids churn.
+#
+# ``tests/test_harden_c_bounds.py`` drives the agent-level hook (``Percept._on_entity_evicted``) for
+# ONE goal. These call ``BehaviorExecutor.forget_entity`` DIRECTLY, and pin what the hook cannot
+# see: that one call reaches EVERY concern the executor holds, that the scene singleton is exempt,
+# that an unknown id is inert, and where the sweep deliberately STOPS.
+# ==================================================================================================
+
+
+class ForgetEntitySweepsTheOrderingWitness(unittest.TestCase):
+    @staticmethod
+    def _armed_keys(gate: Gate) -> set:
+        return set(gate._armed)
+
+    def test_one_call_sweeps_the_witness_across_every_concern(self):
+        """The sweep is per-EXECUTOR, not per-goal. Three watches on one executor each keep their own
+        isolated ``ConcernContext``; a single ``forget_entity`` must reach all three, or the witness
+        leaks under every goal the caller did not think to name."""
+        gate, ex = _ex()
+        goals = [_goal("alpha"), _goal("beta"), _goal("gamma")]
+        for goal in goals:
+            for eid in ("e1", "e2"):
+                armed = ex.transition_decide(goal, YES, NO, focus_id=eid, now=0.0)
+                self.assertTrue(armed.armed, "the arming tick must write the ordering witness")
+        self.assertEqual(set(ex._ctx), {"alpha", "beta", "gamma"})
+
+        ex.forget_entity("e1")
+
+        for goal in goals:
+            ctx = ex.ctx(goal.id)
+            self.assertNotIn(
+                "e1", ctx.transitions,
+                f"concern {goal.id!r} kept the dead entity's ordering witness",
+            )
+            self.assertIn("e2", ctx.transitions, f"concern {goal.id!r} lost a LIVE entity's witness")
+            self.assertTrue(ctx.transitions["e2"]["seen_from"])
+        # The concerns themselves survive — the sweep reclaims entries, never whole contexts.
+        self.assertEqual(set(ex._ctx), {"alpha", "beta", "gamma"})
+        # And it stays on its own side of the split: the armed/spent edge is the GATE's half, swept
+        # by ``Gate.reset_entity``, which the agent hook calls separately.
+        self.assertEqual(
+            self._armed_keys(gate),
+            {(g.id, e) for g in goals for e in ("e1", "e2")},
+            "forget_entity reached into the gate's half of the latch",
+        )
+
+    def test_after_both_halves_are_swept_a_revived_id_is_inert_not_merely_merged(self):
+        """WHY the witness half matters. ``e1`` gets the full eviction sweep (both halves, exactly as
+        ``Percept._on_entity_evicted`` does); ``e2`` gets the historical gate-only sweep. Long after
+        the delivery merge has expired, the fully-swept id cannot fire at all — it has no witness, so
+        no candidate is even formed — while the half-swept id re-notifies for an occurrence nothing
+        re-established state A for."""
+        gate, ex = _ex()
+        goal = _goal()
+        for eid in ("e1", "e2"):
+            ex.transition_decide(goal, YES, NO, focus_id=eid, now=0.0)
+            self.assertIsNotNone(ex.transition_decide(goal, NO, YES, focus_id=eid, now=1.0).fired)
+
+        gate.reset_entity("e1")
+        ex.forget_entity("e1")   # both halves, the way entity death is wired
+        gate.reset_entity("e2")  # the gate half only, the way it used to be
+
+        far_later = 1.0 + 10 * INCIDENT_MERGE_WINDOW_S
+        revived = ex.transition_decide(goal, NO, YES, focus_id="e1", now=far_later)
+        self.assertIsNone(revived.fired)
+        self.assertEqual(revived.outcome, "idle", "a swept id must not even form a candidate")
+        self.assertFalse(revived.armed)
+
+        half_swept = ex.transition_decide(goal, NO, YES, focus_id="e2", now=far_later)
+        self.assertIsNotNone(
+            half_swept.fired,
+            "the counterfactual is the whole point: the un-swept witness re-opens the edge",
+        )
+
+    def test_forgetting_the_scene_sentinel_reclaims_nothing_at_all(self):
+        """``entity_id == SCENE_IDENTITY`` returns EARLY. The scene latch is a per-goal singleton that
+        entity churn cannot multiply, and dropping it would silently re-arm a spent edge — the exact
+        defect routing this latch through the gate exists to hold shut. The early return also means
+        nothing else is reclaimed on that call."""
+        gate, ex = _ex()
+        goals = [_goal("alpha"), _goal("beta")]
+        for goal in goals:
+            ex.transition_decide(goal, YES, NO, focus_id=SCENE_IDENTITY, now=0.0)
+            ex.transition_decide(goal, YES, NO, focus_id="e1", now=0.0)
+
+        ex.forget_entity(SCENE_IDENTITY)
+
+        for goal in goals:
+            ctx = ex.ctx(goal.id)
+            self.assertIn(SCENE_IDENTITY, ctx.transitions, "the scene singleton was reclaimed")
+            self.assertTrue(ctx.transitions[SCENE_IDENTITY]["seen_from"])
+            self.assertIn(
+                "e1", ctx.transitions,
+                "the early return must return — no entity may be swept on a scene call",
+            )
+        self.assertEqual(
+            self._armed_keys(gate), {(g.id, e) for g in goals for e in (SCENE_IDENTITY, "e1")}
+        )
+
+        # And the surviving scene latch still behaves: it fires once, then the gate holds it shut.
+        fired = ex.transition_decide(goals[0], NO, YES, focus_id=SCENE_IDENTITY, now=1.0)
+        self.assertIsNotNone(fired.fired)
+        held = ex.transition_decide(goals[0], NO, YES, focus_id=SCENE_IDENTITY, now=9.0)
+        self.assertIsNone(held.fired)
+        self.assertEqual(held.outcome, "suppressed_latched")
+
+    def test_forgetting_an_entity_never_seen_is_a_silent_no_op(self):
+        """The hook fires for EVERY evicted entity, including ones no transition goal ever judged
+        (and, on a run with no transition goal at all, for an executor holding no contexts). It must
+        raise nothing, mint nothing, and change nothing."""
+        gate, ex = _ex()
+        ex.forget_entity("never-judged")  # no concern context exists yet
+        self.assertEqual(ex._ctx, {}, "the sweep minted a concern context out of nothing")
+
+        goal = _goal()
+        ex.transition_decide(goal, YES, NO, focus_id="e1", now=0.0)
+        before_witness = copy.deepcopy(ex.ctx(goal.id).transitions)
+        before_armed = dict(gate._armed)
+
+        for unknown in ("never-judged", "", None, ("track", 7), 42):
+            ex.forget_entity(unknown)
+
+        self.assertEqual(ex.ctx(goal.id).transitions, before_witness)
+        self.assertEqual(dict(gate._armed), before_armed)
+        self.assertEqual(set(ex._ctx), {"t"})
+
+    def test_a_rearm_and_a_goal_reset_leave_the_witness_and_its_anchor_standing(self):
+        """The deliberate NON-sweep. ``forget_entity`` is wired to genuine entity death and to nothing
+        else: not a re-arm, not a confident-false, not the correction path's ``reset_goal``. A
+        transition is a POINT event with no observable end, so both the witness and the delivery
+        anchor survive those resets — and the merge is then the only thing standing between a
+        re-opened edge and a duplicate notification for one occurrence."""
+        gate, ex = _ex()
+        goal = _goal()
+        ex.transition_decide(goal, YES, NO, focus_id="e1", now=0.0)
+        self.assertIsNotNone(ex.transition_decide(goal, NO, YES, focus_id="e1", now=1.0).fired)
+
+        gate.rearm(("t", "e1"))   # an explicit re-arm is not a death
+        gate.reset_goal("t")      # nor is the correction path's goal-level reset
+        ctx = ex.ctx("t")
+        self.assertIn("e1", ctx.transitions, "a reset that is not an eviction pruned the witness")
+        self.assertTrue(ctx.transitions["e1"]["seen_from"])
+
+        # Witness intact -> a candidate forms; edge re-opened -> the gate says FIRE; and the anchor
+        # that also survived is what turns that into a dropped duplicate rather than a notification.
+        inside = ex.transition_decide(goal, NO, YES, focus_id="e1", now=1.0 + 0.5 * INCIDENT_MERGE_WINDOW_S)
+        self.assertIsNone(inside.fired)
+        self.assertEqual(inside.outcome, "merged_duplicate")
+
+        gate.rearm(("t", "e1"))
+        outside = ex.transition_decide(goal, NO, YES, focus_id="e1", now=1.0 + INCIDENT_MERGE_WINDOW_S)
+        self.assertIsNotNone(outside.fired, "outside the window it is a genuinely separate report")
+
+    def test_forget_entity_leaves_the_merge_anchor_which_the_next_distinct_fire_prunes(self):
+        """CHARACTERIZATION of the one piece of per-entity state ``forget_entity`` does not touch.
+
+        The dead entity's ``_merge_anchors`` stamp survives the sweep. That is not a leak: every
+        DISTINCT delivery rebuilds the map, dropping every stamp the window can no longer use, and
+        ``_MERGE_MAX_KEYS`` backstops a degenerate clock. Pinned so a future sweep of the anchor is a
+        deliberate change with a failing test, not a silent one."""
+        gate, ex = _ex()
+        goal = _goal()
+        ex.transition_decide(goal, YES, NO, focus_id="e1", now=0.0)
+        self.assertIsNotNone(ex.transition_decide(goal, NO, YES, focus_id="e1", now=1.0).fired)
+        self.assertIn(("t", "e1"), ex._merge_anchors)
+
+        ex.forget_entity("e1")
+        self.assertNotIn("e1", ex.ctx("t").transitions)
+        self.assertIn(
+            ("t", "e1"), ex._merge_anchors,
+            "the anchor is deliberately NOT swept — if that changed, say so here",
+        )
+
+        # The next distinct delivery on ANY key is what reclaims it.
+        ex.transition_decide(goal, YES, NO, focus_id="e2", now=1.0)
+        later = ex.transition_decide(goal, NO, YES, focus_id="e2", now=1.0 + INCIDENT_MERGE_WINDOW_S)
+        self.assertIsNotNone(later.fired)
+        self.assertEqual(
+            set(ex._merge_anchors), {("t", "e2")},
+            "a delivery must prune stamps older than the window, including the dead entity's",
+        )
+
+    def test_the_sweep_is_the_transition_witness_only_and_not_the_occurrence_map(self):
+        """CHARACTERIZATION of the sweep's SCOPE. ``ConcernContext`` also keys the ``each_event``
+        occurrence state per entity; ``forget_entity`` does not reclaim it. That map carries its own
+        256-entry bound (``fire_clip_events``) and the shipped ``EntityGraph`` mints monotonically
+        (``e1``, ``e2``, …) so a dead id is never re-issued — the retention is bounded and inert. The
+        state is seeded directly here, standing in for the event-chain path that writes it."""
+        _, ex = _ex()
+        goal = _goal()
+        ex.transition_decide(goal, YES, NO, focus_id="e1", now=0.0)
+        ctx = ex.ctx("t")
+        ctx.occurrences["e1"] = OccurrenceState(sequence=3, phase="post", episode_id="ep-1")
+
+        ex.forget_entity("e1")
+
+        self.assertNotIn("e1", ctx.transitions)
+        self.assertIn(
+            "e1", ctx.occurrences,
+            "scope changed: the sweep now reaches the occurrence map too — update this pin",
+        )
+
+    def test_both_halves_of_the_latch_exempt_the_scene_sentinel(self):
+        """BUG-D-08-01, closed. The two halves used to disagree about the same collision.
+
+        ``forget_entity`` refuses the sentinel explicitly, 'so a custom ``EntityGraph`` minting an id
+        that collided with that sentinel still could not drop a live scene-scoped witness'.
+        ``Gate.reset_entity`` instead ASSUMES the collision away — 'their second element is a
+        sentinel string, not an entity id, so they are untouched' — and matches on ``k[1] ==
+        entity_id`` with no exemption, ignoring ``_no_evict``. The unprotected half is the harmful
+        one: dropping the witness alone would merely delay a fire until A is witnessed again, while
+        dropping the gate key silently RE-ARMS a spent edge, and the held ``to`` state re-notifies."""
+        gate, ex = _ex()
+        goal = _goal()
+        ex.transition_decide(goal, YES, NO, focus_id=SCENE_IDENTITY, now=0.0)
+        self.assertIsNotNone(
+            ex.transition_decide(goal, NO, YES, focus_id=SCENE_IDENTITY, now=1.0).fired
+        )
+
+        # The eviction hook, called for an entity whose id collides with the scene sentinel.
+        gate.reset_entity(SCENE_IDENTITY)
+        ex.forget_entity(SCENE_IDENTITY)
+
+        self.assertIn(
+            (goal.id, SCENE_IDENTITY), gate._armed,
+            "the scene singleton's gate edge was dropped by an entity sweep",
+        )
+        held = ex.transition_decide(goal, NO, YES, focus_id=SCENE_IDENTITY,
+                                    now=1.0 + 10 * INCIDENT_MERGE_WINDOW_S)
+        self.assertIsNone(held.fired, "the same held 'to' state re-notified after an entity sweep")
 
 
 if __name__ == "__main__":

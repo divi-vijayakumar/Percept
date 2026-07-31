@@ -35,6 +35,40 @@ class PoseKeypoint:
     z: float | None = None
 
 
+#: Every consumer in this package indexes the COCO-17 basis by constant (``COCO_RIGHT_ANKLE`` is 16),
+#: so a detection carrying fewer joints is not a degraded measurement — it is an unreadable one.
+COCO_KEYPOINT_COUNT = 17
+
+
+class PoseSkeletonIncomplete(ValueError):
+    """A :class:`PoseDetection` carries fewer keypoints than the COCO-17 basis every consumer indexes.
+
+    The arity twin of :class:`FrameNotDecodable`, and typed for the same reason: the alternative to
+    raising is a silent one. ``body_scale`` / ``pose_channels`` / ``channel_coverage`` and
+    :class:`percept.harness.detectors.PoseOpenness` all read fixed COCO indices with no length check,
+    so a short skeleton used to surface as a bare ``IndexError`` from whichever of them happened to
+    reach past the end first — out of ``DetectorBank.push``, ending the run for **every** goal in the
+    bank, not just the one that asked for pose.
+
+    Validated once at the DTO boundary (:meth:`PoseDetection.__post_init__`) rather than at the six
+    index sites, so every consumer is protected BY CONSTRUCTION and none of them needs its own guard.
+    A guard at the index sites would have had to invent a substitute joint, which silently changes
+    what the eye measures; refusing the detection does not.
+
+    Both shipped providers already guarantee 17 (:class:`RTMOPoseProvider` filters on
+    ``len(kpts) >= 17``; :class:`BlazePoseProvider` builds a fixed 17-element list), so this is
+    reachable only through an injected custom ``provider=``.
+    """
+
+    def __init__(self, got: int, *, provider: str = "unknown") -> None:
+        super().__init__(
+            f"pose detection carries {got} keypoints; the COCO basis every consumer indexes needs "
+            f"{COCO_KEYPOINT_COUNT} [provider={provider}]"
+        )
+        self.got = got
+        self.provider = provider
+
+
 @dataclass(frozen=True)
 class PoseDetection:
     keypoints: tuple[PoseKeypoint, ...]
@@ -42,6 +76,11 @@ class PoseDetection:
     person_id: str | None = None
     provider: str = "unknown"
     bbox: tuple[float, float, float, float] | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a skeleton shorter than COCO-17 — see :class:`PoseSkeletonIncomplete`."""
+        if len(self.keypoints) < COCO_KEYPOINT_COUNT:
+            raise PoseSkeletonIncomplete(len(self.keypoints), provider=self.provider)
 
 
 class PoseProvider(Protocol):
@@ -254,7 +293,12 @@ class FrameNotDecodable(TypeError):
     Typed, and raised rather than returning "no measurement", because the silent version of this
     failure is the expensive one: a rhythm goal whose eye can never see a frame runs for hours,
     measures nothing, and reports a count of zero with no error anywhere in the trace. ``frame_type``
-    and ``media_type`` describe the payload; neither renders its contents."""
+    and ``media_type`` describe the payload; neither renders its contents.
+
+    The two typed refusals on this seam are siblings and are declared apart only because they guard
+    opposite ends of it: this one is the eye's INPUT (a payload no eye could see), and
+    :class:`PoseSkeletonIncomplete` — declared beside :class:`PoseDetection`, where it is raised — is
+    the eye's OUTPUT (a skeleton no consumer could index)."""
 
     def __init__(self, reason: str, *, frame_type: str, media_type: str | None = None) -> None:
         where = frame_type if media_type is None else f"{frame_type}, {media_type}"
@@ -366,12 +410,31 @@ POSE_CHANNEL_NAMES = ("limb-vertical", "ankle-spread", "hip-vertical", "torso-ve
 _MIN_BODY_SCALE = 0.05  # floor on the torso-length normalizer so a foreshortened/degenerate pose can't blow up
 
 
-def body_scale(keypoints: "tuple[PoseKeypoint, ...]") -> float:
-    """A stable per-pose length unit: mean **Euclidean** shoulder→hip distance (≈ torso length), floored.
+def body_scale_measured(keypoints: "tuple[PoseKeypoint, ...]") -> tuple[float, bool]:
+    """The length unit AND whether it is a real measurement: ``(scale, floored)``.
 
-    Normalizing every channel by this makes their OSCILLATION amplitudes scale-comparable across channels
-    (a "0.3 torso-length" bob reads the same whether it's hips or wrists) — which is what lets the brain
-    select the dominant channel by amplitude without a per-channel unit bias.
+    ``scale`` is the mean **Euclidean** shoulder→hip distance (≈ torso length), clamped up to
+    ``_MIN_BODY_SCALE``. ``floored`` is ``True`` exactly when the clamp won — i.e. when the raw
+    separation was strictly below the floor and ``scale`` is therefore the FLOOR, not the body.
+
+    WHY THE FLAG EXISTS. :func:`pose_channels` divides every channel by this value unconditionally, so
+    a channel is "amplitude in torso-lengths" only while the divisor really is the torso. Below the
+    floor the divisor is a constant, so the same body-relative motion reads as an amplitude of
+    ``floor / true_torso`` — a function of DISTANCE FROM THE CAMERA rather than of the subject.
+    Downstream, ``percept.rhythm`` applies ``min_amp = amp_gate_frac * expected_rom``, an ABSOLUTE
+    gate stated in the torso-normalised units this module documents, and a clamped normalizer silently
+    turns that anti-fidget gate into a distance gate: measured, 7 reps counted for a near subject and
+    **0** for the identical body-relative motion further away (amplitude ratio 0.05 / 0.015625 = 3.2).
+
+    THE CONTRACT, and it is the whole point of this function: **either the clamp is observable to the
+    consumer, or the absolute gate is not applied when the normalizer is not a real measurement.** This
+    is the first half — the clamp is now observable, here and on
+    :class:`percept.harness.detectors.PersonMeasure.scale_floored`. A consumer that applies an absolute
+    amplitude gate is responsible for the second half.
+
+    The floor itself is NOT the defect and must not be lowered — the paragraph below is why a collapsed
+    torso makes every channel EXPLODE without it. The fix for the units problem is observability, not a
+    smaller floor.
 
     Euclidean (not vertical-only): a vertical |Δy| torso length COLLAPSES toward zero for LYING/horizontal
     poses — bench press, push-ups, sit-ups — so it hits ``_MIN_BODY_SCALE`` and every channel divided by it
@@ -383,7 +446,23 @@ def body_scale(keypoints: "tuple[PoseKeypoint, ...]") -> float:
 
     left = _dist(keypoints[COCO_LEFT_HIP], keypoints[COCO_LEFT_SHOULDER])
     right = _dist(keypoints[COCO_RIGHT_HIP], keypoints[COCO_RIGHT_SHOULDER])
-    return max(0.5 * (left + right), _MIN_BODY_SCALE)
+    raw = 0.5 * (left + right)
+    if raw < _MIN_BODY_SCALE:
+        return _MIN_BODY_SCALE, True
+    return raw, False
+
+
+def body_scale(keypoints: "tuple[PoseKeypoint, ...]") -> float:
+    """A stable per-pose length unit: mean **Euclidean** shoulder→hip distance (≈ torso length), floored.
+
+    Normalizing every channel by this makes their OSCILLATION amplitudes scale-comparable across channels
+    (a "0.3 torso-length" bob reads the same whether it's hips or wrists) — which is what lets the brain
+    select the dominant channel by amplitude without a per-channel unit bias.
+
+    A thin wrapper over :func:`body_scale_measured`, which is the same measurement plus the one bit this
+    signature cannot carry: whether the returned number is the body or the floor. Callers that only need
+    a divisor keep using this; callers that apply an ABSOLUTE gate in these units must read the flag."""
+    return body_scale_measured(keypoints)[0]
 
 
 def pose_channels(keypoints: "tuple[PoseKeypoint, ...]") -> dict[str, float]:
@@ -396,7 +475,14 @@ def pose_channels(keypoints: "tuple[PoseKeypoint, ...]") -> dict[str, float]:
     * ``torso-vertical`` — shoulder height (push-ups / jumps / torso lifts).
 
     Each is a plain measurement; the brain owns selection + counting. The baseline-relative tracker uses
-    only the oscillation (the DC offset cancels), so absolute-position channels are fine."""
+    only the oscillation (the DC offset cancels), so absolute-position channels are fine.
+
+    UNITS CAVEAT. "Normalized by torso length" holds only while the normalizer is a real measurement.
+    The division here is unconditional, so for a subject under ``_MIN_BODY_SCALE`` these values are in
+    units of the FLOOR, not of the body. This function cannot report that — call
+    :func:`body_scale_measured` (or read ``PersonMeasure.scale_floored``, which
+    :func:`percept.harness.detectors.person_measures` fills in) before applying any ABSOLUTE amplitude
+    gate to what comes back."""
     L = body_scale(keypoints)
     limb = 0.5 * (
         (keypoints[COCO_LEFT_SHOULDER].y - keypoints[COCO_LEFT_WRIST].y)
@@ -473,6 +559,8 @@ def select_nearest_hip(poses, anchor, min_conf: float):
 __all__ = [
     "PoseKeypoint",
     "PoseDetection",
+    "PoseSkeletonIncomplete",
+    "COCO_KEYPOINT_COUNT",
     "PoseProvider",
     "RTMOPoseProvider",
     "BlazePoseProvider",
@@ -481,6 +569,8 @@ __all__ = [
     "describe_pose_unavailable",
     "FrameNotDecodable",
     "frame_pixels",
+    "body_scale",
+    "body_scale_measured",
     "pose_channels",
     "POSE_CHANNEL_NAMES",
     "CHANNEL_KEYPOINTS",

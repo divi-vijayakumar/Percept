@@ -34,13 +34,25 @@ harness on the same fixture streams.
 It checks:
 
 - `motion-periodicity` detector boundaries.
-- `acoustic-onset` detector boundaries.
+- `acoustic-onset` detector boundaries, including two vectors that pin the **shipped bars themselves**
+  (fire and re-arm). The original four vectors sat far above every candidate threshold, so they were
+  blind to the number — which is how the JS edge shipped `high=0.09` against Python's `0.001` for a
+  release while this gate reported MATCH.
+- **The wake fusion** — `wake_score` under exact float equality, plus `should_wake`'s `top_channel` and
+  `wake` flag, over vectors whose signal and weight populations deliberately differ (iterating the wrong
+  one is the defect the vectors exist to catch; a case where the two agree cannot see it). They cover the
+  unweighted max, a measured channel the policy does not price, a typo'd channel name, a weight on an
+  unmeasured channel, an explicit `0.0` prior, saturation above 1.0, the `floor`, and the per-term clamp
+  from both the score and the top-channel side.
 - `motion_score` gate values (whole-frame `mean`).
 - `motion_score` **salience modes** — `block_max` / `p95` over the block grid, including a localized-event
-  fixture (block_max ≫ mean), a non-divisible frame (locks the block-boundary math), and a region+block
-  compose.
+  fixture (block_max ≫ mean), a non-divisible frame (locks the block-boundary math), a region+block
+  compose, and three vectors that pin the **clamping rule** (an area under the grid in both dimensions,
+  and an area exactly equal to it, where the clamp must not bite).
 - `ego_residual_score` — the ego-compensation residual, including a pure-pan fixture (residual ≈ 0 while
-  the raw mean is high).
+  the raw mean is high), vertical-pan and `k > frame` fixtures that pin the shift search itself, and
+  three **watch-out-zone** fixtures separating "the region is ignored", "the region picks the shift",
+  and "the denominator is the region rather than `region ∩ overlap`".
 - JS `Edge.processFrame` latency with gate + detector active.
 
 The salience/ego arithmetic is intentionally integer-only (floor-of-product block boundaries, integer

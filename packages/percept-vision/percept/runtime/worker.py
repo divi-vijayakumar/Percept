@@ -40,6 +40,7 @@ from percept.interest import (
     InterestSubscription,
     LiveInterestAdmission,
     LiveInterestTracker,
+    interest_admission_from_outcome,
 )
 from percept.observability import get_logger
 from percept.runtime.envelope import (
@@ -3298,28 +3299,50 @@ def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any, float]:
     the coverage GUARANTEE the open source must actually deliver. The worker compares the observed
     capture cadence against it and emits ``capture_plan_unmet`` when it can't be met: a coverage
     guarantee that can't be honored is REPORTED, never silently downgraded."""
-    from percept.sampling import SamplingController, SensePolicy
+    from percept.sampling import SamplingController, SensePolicy, is_usable_fps
     from percept.sensorplan import sensor_plan_for
 
     capture = float(base_fps)
     required = 0.0
     policy: SensePolicy | None = None
     for g in goals:
+        # ONE guarded region, covering the plan compile AND the policy construction. SensePolicy is now
+        # validated, so an unusable authored cadence RAISES where it used to silently misconfigure the
+        # fovea — and a 24/7 worker must never die of one bad goal. Widened rather than added: the
+        # compile was already guarded, so this only extends the same "drop this goal's floor" outcome to
+        # the envelope itself.
         try:
             cad = sensor_plan_for(g).cadence
-        except Exception:
-            continue  # a goal whose sense doesn't compile a plan never raises the floor
-        base = cad.get("base_fps")
-        if not base:
-            continue  # ordinary (non-brief) goal: no cadence floor
-        mx = cad.get("max_fps") or base
+            base = cad.get("base_fps")
+            if not is_usable_fps(base):
+                # Ordinary (non-brief) goal -> no cadence floor, nothing to report. `not base` used to
+                # stand in for this and let NaN through: NaN is TRUTHY, so unlike 0 it was never
+                # dropped here, and the NaN then suppressed the capture_plan_unmet report that exists
+                # to surface exactly this loss (required_fps collapses because max(0.0, nan) is 0.0).
+                if base is not None:
+                    _log.warning(
+                        "capture_plan_goal_dropped: goal=%s reason=unusable base_fps %r",
+                        getattr(g, "id", "?"), base,
+                    )
+                continue
+            mx = cad.get("max_fps")
+            if not is_usable_fps(mx):
+                mx = base  # unset (or unusable) ceiling: the floor IS the ceiling, as before
+            et = cad.get("escalate_threshold")
+            pol = SensePolicy(
+                base_fps=float(base), max_fps=float(mx),
+                escalate_threshold=float(et) if et is not None else SensePolicy().escalate_threshold,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A goal whose sense compiles no plan, or whose cadence the one authority refuses, never
+            # raises the capture floor — but it is dropped LOUDLY. Silence here is what let a
+            # misconfigured concern run for a whole session looking like a quiet scene.
+            _log.warning(
+                "capture_plan_goal_dropped: goal=%s reason=%s", getattr(g, "id", "?"), exc
+            )
+            continue
         capture = max(capture, min(_BRIEF_CAPTURE_CAP_FPS, float(mx)))
         required = max(required, float(base))  # the window Nyquist we PROMISED to cover
-        et = cad.get("escalate_threshold")
-        pol = SensePolicy(
-            base_fps=float(base), max_fps=float(mx),
-            escalate_threshold=float(et) if et is not None else SensePolicy().escalate_threshold,
-        )
         if policy is None or pol.base_fps > policy.base_fps:
             policy = pol
     return capture, (SamplingController(policy) if policy is not None else None), required
@@ -4334,9 +4357,12 @@ async def _run_worker(
       This is how you supplement tier 0 with a cheap local model — a CLIP/embedding drift score, a pose
       or privacy classifier, an OCR-diff "the document changed" score — WITHOUT bypassing ``run()`` and
       driving :class:`~percept.edge.tier0.GatedWatchLoop` yourself, which was previously the only way.
-      They reach admission two ways: a goal whose condition compiles to ``gate_on="structural"`` /
-      ``"semantic"`` escalates on that channel against its own threshold, and a ``wake_policy`` fuses the
-      channels into one wake score. Both are ADMISSION signals — they decide *when to spend the cloud
+      They reach admission two ways, and a goal picks ONE of them with its ``gate_on``: a goal whose
+      condition compiles to ``gate_on="structural"`` / ``"semantic"`` escalates on that channel against
+      its own threshold, and a goal on ``gate_on="fused"`` escalates on the ``wake_policy`` noisy-OR
+      over every measured channel. A ``wake_policy`` ARMS the fusion; it does not override the goals
+      that did not ask for it (it used to replace every goal's channel and then report the admission as
+      that goal's own ``gate_on``). Both are ADMISSION signals — they decide *when to spend the cloud
       judge*; they do NOT deliver facts to the judge (see ``docs/admission/detectors.md``). Called
       once per frame on the gate frame, so keep them cheap, and keep them total — an adapter that raises
       propagates out of the gate and stops the watch (loudly, not silently). Both default ``None`` → the
@@ -4461,7 +4487,7 @@ async def _run_worker(
         require_duration_routes,
     )
     from percept.edge.detectors import DetectorBank
-    from percept.edge.tier0 import MotionGate, compile_watchspec
+    from percept.edge.tier0 import MotionGate, compile_watchspec, watchspec_kwargs
     from percept.rhythm import RhythmDrive
 
     # Convenience: `percept.run(source=..., goals=[...])` with no pre-built core. Build a Percept
@@ -4951,20 +4977,15 @@ async def _run_worker(
 
         def _compile_condition(goal):
             bound = runtime_bindings.get(goal.id)
-            kwargs = (
-                dict(bound[0].watchspec_kwargs)
-                if bound is not None
-                else {
-                    "threshold": settings.edge.motion_gate,
-                    "salience_stat": settings.edge.salience_stat,
-                    "ego_compensate": settings.edge.ego_compensate,
-                    "stat_thresholds": {
-                        "mean": settings.edge.motion_gate,
-                        "block_max": settings.edge.motion_gate_block_max,
-                        "p95": settings.edge.motion_gate_p95,
-                    },
-                }
-            )
+            # The deployment's salience configuration comes from ONE place (tier0.watchspec_kwargs),
+            # which the harness loop now reads too — the two used to build it independently and the
+            # harness built none of it, so the same settings produced two different eyes.
+            kwargs = watchspec_kwargs(settings)
+            if bound is not None:
+                # A bound WatchPlan OVERLAYS the deployment default; it does not replace it. A plan
+                # that names one field must not silently revert the other three to compile_watchspec's
+                # signature defaults (mean @ the bare threshold), which is a different eye entirely.
+                kwargs.update(bound[0].watchspec_kwargs)
             compiled = compile_watchspec([goal], **kwargs).conditions
             if len(compiled) != 1:
                 raise ValueError(
@@ -7501,52 +7522,21 @@ async def _run_worker(
                 if not decision.evidence_id:
                     raise RuntimeError("live VID tracking requires gate evidence identity")
                 final_causes = dict(zip(admitted_goal_ids, admitted_causes))
-                live_admissions: list[LiveInterestAdmission] = []
-                for outcome in decision.outcomes:
-                    final_cause = final_causes.get(outcome.goal_id)
-                    if final_cause is None:
-                        non_admission_reason = (
-                            outcome.non_admission_reason
-                            if not outcome.admitted
-                            else "not_admitted"
-                        )
-                        live_admissions.append(
-                            LiveInterestAdmission(
-                                watch_id=outcome.goal_id,
-                                admitted=False,
-                                cause=None,
-                                non_admission_reason=non_admission_reason,
-                                score=outcome.score,
-                                threshold=outcome.threshold,
-                                evidence_id=decision.evidence_id,
-                                admission_id=outcome.admission_id,
-                                detector_id=outcome.detector_id,
-                            )
-                        )
-                        continue
-                    admission_id = (
-                        outcome.admission_id
-                        if final_cause in ("motion", "structural", "semantic", "fixed")
-                        else f"runtime.admission.{final_cause}"
+                # ONE projection, shared with the offline replay adapter
+                # (percept.interest.Tier0MotionInterest). This block used to re-derive score,
+                # threshold and detector identity here; the replay side re-derived them from the
+                # reported mean gauge instead, and the two recorders disagreed about the same
+                # admitted unit. Do not rebuild a LiveInterestAdmission by hand at this seam.
+                live_admissions: list[LiveInterestAdmission] = [
+                    interest_admission_from_outcome(
+                        outcome,
+                        evidence_id=decision.evidence_id,
+                        # None => this Watch is not admitted on this unit, whatever the gate said:
+                        # the worker's coast/audio routes have already had their say above.
+                        cause=final_causes.get(outcome.goal_id),
                     )
-                    detector_id = (
-                        outcome.detector_id
-                        if final_cause in ("motion", "structural", "semantic", "fixed")
-                        else f"runtime.{final_cause}"
-                    )
-                    live_admissions.append(
-                        LiveInterestAdmission(
-                            watch_id=outcome.goal_id,
-                            admitted=True,
-                            cause=final_cause,
-                            non_admission_reason=None,
-                            score=outcome.score,
-                            threshold=outcome.threshold,
-                            evidence_id=decision.evidence_id,
-                            admission_id=admission_id,
-                            detector_id=detector_id,
-                        )
-                    )
+                    for outcome in decision.outcomes
+                ]
                 InterestSubscription._publish(
                     _interest_subscription,
                     _interest_tracker.observe(

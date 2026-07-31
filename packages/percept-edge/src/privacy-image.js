@@ -22,6 +22,7 @@
 // hangs can never leak a frame. Over-masking is acceptable; a leaked frame is not.
 
 import { PRIVACY_CATEGORIES } from "./privacy-constants.js";
+import { unitInterval } from "./numeric.js";
 
 /**
  * Documented adapter slot — the twin of SileroVadAdapter. It intentionally throws so `npm test` needs no
@@ -65,14 +66,19 @@ export async function runImageTier(adapter, frame, { budgetMs = 300, clock = nul
     // No model wired → fail closed. The app must supply an adapter to screen images at all.
     return failClosedImage();
   }
-  const now = clock || (() => Date.now());
-  const started = now();
   let timer = null;
-  const timeout = new Promise((resolve) => {
-    // Wall-clock timeout guards a hung model. setTimeout ordering is deterministic under the budget.
-    timer = setTimeout(() => resolve({ __timeout: true }), budgetMs);
-  });
   try {
+    // The clock is CALLER-supplied (PrivacyScreen threads its `clock` opt through), so a throwing
+    // clock is an app-side fault exactly like a throwing adapter — and it must land inside the
+    // fail-closed boundary. Read above the `try` it escaped the catch entirely and rejected the
+    // promise where this function's contract promises a verdict object, leaving whether the frame
+    // is held up to the caller's error handling instead of the tier's fail-closed rule.
+    const now = clock || (() => Date.now());
+    const started = now();
+    const timeout = new Promise((resolve) => {
+      // Wall-clock timeout guards a hung model. setTimeout ordering is deterministic under the budget.
+      timer = setTimeout(() => resolve({ __timeout: true }), budgetMs);
+    });
     const raw = await Promise.race([adapter.infer(frame), timeout]);
     if (raw && raw.__timeout) return failClosedImage();
     void started; // (latency is measured by the eval harness, not needed for the verdict)
@@ -101,7 +107,7 @@ function normalizeImageResult(raw) {
     const c = categories[i];
     const s = scores[i];
     if (!PRIVACY_CATEGORIES.has(c)) return failClosedImage(); // unknown label → don't trust the model
-    if (typeof s !== "number" || !Number.isFinite(s) || s < 0 || s > 1) return failClosedImage();
+    if (!unitInterval(s)) return failClosedImage();
     cats.push(c);
     if (s > score) score = s;
   }

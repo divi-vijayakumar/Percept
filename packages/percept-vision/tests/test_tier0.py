@@ -10,6 +10,10 @@ Covers, on fakes / fixtures (no keys, deterministic):
                               **region_hint** (motion outside the zone doesn't escalate; inside does).
   * the wired loop          — Tier0Signal reported up; vision calls only on escalation; **reduces
                               calls vs ungated** on a fixture stream (the proof point).
+  * the arithmetic edges    — the block partition's tiling identity and its degenerate grids; the
+                              integer nearest-rank percentile; the ego-residual search window; the
+                              cadence brake against a hostile clock; wake fusion overriding
+                              ``gate_on``; adapter outputs that are not real numbers.
 """
 
 from __future__ import annotations
@@ -294,24 +298,30 @@ class MotionGateTests(unittest.TestCase):
             else:
                 os.environ["PERCEPT_MOTION_GATE"] = prev
 
-    def test_wake_policy_can_escalate_on_audio_event(self):
+    def test_wake_policy_can_escalate_on_an_audio_reading(self):
+        # Rewritten: the goal now OPTS IN with gate_on="fused" (a wake policy no longer overrides
+        # every channel), and the microphone reading populates `audio` — `audio_event` names an
+        # acoustic-event CLASS with no registered detector, so it is no longer aliased onto energy.
         gate = MotionGate(
-            one_condition_spec(threshold=0.3),
+            one_condition_spec(threshold=0.3, gate_on="fused"),
             settings=self.cfg,
-            wake_policy=WakePolicy(weights={"audio_event": 1.0}),
+            wake_policy=WakePolicy(weights={"audio": 1.0}),
         )
         d = gate.evaluate(still(), ts=0.0, energy=0.5)
         self.assertTrue(d.escalate)
+        self.assertEqual(d.admission_causes, ("fused",))
 
     def test_wake_policy_can_escalate_on_extra_presence_signal(self):
+        # `presence` is an overlay channel the caller measures; `semantic` is the gate's own. They
+        # are two independent cues, unlike the `semantic`/`semantic_relevance` alias pair this used
+        # to fuse with itself.
         gate = MotionGate(
-            one_condition_spec(threshold=0.4),
+            one_condition_spec(threshold=0.4, gate_on="fused"),
             settings=self.cfg,
-            wake_policy=WakePolicy(weights={"presence": 0.8, "semantic_relevance": 0.8}),
+            wake_policy=WakePolicy(weights={"presence": 0.8, "semantic": 0.8}),
+            semantic_adapter=lambda f: 0.4,
         )
-        d = gate.evaluate(
-            still(), ts=0.0, signals={"presence": 0.4, "semantic_relevance": 0.4}
-        )
+        d = gate.evaluate(still(), ts=0.0, signals={"presence": 0.4})
         self.assertTrue(d.escalate)
 
     # -----------------------------------------------------------------------
@@ -346,13 +356,15 @@ class MotionGateTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-def one_condition_spec(*, threshold=0.2, region_hint=None, schedule=None) -> WatchSpec:
-    """A single-condition WatchSpec with optional region_hint and schedule."""
+def one_condition_spec(
+    *, threshold=0.2, region_hint=None, schedule=None, gate_on="motion"
+) -> WatchSpec:
+    """A single-condition WatchSpec with optional region_hint, schedule and gate_on."""
     return WatchSpec(
         conditions=[
             WatchCondition(
                 goal_id="g1", anchor_text="a cup is up", threshold=threshold,
-                region_hint=region_hint, schedule=schedule,
+                region_hint=region_hint, schedule=schedule, gate_on=gate_on,
             )
         ]
     )
@@ -707,7 +719,11 @@ class SalienceModeTests(unittest.TestCase):
                 px[r * W + c] = 255
         cur = Frame(w=W, h=H, pixels=tuple(px))
         roi = Box(x=0.0, y=0.0, w=0.5, h=0.5)  # top-left quadrant; the patch is bottom-right
-        self.assertEqual(motion_score(still(), cur, stat="block_max", region=roi), 0.0)
+        with warnings.catch_warnings():
+            # 4x4 px under the 8x6 grid clamps (see BlockPartitionBoundaryTests) — expected here,
+            # and it does not change the answer: the max over 1-px blocks is a max either way.
+            warnings.simplefilter("ignore", DegenerateBlockPartitionWarning)
+            self.assertEqual(motion_score(still(), cur, stat="block_max", region=roi), 0.0)
 
     def test_unknown_stat_raises(self):
         with self.assertRaises(ValueError):
@@ -841,6 +857,993 @@ class CompileWatchSpecModeTests(unittest.TestCase):
         g = watch_goal("b", "block goal", salience_stat="block_max")
         c = compile_watchspec([g], threshold=0.10).conditions[0]  # no stat_thresholds passed
         self.assertAlmostEqual(c.threshold, 0.10)  # unchanged -> back-compat
+
+
+# ---------------------------------------------------------------------------
+# Boundary coverage: the localized-salience math and the gate's admission
+# arithmetic. Everything below is stdlib-only — no media, no model, no clock.
+# ---------------------------------------------------------------------------
+
+import math  # noqa: E402
+import warnings  # noqa: E402
+from dataclasses import replace  # noqa: E402
+
+from percept.harness.detectors import wake_score  # noqa: E402
+from percept.harness.tier0 import (  # noqa: E402
+    DEGENERATE_PARTITION_REASON,
+    MOTION_BIAS_KEY,
+    REGION_HINT_KEY,
+    UNSUPPORTED_DETECTOR_HEALTH_KIND,
+    UNSUPPORTED_DETECTOR_REASON,
+    DegenerateBlockPartitionWarning,
+    StreamTimeRewindWarning,
+    UnsupportedEdgeCapabilityWarning,
+    UnsupportedMotionBiasError,
+    _block_scores,
+    _coerce_cadence,
+    _nearest_rank_p95,
+    _partition,
+    _region_bounds,
+    cheap_signals,
+    salience_stats,
+    watchspec_kwargs,
+)
+
+#: The block partition motion_score / salience_stats default to. It is hardcoded at the call site
+#: and has no configuration surface, so a test is the only place its consequences are stated.
+GRID = (8, 6)
+#: The shipped tier-0 gate raster (percept/runtime/source.py) — every live frame is resized to it
+#: before any of this arithmetic runs, so it is the raster these boundaries actually matter at.
+GATE_W, GATE_H = 48, 36
+
+
+class BlockPartitionBoundaryTests(unittest.TestCase):
+    """The block partition itself: the tiling identity, degenerate grids, sub-grid active areas."""
+
+    def test_blocks_tile_the_active_area_with_no_gap_and_no_overlap(self):
+        # The one-pass tri-statistic derives its mean from the block numerators; that is only the
+        # whole-area mean if the blocks partition the area EXACTLY. Recompute the floor-of-product
+        # boundaries independently and prove every pixel is claimed exactly once.
+        prev, cur = still(), motion(40)
+        scores, total, area, degenerate = _block_scores(prev, cur, None, GRID)
+        self.assertEqual(len(scores), GRID[0] * GRID[1])
+        self.assertEqual(area, W * H)
+        self.assertFalse(degenerate)  # 8x8 px carries an 8x6 grid; nothing was clamped
+        claimed: set[tuple[int, int]] = set()
+        covered = 0
+        for j in range(GRID[1]):
+            by0, by1 = (j * H) // GRID[1], ((j + 1) * H) // GRID[1]
+            for i in range(GRID[0]):
+                bx0, bx1 = (i * W) // GRID[0], ((i + 1) * W) // GRID[0]
+                covered += (bx1 - bx0) * (by1 - by0)
+                for y in range(by0, by1):
+                    for x in range(bx0, bx1):
+                        self.assertNotIn((x, y), claimed)  # no overlap
+                        claimed.add((x, y))
+        self.assertEqual(covered, W * H)  # no gap
+        self.assertEqual(len(claimed), W * H)
+        # ...so summing the integer numerators over the integer area IS motion_score's own mean.
+        self.assertEqual(total / (area * 255.0), motion_score(prev, cur))
+        self.assertEqual(salience_stats(prev, cur)["mean"], motion_score(prev, cur))
+
+    def test_a_uniform_flip_makes_every_statistic_the_same_number(self):
+        # When every block is equally active there is nothing for a localizing statistic to find:
+        # block_max and p95 collapse onto the mean exactly, not approximately.
+        black, white = gray_frame(W, H, 0), gray_frame(W, H, 255)
+        self.assertEqual(salience_stats(black, white), {"mean": 1.0, "block_max": 1.0, "p95": 1.0})
+        self.assertEqual(motion_score(black, white, stat="block_max"), motion_score(black, white))
+        self.assertEqual(motion_score(black, white, stat="p95"), motion_score(black, white))
+
+    def test_a_zero_or_negative_grid_dimension_is_refused_not_answered(self):
+        # REWRITTEN (was test_a_zero_or_negative_grid_dimension_reads_zero_on_a_total_flip, which
+        # asserted `([], 0, 0)` and 0.0 everywhere — it encoded the defect as the contract).
+        # A non-positive grid describes no partition at all, so there is no salience it could
+        # plausibly be; answering 0.0 called a frame that inverted end to end "still". It now
+        # raises, exactly as an unknown `stat` name and a non-positive Frame dimension do.
+        black, white = gray_frame(W, H, 0), gray_frame(W, H, 255)
+        self.assertEqual(motion_score(black, white), 1.0)
+        for grid in ((0, 6), (8, 0), (-1, 6), (8, -6), (0, 0)):
+            with self.subTest(block_grid=grid):
+                for call in (
+                    lambda: _block_scores(black, white, None, grid),
+                    lambda: motion_score(black, white, stat="block_max", block_grid=grid),
+                    lambda: motion_score(black, white, stat="p95", block_grid=grid),
+                    lambda: salience_stats(black, white, block_grid=grid),
+                ):
+                    with self.assertRaises(ValueError) as caught:
+                        call()
+                    self.assertIn("block_grid dims must be positive", str(caught.exception))
+                # ...and the `mean` path never reads block_grid, on either runtime, so it is
+                # unaffected by a grid it does not consult.
+                self.assertEqual(motion_score(black, white, block_grid=grid), 1.0)
+
+    def test_the_two_guard_rules_are_not_the_same_rule(self):
+        # `_partition` owns both, and they must not collapse into each other: an IMPOSSIBLE grid is
+        # refused, a grid merely FINER THAN THE AREA is clamped and flagged. A 6x4 region_hint is a
+        # valid authored input; a (0,6) grid is not an input at all.
+        with self.assertRaises(ValueError):
+            _partition(0, 0, 48, 36, 0, 6)
+        self.assertEqual(_partition(0, 0, 48, 36, 8, 6), (8, 6, False))  # fits -> untouched
+        self.assertEqual(_partition(0, 0, 6, 4, 8, 6), (6, 4, True))     # both dims clamp
+        self.assertEqual(_partition(0, 0, 4, 36, 8, 6), (4, 6, True))    # one dim clamps
+        self.assertEqual(_partition(0, 0, 8, 6, 8, 6), (8, 6, False))    # exactly on the boundary
+        self.assertEqual(_partition(0, 0, 7, 6, 8, 6), (7, 6, True))     # one px under it
+        self.assertEqual(_partition(5, 5, 5, 9, 8, 6), (0, 4, True))     # empty span -> no blocks
+
+    def test_an_area_smaller_than_the_grid_clamps_the_grid_instead_of_padding_it(self):
+        # REWRITTEN (was test_an_area_smaller_than_the_grid_degenerates_to_single_pixel_blocks,
+        # which asserted 48 blocks for a 12-pixel area and p95 == 0.0 — the defect as the contract).
+        # 4x3 px under an 8x6 grid now yields a 4x3 grid: 12 blocks, every one holding a real pixel.
+        prev = gray_frame(4, 3, 0)
+        px = [0] * 12
+        px[0] = 255
+        cur = Frame(w=4, h=3, pixels=tuple(px))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DegenerateBlockPartitionWarning)
+            scores, _total, area, degenerate = _block_scores(prev, cur, None, GRID)
+            self.assertEqual((len(scores), area), (12, 12))  # was (48, 12): 36 empty blocks
+            self.assertTrue(degenerate)
+            self.assertEqual(sum(1 for s in scores if s > 0.0), 1)
+            self.assertAlmostEqual(motion_score(prev, cur), 1 / 12, places=12)
+            # block_max is unchanged — the padding never touched a max.
+            self.assertEqual(motion_score(prev, cur, stat="block_max"), 1.0)
+            # p95 MOVES: 0.0 -> 1.0. Over 12 real blocks the nearest rank is 11, the top block; the
+            # 36 phantom 0.0 samples used to push the rank down to a block that did not exist.
+            self.assertEqual(motion_score(prev, cur, stat="p95"), 1.0)
+
+    def test_a_clamped_partition_is_reported_with_the_adr_reason_code(self):
+        # The clamp changes what the statistic MEANS (a p95 over 12 real blocks is not a p95 over 48
+        # blocks, 36 of them padding), so it is not allowed to be silent. ADR-002 §2's
+        # PLAN_UNOBSERVABLE is the code: a configuration failure, not a runtime one.
+        prev, cur = gray_frame(4, 3, 0), gray_frame(4, 3, 255)
+        for call in (
+            lambda: motion_score(prev, cur, stat="block_max"),
+            lambda: motion_score(prev, cur, stat="p95"),
+            lambda: salience_stats(prev, cur),
+        ):
+            with self.subTest(call=call):
+                with self.assertWarns(DegenerateBlockPartitionWarning) as caught:
+                    call()
+                self.assertIn(DEGENERATE_PARTITION_REASON, str(caught.warning))
+                self.assertEqual(DEGENERATE_PARTITION_REASON, "PLAN_UNOBSERVABLE")
+        # An area the grid fits is silent — the report tracks the clamp, not the block path.
+        big_prev, big_cur = gray_frame(GATE_W, GATE_H, 0), gray_frame(GATE_W, GATE_H, 255)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DegenerateBlockPartitionWarning)
+            self.assertEqual(motion_score(big_prev, big_cur, stat="p95"), 1.0)
+
+    def test_a_watch_out_zone_smaller_than_the_grid_clamps_the_same_way(self):
+        # REWRITTEN (was test_a_watch_out_zone_smaller_than_the_grid_degenerates_the_same_way).
+        # The same clamp is reachable from AUTHORED state at the shipped gate raster: a 10%-square
+        # region_hint is 6x4 px, narrower than the 8x6 grid in both dimensions.
+        zone = Box(0.1, 0.1, 0.1, 0.1)
+        x0, y0, x1, y1 = _region_bounds(zone, GATE_W, GATE_H)
+        self.assertEqual((x1 - x0, y1 - y0), (6, 4))
+        prev = gray_frame(GATE_W, GATE_H, 0)
+        px = [0] * (GATE_W * GATE_H)
+        px[y0 * GATE_W + x0] = 255  # exactly one pixel inside the zone moves
+        cur = Frame(w=GATE_W, h=GATE_H, pixels=tuple(px))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DegenerateBlockPartitionWarning)
+            scores, _total, area, degenerate = _block_scores(prev, cur, zone, GRID)
+            self.assertEqual((len(scores), area, degenerate), (24, 24, True))  # was 48 blocks
+            self.assertEqual(motion_score(prev, cur, region=zone, stat="block_max"), 1.0)
+            # p95 still reads 0.0 here, and the empty blocks were never the reason: over the 24 REAL
+            # blocks the nearest rank is 22, and 23 of the 24 are 0.0. One active block out of 24 is
+            # 4% of the population — under the 5% a 95th percentile is defined to ignore. Clamping
+            # fixes the fictional population; it does not make p95 a one-block detector.
+            self.assertEqual(motion_score(prev, cur, region=zone, stat="p95"), 0.0)
+        # the identical pixel inside a zone the grid CAN tile is averaged over its 3x3-px block
+        wide = Box(0.0, 0.0, 0.5, 0.5)
+        self.assertEqual(_region_bounds(wide, GATE_W, GATE_H), (0, 0, 24, 18))
+        self.assertAlmostEqual(
+            motion_score(prev, cur, region=wide, stat="block_max"), 1 / 9, places=12
+        )
+
+    def test_clamping_does_not_disarm_the_single_pixel_block_max_hair_trigger(self):
+        # PARKED, stated here so it is not mistaken for fixed. block_max over 1-px blocks reads one
+        # pixel at full scale, and 51/255 == 0.20 clears the shipped block_max cutoff EXACTLY. The
+        # clamp changes how many blocks exist, not how small the smallest one is, so the trigger
+        # survives it. Disarming it needs a MINIMUM BLOCK AREA, which moves the calibrated 0.20
+        # cutoff onto a different value scale — a re-measurement, not a code change.
+        prev = gray_frame(4, 3, 0)
+        px = [0] * 12
+        px[0] = 51  # one pixel, one fifth of full scale
+        cur = Frame(w=4, h=3, pixels=tuple(px))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DegenerateBlockPartitionWarning)
+            self.assertEqual(motion_score(prev, cur, stat="block_max"), 0.20)
+        self.assertEqual(load_settings().edge.motion_gate_block_max, 0.20)
+
+    def test_block_max_admits_at_exactly_its_threshold(self):
+        # 8x8 under an 8x6 grid makes the top-left block exactly 1x1 px, so a 51/255 step is a
+        # block_max of exactly 0.20 — the shipped cutoff, hit dead on.
+        prev = still()
+        px = [0] * (W * H)
+        px[0] = 51
+        cur = Frame(w=W, h=H, pixels=tuple(px))
+        self.assertEqual(motion_score(prev, cur, stat="block_max"), 0.2)
+        cfg = load_settings()
+        self.assertEqual(cfg.edge.motion_gate_block_max, 0.20)
+        gate = MotionGate(
+            WatchSpec(conditions=[WatchCondition(
+                goal_id="g", anchor_text="x", threshold=0.20, salience_stat="block_max",
+            )]),
+            settings=cfg,
+        )
+        gate.evaluate(prev, ts=0.0)
+        self.assertTrue(gate.evaluate(cur, ts=1.0).escalate)  # comparison is >=, so equality admits
+
+
+class NearestRankPercentileTests(unittest.TestCase):
+    """The integer nearest-rank percentile, called directly — the shape of its rank is the point."""
+
+    def test_an_empty_score_list_is_zero(self):
+        self.assertEqual(_nearest_rank_p95([]), 0.0)
+
+    def test_it_collapses_onto_the_maximum_for_nineteen_or_fewer_blocks(self):
+        # ceil(0.95n) == n while 0.05n < 1, i.e. for n <= 19 — at which point the "noise-robust
+        # cousin of block_max" IS block_max and contributes no robustness at all.
+        for n in range(1, 20):
+            with self.subTest(n=n):
+                scores = [i / 100 for i in range(n)]
+                self.assertEqual(_nearest_rank_p95(scores), max(scores))
+        twenty = [i / 100 for i in range(20)]
+        self.assertNotEqual(_nearest_rank_p95(twenty), max(twenty))  # 20 is already past the edge
+        self.assertEqual(_nearest_rank_p95(twenty), sorted(twenty)[18])
+
+    def test_a_small_block_grid_makes_p95_identical_to_block_max(self):
+        # The collapse reached through the public entry point: 4x4 = 16 blocks is under the edge.
+        prev, cur = still(), _localized()
+        p95 = motion_score(prev, cur, stat="p95", block_grid=(4, 4))
+        self.assertGreater(p95, 0.0)
+        self.assertEqual(p95, motion_score(prev, cur, stat="block_max", block_grid=(4, 4)))
+
+    def test_the_shipped_forty_eight_block_grid_ranks_the_third_largest_block(self):
+        scores = [i / 100 for i in range(48)]
+        self.assertEqual(_nearest_rank_p95(scores), sorted(scores)[45])
+        self.assertEqual(_nearest_rank_p95(scores), sorted(scores)[-3])
+
+    def test_p95_reports_nothing_until_three_blocks_are_active(self):
+        # The consequence of ranking third-from-top over a 48-block grid: a localized event that
+        # lights one or two blocks — the exact case block_max exists for — scores exactly 0.0.
+        for active in (1, 2):
+            with self.subTest(active=active):
+                self.assertEqual(_nearest_rank_p95([0.0] * (48 - active) + [0.9] * active), 0.0)
+        self.assertEqual(_nearest_rank_p95([0.0] * 45 + [0.9] * 3), 0.9)
+
+    def test_the_index_clamps_are_unreachable_for_any_non_empty_input(self):
+        # Both guard branches are dead code for every n >= 1: the rank is already in range.
+        for n in range(1, 201):
+            idx = (95 * n + 99) // 100 - 1
+            self.assertGreaterEqual(idx, 0)
+            self.assertLessEqual(idx, n - 1)
+            scores = [i / 1000 for i in range(n)]
+            self.assertEqual(_nearest_rank_p95(scores), sorted(scores)[idx])
+
+    def test_ties_return_the_tied_value(self):
+        self.assertEqual(_nearest_rank_p95([0.4] * 48), 0.4)
+        self.assertEqual(_nearest_rank_p95([0.4, 0.4, 0.4, 0.9]), 0.9)  # n=4 -> rank 4 -> the max
+        self.assertEqual(_nearest_rank_p95([0.0] * 47 + [0.4]), 0.0)
+
+
+def _texture(w: int, h: int, seed: int = 20260731) -> list[int]:
+    """A deterministic high-entropy luma field: only the RIGHT shift explains a pan of it."""
+    px: list[int] = []
+    s = seed
+    for _ in range(w * h):
+        s = (1103515245 * s + 12345) % (2 ** 31)
+        px.append(s % 256)
+    return px
+
+
+def _panned(px: list[int], w: int, h: int, dx: int) -> list[int]:
+    """``px`` shifted right by ``dx`` columns; the vacated columns are filled with 0."""
+    out = [0] * (w * h)
+    for y in range(h):
+        for x in range(dx, w):
+            out[y * w + x] = px[y * w + x - dx]
+    return out
+
+
+class EgoResidualBoundaryTests(unittest.TestCase):
+    """The ego-motion residual's search window, its unreachable branch, and what it discards."""
+
+    def setUp(self):
+        self.w = self.h = 16
+        self.base = _texture(self.w, self.h)
+        self.prev = Frame(w=self.w, h=self.h, pixels=tuple(self.base))
+        self.pan4 = Frame(w=self.w, h=self.h, pixels=tuple(_panned(self.base, self.w, self.h, 4)))
+        self.pan5 = Frame(w=self.w, h=self.h, pixels=tuple(_panned(self.base, self.w, self.h, 5)))
+
+    def test_a_pan_of_exactly_k_pixels_is_compensated_and_k_plus_one_is_not(self):
+        # The default k=4 is a hard cliff, not a taper: 4 px of camera motion is explained away to
+        # exactly 0.0, and 5 px is indistinguishable from the scene changing.
+        self.assertGreater(motion_score(self.prev, self.pan4), 0.10)  # both look like heavy motion
+        self.assertGreater(motion_score(self.prev, self.pan5), 0.10)
+        self.assertEqual(ego_residual_score(self.prev, self.pan4, k=4), 0.0)
+        self.assertGreater(ego_residual_score(self.prev, self.pan5, k=4), 0.30)
+        self.assertEqual(ego_residual_score(self.prev, self.pan5, k=5), 0.0)  # widen k, and it is
+
+    def test_k_zero_is_the_plain_mean_and_a_negative_k_clamps_onto_it(self):
+        plain = motion_score(self.prev, self.pan4)
+        self.assertEqual(ego_residual_score(self.prev, self.pan4, k=0), plain)
+        self.assertEqual(ego_residual_score(self.prev, self.pan4, k=-5), plain)
+        self.assertLess(ego_residual_score(self.prev, self.pan4, k=4), plain)  # the search pays off
+
+    def test_the_residual_never_exceeds_the_full_frame_mean(self):
+        flip = gray_frame(self.w, self.h, 255)
+        for name, cur in (("pan4", self.pan4), ("pan5", self.pan5), ("flip", flip)):
+            for k in (0, 1, 4, 7):
+                with self.subTest(fixture=name, k=k):
+                    self.assertLessEqual(
+                        ego_residual_score(self.prev, cur, k=k),
+                        motion_score(self.prev, cur) + 1e-12,
+                    )
+
+    def test_a_frame_narrower_than_the_search_window_still_scores_its_zero_shift(self):
+        # A 3x3 frame is smaller than the 2k+1 = 9 px window, so every |shift| >= 3 is skipped —
+        # but the (0,0) shift is ALWAYS in the search, so the result is the plain mean. The
+        # "no candidate shift" fallback is unreachable: a Frame cannot have a zero dimension.
+        prev, cur = gray_frame(3, 3, 0), gray_frame(3, 3, 255)
+        self.assertEqual(ego_residual_score(prev, cur, k=4), 1.0)
+        self.assertEqual(ego_residual_score(prev, cur, k=4), motion_score(prev, cur))
+        one = (gray_frame(1, 1, 0), gray_frame(1, 1, 255))
+        self.assertEqual(ego_residual_score(*one, k=4), 1.0)
+        with self.assertRaises(ValueError):
+            Frame(w=0, h=3, pixels=())
+
+    def _ego_localized_pair(self) -> tuple[Frame, Frame]:
+        """A texture background plus a 2x2 patch that fills one whole block at full scale."""
+        prev_px, cur_px = list(self.base), list(self.base)
+        for y in range(2):
+            for x in range(2):
+                prev_px[y * self.w + x] = 0
+                cur_px[y * self.w + x] = 255
+        return (
+            Frame(w=self.w, h=self.h, pixels=tuple(prev_px)),
+            Frame(w=self.w, h=self.h, pixels=tuple(cur_px)),
+        )
+
+    def test_an_ego_goal_falls_back_to_the_whole_frame_and_loses_its_localization(self):
+        # Documented deferral, pinned so a future composition change is a deliberate one: the ego
+        # branch returns before the localized branch, so an ego goal cannot also be a BLOCK goal.
+        # (Ego + REGION is a different composition and now works — see the test below. Region is
+        # not block_max, and only the block statistic stays deferred.)
+        prev, cur = self._ego_localized_pair()
+        self.assertEqual(motion_score(prev, cur, stat="block_max"), 1.0)
+        self.assertAlmostEqual(ego_residual_score(prev, cur), 0.015625, places=12)
+
+        def _gate(**overrides):
+            spec = WatchSpec(conditions=[WatchCondition(
+                goal_id="g", anchor_text="x", threshold=0.20, **overrides,
+            )])
+            gate = MotionGate(spec, settings=load_settings())
+            gate.evaluate(prev, ts=0.0)
+            return gate.evaluate(cur, ts=1.0).escalate
+
+        self.assertTrue(_gate(salience_stat="block_max"))
+        self.assertFalse(_gate(salience_stat="block_max", ego_compensate=True))
+
+    def _out_of_zone_pair(self) -> tuple[Frame, Frame]:
+        """A 6x6 patch in the BOTTOM-RIGHT quadrant — outside a top-left watch-out zone."""
+        prev_px, cur_px = list(self.base), list(self.base)
+        for y in range(10, 16):
+            for x in range(10, 16):
+                prev_px[y * self.w + x] = 0
+                cur_px[y * self.w + x] = 255
+        return (
+            Frame(w=self.w, h=self.h, pixels=tuple(prev_px)),
+            Frame(w=self.w, h=self.h, pixels=tuple(cur_px)),
+        )
+
+    def test_an_ego_goal_still_honours_its_watch_out_zone(self):
+        # Was xfail(strict) — an ego goal returned BEFORE the region branch, so `ego_residual_score`
+        # had no region parameter at all and the residual was always whole-frame while the condition
+        # still carried and still reported its zone. A watch-out zone is a promise that movement
+        # elsewhere is ignored; turning on ego compensation must not quietly revoke it.
+        prev, cur = self._out_of_zone_pair()
+        zone = Box(0.0, 0.0, 0.5, 0.5)  # top-left; every changed pixel is bottom-right
+        self.assertEqual(motion_score(prev, cur, region=zone), 0.0)  # nothing happened in-zone
+        self.assertGreater(ego_residual_score(prev, cur), 0.0)       # ...but plenty happened
+        self.assertEqual(ego_residual_score(prev, cur, region=zone), 0.0)
+        spec = WatchSpec(conditions=[WatchCondition(
+            goal_id="g", anchor_text="x", threshold=0.10,
+            region_hint=zone, ego_compensate=True,
+        )])
+        gate = MotionGate(spec, settings=load_settings())
+        gate.evaluate(prev, ts=0.0)
+        self.assertFalse(gate.evaluate(cur, ts=1.0).escalate)
+
+    def test_the_zone_masks_what_is_measured_and_never_what_is_estimated(self):
+        # The composition rule, stated as a test. A pan is a whole-frame property: the shift search
+        # stays global, so a zone too small or too flat to identify a translation still gets the
+        # right one. If the zone picked its own shift, a uniform zone would find a bogus (dx,dy).
+        pan = self.pan4
+        for zone in (Box(0.0, 0.0, 0.25, 0.25), Box(0.5, 0.5, 0.5, 0.5), Box(0.0, 0.0, 1.0, 1.0)):
+            with self.subTest(zone=zone):
+                # A pure pan is explained away in every zone, because the global estimate is right.
+                self.assertEqual(ego_residual_score(self.prev, pan, k=4, region=zone), 0.0)
+        # And a zone still masks: the in-zone residual of a localized subject is 0 outside it.
+        prev, cur = self._out_of_zone_pair()
+        whole = ego_residual_score(prev, cur)
+        self.assertEqual(ego_residual_score(prev, cur, region=Box(0.0, 0.0, 1.0, 1.0)), whole)
+        self.assertEqual(ego_residual_score(prev, cur, region=Box(0.0, 0.0, 0.5, 0.5)), 0.0)
+        self.assertGreater(ego_residual_score(prev, cur, region=Box(0.5, 0.5, 0.5, 0.5)), whole)
+
+    def test_the_numpy_and_stdlib_region_residuals_are_the_same_double(self):
+        # The module claims numpy is "an OPTIONAL fast path ... the stdlib path is the source of
+        # truth", and the region mask added a SECOND pair of pixel loops that has to honour it. The
+        # numpy branch slices with `my0 - dy`, which silently WRAPS if it ever goes negative, so
+        # this walks shifts of both signs against a zone on each edge. `assertEqual` on floats, not
+        # almost-equal: an integer sum over an integer denominator has no rounding to forgive.
+        import percept.harness.tier0 as t0
+
+        prev, cur = self._out_of_zone_pair()
+        zones = [
+            Box(0.0, 0.0, 0.5, 0.5), Box(0.5, 0.5, 0.5, 0.5), Box(0.25, 0.25, 0.5, 0.5),
+            Box(0.0, 0.0, 1.0, 1.0), Box(0.9, 0.0, 0.2, 1.0), None,
+        ]
+        with_numpy = [
+            [ego_residual_score(prev, cur, k=k, region=z) for z in zones] for k in (0, 1, 4, 9)
+        ]
+        saved = t0._np
+        try:
+            t0._np = None
+            without = [
+                [ego_residual_score(prev, cur, k=k, region=z) for z in zones] for k in (0, 1, 4, 9)
+            ]
+        finally:
+            t0._np = saved
+        self.assertIsNotNone(saved, "the fast path was not installed, so this proves nothing")
+        self.assertEqual(with_numpy, without)
+        self.assertGreater(max(max(row) for row in with_numpy), 0.0)  # not all-zero by accident
+
+    def test_a_zone_the_winning_shift_shifts_off_the_frame_scores_zero(self):
+        # region ∩ overlap can be empty: a 1-px-wide zone on the left edge, against a shift that
+        # moves the overlap right past it. Nothing in-zone survives the shift, so there is nothing
+        # to measure — 0.0, the same answer `_motion_score_region` gives an empty span.
+        prev, cur = gray_frame(8, 8, 0), gray_frame(8, 8, 255)
+        sliver = Box(0.0, 0.0, 0.05, 1.0)  # x0=0, x1=round(0.4)=0 -> empty span
+        self.assertEqual(_region_bounds(sliver, 8, 8), (0, 0, 0, 8))
+        self.assertEqual(ego_residual_score(prev, cur, k=2, region=sliver), 0.0)
+        # An off-frame zone is the same permanent never-fire it is on the non-ego path.
+        off = Box(2.0, 0.0, 0.5, 1.0)
+        self.assertEqual(motion_score(prev, cur, region=off), 0.0)
+        self.assertEqual(ego_residual_score(prev, cur, k=2, region=off), 0.0)
+
+
+class GatedLoopSettingsThreadingTests(unittest.TestCase):
+    """What the deployment configured, versus what the wired loop actually compiled."""
+
+    def _settings(self):
+        cfg = load_settings()
+        return replace(cfg, edge=replace(
+            cfg.edge, salience_stat="block_max", ego_compensate=False,
+            motion_gate=0.10, motion_gate_block_max=0.20,
+        ))
+
+    def _core_and_goal(self):
+        core = Percept.create()  # offline fakes
+        goal = watch_goal("g1", "a cup is up")
+        core.add_goal(goal)
+        return core, goal
+
+    def test_the_shipped_deployment_default_is_the_localized_statistic(self):
+        # The premise of the two expectations below: the product ships block_max at 0.20, not mean.
+        edge = load_settings().edge
+        self.assertEqual(edge.salience_stat, "block_max")
+        self.assertEqual(edge.motion_gate_block_max, 0.20)
+        # ...and compile_watchspec honours it when it is actually passed.
+        spec = compile_watchspec(
+            [watch_goal("g1", "a cup is up")],
+            threshold=edge.motion_gate,
+            salience_stat=edge.salience_stat,
+            stat_thresholds={"mean": edge.motion_gate, "block_max": edge.motion_gate_block_max},
+        )
+        self.assertEqual(spec.conditions[0].salience_stat, "block_max")
+        self.assertAlmostEqual(spec.conditions[0].threshold, 0.20)
+
+    def test_the_loop_compiles_the_deployment_salience_mode_into_its_spec(self):
+        core, goal = self._core_and_goal()
+        loop = GatedWatchLoop(core, [goal], settings=self._settings())
+        condition = loop.spec.conditions[0]
+        self.assertEqual(condition.salience_stat, "block_max")
+        self.assertAlmostEqual(condition.threshold, 0.20)
+
+    def test_the_loop_and_the_worker_read_one_shared_settings_reader(self):
+        # The defect was two call sites building the same four kwargs independently, and the loop
+        # building none of them. There is now exactly one function that turns settings into them.
+        cfg = self._settings()
+        self.assertEqual(
+            watchspec_kwargs(cfg),
+            {
+                "threshold": 0.10,
+                "salience_stat": "block_max",
+                "ego_compensate": False,
+                "stat_thresholds": {
+                    "mean": 0.10, "block_max": 0.20, "p95": cfg.edge.motion_gate_p95,
+                },
+            },
+        )
+        core, goal = self._core_and_goal()
+        loop = GatedWatchLoop(core, [goal], settings=cfg)
+        self.assertEqual(loop.spec.conditions[0].salience_stat, cfg.edge.salience_stat)
+
+    def test_an_explicit_threshold_overrides_the_whole_per_stat_table(self):
+        # ...and an explicit threshold is still a cutoff, not a mean-scale cutoff: the per-stat
+        # table must not shadow what the caller asked for, while the configured STAT is untouched.
+        core, goal = self._core_and_goal()
+        loop = GatedWatchLoop(core, [goal], threshold=0.55, settings=self._settings())
+        condition = loop.spec.conditions[0]
+        self.assertAlmostEqual(condition.threshold, 0.55)
+        self.assertEqual(condition.salience_stat, "block_max")
+
+    def test_the_loop_admits_the_localized_event_its_deployment_default_is_tuned_for(self):
+        # The user-visible half of the same defect: a corner event, on a still scene, at the
+        # deployment's own configured mode. block_max scores it 1.0 against a 0.20 cutoff.
+        core, goal = self._core_and_goal()
+        self.assertEqual(motion_score(still(), _localized(), stat="block_max"), 1.0)
+        loop = GatedWatchLoop(core, [goal], settings=self._settings())
+        report = asyncio.run(loop.run([still(), _localized(), still(), _localized()]))
+        self.assertGreater(report.escalations, 0)
+
+    def test_a_detector_the_edge_cannot_run_is_reported_on_all_three_channels(self):
+        # `capabilities=None` and `capabilities=[]` are opposite instructions and only one of them
+        # used to be audible: an edge whose handshake advertised nothing compiled a condition that
+        # admits frames and buys judge calls but can never emit a boundary, silently.
+        core = Percept.create()
+        goal = watch_goal("reps", "count squats")
+        goal.state["detectors"] = ["motion-periodicity"]
+        core.add_goal(goal)
+        health: list = []
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with self.assertLogs("percept.harness.tier0", level="WARNING") as logs:
+                loop = GatedWatchLoop(
+                    core, [goal], settings=self._settings(),
+                    edge_capabilities=[], on_health=health.append,
+                )
+        dropped = [w for w in caught if issubclass(w.category, UnsupportedEdgeCapabilityWarning)]
+        self.assertEqual(len(dropped), 1)                                     # 1. the warning
+        self.assertTrue(any("motion-periodicity" in line for line in logs.output), logs.output)
+        events = [e for e in health if e.kind == UNSUPPORTED_DETECTOR_HEALTH_KIND]  # 3. the health
+        self.assertEqual([e.data["goal_id"] for e in events], ["reps"])
+        self.assertEqual(events[0].data["dropped_detectors"], ["motion-periodicity"])
+        self.assertEqual(events[0].data["reason"], UNSUPPORTED_DETECTOR_REASON)  # ADR-002 §2
+        self.assertEqual(events[0].data["driver"], "GatedWatchLoop")
+        # ...and the same drop as data, without a new field on the WatchSpec wire contract.
+        self.assertEqual(loop.unsupported_detectors, [("reps", ["motion-periodicity"])])
+        self.assertEqual(loop.spec.conditions[0].detectors, [])
+        self.assertFalse(hasattr(loop.spec, "unsupported"))
+
+    def test_the_in_process_edge_still_arms_every_detector_without_a_word(self):
+        core = Percept.create()
+        goal = watch_goal("reps", "count squats")
+        goal.state["detectors"] = ["motion-periodicity"]
+        core.add_goal(goal)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            loop = GatedWatchLoop(core, [goal], settings=self._settings())
+        self.assertEqual(caught, [])
+        self.assertEqual(loop.unsupported_detectors, [])
+        self.assertEqual(loop.spec.conditions[0].detectors, ["motion-periodicity"])
+
+
+class CompileWatchSpecFirewallTests(unittest.TestCase):
+    """Untrusted goal state: which hints are firewalled, and which one takes the compile down."""
+
+    def test_every_other_malformed_goal_state_hint_falls_back_to_a_default(self):
+        goal = watch_goal(
+            "g", "a cup is up",
+            **{SALIENCE_STAT_KEY: "bogus", EGO_COMPENSATE_KEY: "yes",
+               REGION_HINT_KEY: object(), "schedule": "office hours"},
+        )
+        condition = compile_watchspec([goal], threshold=0.1).conditions[0]
+        self.assertEqual(condition.salience_stat, "mean")
+        self.assertFalse(condition.ego_compensate)
+        self.assertIsNone(condition.region_hint)  # an unknown hint shape widens to the whole frame
+        self.assertIsNone(condition.schedule)     # ...and an unknown schedule arms the goal 24/7
+        self.assertEqual(condition.gate_on, "motion")
+        self.assertIsNone(condition.cadence_s)
+
+    def test_a_malformed_cadence_is_refused_loudly_before_the_silent_coercer_sees_it(self):
+        # The cadence coercer's quiet (None, "motion") fallback is NOT what a caller meets here: a
+        # duration-route preflight runs first and names the offending field. Every shape the
+        # coercer would have absorbed is a controlled refusal at this boundary.
+        for raw in (
+            "every now and then", [1, 2],
+            {"min_judge_interval": 0}, {"min_judge_interval": -2},
+            {"min_judge_interval": "2"}, {"min_judge_interval": float("nan")},
+            {"min_judge_interval": float("inf")}, {"min_judge_interval": True},
+            {"gate_on": "fixed"}, {"min_judge_interval": 2, "gate_on": "bogus"},
+        ):
+            with self.subTest(cadence=repr(raw)):
+                with self.assertRaises(UnsupportedDurationRouteError):
+                    compile_watchspec(
+                        [watch_goal("g", "a cup is up", cadence=raw)], threshold=0.1
+                    )
+        # the well-formed shape still compiles, and an EMPTY mapping reads as "no cadence authored"
+        ok = compile_watchspec(
+            [watch_goal("g", "a cup is up", cadence={"min_judge_interval": 2.0})], threshold=0.1
+        ).conditions[0]
+        self.assertEqual((ok.cadence_s, ok.gate_on), (2.0, "motion"))
+        empty = compile_watchspec(
+            [watch_goal("g", "a cup is up", cadence={})], threshold=0.1
+        ).conditions[0]
+        self.assertEqual((empty.cadence_s, empty.gate_on), (None, "motion"))
+
+    def test_a_non_numeric_motion_bias_is_refused_by_name_and_takes_the_batch_with_it(self):
+        # Rewritten: this used to pin `assertRaises(ValueError)` / `assertRaises(TypeError)` — i.e.
+        # whatever bare stdlib error `float()` happened to raise, naming neither the goal nor the
+        # field. Aborting the batch is NOT the defect (the module's own precedent,
+        # require_duration_routes, refuses an unusable authored value exactly this loudly); the
+        # unattributed error was. The bias now has a coercer in the _coerce_* family, and its
+        # refusal is typed and says which goal carried what.
+        healthy = watch_goal("healthy", "a cup is up")
+        noisy = watch_goal("noisy", "a dog is barking", **{MOTION_BIAS_KEY: "high"})
+        self.assertEqual(len(compile_watchspec([healthy], threshold=0.1).conditions), 1)
+        for order in ([healthy, noisy], [noisy, healthy]):
+            with self.subTest(order=[g.id for g in order]):
+                with self.assertRaises(UnsupportedMotionBiasError) as caught:
+                    compile_watchspec(order, threshold=0.1)
+                self.assertEqual(caught.exception.goal_id, "noisy")
+                self.assertIsInstance(caught.exception, ValueError)  # still a ValueError
+                rendered = str(caught.exception)
+                self.assertIn("noisy", rendered)          # WHICH goal
+                self.assertIn(MOTION_BIAS_KEY, rendered)  # ...and WHICH field
+        for bad in (float("nan"), float("inf"), [0.1]):
+            with self.subTest(bias=repr(bad)):
+                with self.assertRaises(UnsupportedMotionBiasError):
+                    compile_watchspec(
+                        [healthy, watch_goal("bad", "x", **{MOTION_BIAS_KEY: bad})], threshold=0.1
+                    )
+
+    def test_an_explicitly_null_motion_bias_reads_as_no_bias(self):
+        # Rewritten from a `assertRaises(TypeError)` pin. An explicit None is what every other
+        # _coerce_* in this module reads as "absent" (no region, no schedule, no cadence), and
+        # absent is exactly what an unset bias means. float(None) raising was an accident of the
+        # missing coercer, not a decision.
+        condition = compile_watchspec(
+            [watch_goal("none", "x", **{MOTION_BIAS_KEY: None})], threshold=0.1
+        ).conditions[0]
+        self.assertAlmostEqual(condition.threshold, 0.1)
+
+    def test_a_boolean_motion_bias_is_refused_instead_of_saturating_the_cutoff(self):
+        # Rewritten: this used to assert threshold == 1.0, encoding the defect as the contract.
+        # bool is an int, so True passed the old float() and silently biased the cutoff by a full
+        # point — clamped to 1.0, a Watch that admits NOTHING, EVER, reported as a successful
+        # compile. The loudest possible failure, delivered in total silence.
+        for flag in (True, False):
+            with self.subTest(bias=flag):
+                with self.assertRaises(UnsupportedMotionBiasError) as caught:
+                    compile_watchspec(
+                        [watch_goal("g", "x", **{MOTION_BIAS_KEY: flag})], threshold=0.1
+                    )
+                self.assertIn("bool", str(caught.exception))
+        # a real number still biases, and still clamps at the ceiling
+        self.assertAlmostEqual(
+            compile_watchspec(
+                [watch_goal("g", "x", **{MOTION_BIAS_KEY: 0.25})], threshold=0.1
+            ).conditions[0].threshold,
+            0.35,
+        )
+        self.assertEqual(
+            compile_watchspec(
+                [watch_goal("g", "x", **{MOTION_BIAS_KEY: 5.0})], threshold=0.1
+            ).conditions[0].threshold,
+            1.0,
+        )
+
+
+class CadenceClockBoundaryTests(unittest.TestCase):
+    """The cadence brake: its coercion table, its exact boundary, and a hostile timestamp."""
+
+    def setUp(self):
+        self.cfg = load_settings()
+
+    def _gate(self, cadence_s=2.0, gate_on="motion", threshold=0.10):
+        return MotionGate(
+            WatchSpec(conditions=[WatchCondition(
+                goal_id="g", anchor_text="x", threshold=threshold,
+                cadence_s=cadence_s, gate_on=gate_on,
+            )]),
+            settings=self.cfg,
+        )
+
+    def test_malformed_cadence_hints_fall_back_to_no_cap_on_motion(self):
+        # The coercer in isolation. Reached by a hand-built WatchCondition or a direct call — NOT
+        # by an authored goal, which the duration-route preflight refuses first (see
+        # CompileWatchSpecFirewallTests), so these fallbacks are quieter than they look.
+        table = [
+            (None, (None, "motion")),
+            ({}, (None, "motion")),
+            ({"min_judge_interval": 0}, (None, "motion")),       # non-positive is dropped
+            ({"min_judge_interval": -2.0}, (None, "motion")),
+            ({"min_judge_interval": "2"}, (None, "motion")),     # a numeric STRING is not numeric
+            ({"min_judge_interval": float("nan")}, (None, "motion")),
+            ({"min_judge_interval": float("inf")}, (float("inf"), "motion")),  # inf is admitted
+            ({"min_judge_interval": 2, "gate_on": "bogus"}, (2.0, "motion")),
+            ({"min_judge_interval": 2, "gate_on": "fixed"}, (2.0, "fixed")),
+            ({"gate_on": "fixed"}, (None, "motion")),            # fixed with no period is not fixed
+            ([1, 2], (None, "motion")),                          # not a mapping at all
+            ("2s", (None, "motion")),
+            ({"min_judge_interval": True}, (1.0, "motion")),     # bool is an int -> one second
+        ]
+        for raw, expected in table:
+            with self.subTest(raw=repr(raw)):
+                self.assertEqual(_coerce_cadence(raw), expected)
+
+    def test_an_interval_that_has_exactly_elapsed_admits(self):
+        gate = self._gate(2.0)
+        gate.evaluate(still(), ts=0.0)
+        self.assertTrue(gate.evaluate(motion(), ts=1.0).escalate)
+        self.assertFalse(gate.evaluate(still(), ts=2.9).escalate)  # 1.9 into a 2.0 s window
+        self.assertTrue(gate.evaluate(motion(), ts=3.0).escalate)  # exactly 2.0 -> admits, "<"
+
+    def test_the_first_frame_admits_at_any_timestamp(self):
+        # The brake is seeded at -inf, so there is no warm-up: a loop joined mid-stream spends on
+        # its first qualifying frame, whatever the wall time says.
+        gate = self._gate(2.0)
+        gate.evaluate(still(), ts=1.0e9)
+        self.assertTrue(gate.evaluate(motion(), ts=1.0e9 + 0.001).escalate)
+
+    def test_a_fixed_goal_spends_twice_inside_its_first_cadence_window(self):
+        gate = self._gate(2.0, gate_on="fixed")
+        fired = [t for t in (0.0, 0.5, 1.0, 1.5, 2.0) if gate.evaluate(still(), ts=t).escalate]
+        self.assertEqual(fired, [0.0, 2.0])  # two calls bought in the closed interval [0, 2]
+
+    def test_a_throttled_goal_is_only_diagnosable_through_the_opt_in_outcome(self):
+        gate = self._gate(2.0)
+        gate.evaluate(still(), ts=0.0)
+        self.assertTrue(gate.evaluate(motion(), ts=1.0).escalate)
+        plain = gate.evaluate(still(), ts=1.5)
+        self.assertFalse(plain.escalate)
+        self.assertEqual(plain.goal_ids, ())    # the default decision cannot say WHY it stayed shut
+        self.assertEqual(plain.outcomes, ())
+        typed = gate.evaluate(motion(), ts=1.6, include_outcomes=True)
+        self.assertEqual(
+            [o.non_admission_reason for o in typed.outcomes], ["cadence_limited"]
+        )
+
+    def test_a_clock_that_steps_backwards_does_not_mute_the_goal_forever(self):
+        gate = self._gate(2.0)
+        gate.evaluate(still(), ts=0.0)
+        self.assertTrue(gate.evaluate(motion(), ts=100.0).escalate)
+        # the source reconnects on a restarted timebase (or the host clock is corrected backwards)
+        frames = [still(), motion()] * 6
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fired = [gate.evaluate(f, ts=float(i)).escalate for i, f in enumerate(frames)]
+        self.assertTrue(any(fired))
+        # ...and the reset is TRACEABLE, not silent: one warning for the one discontinuity, and a
+        # counter a caller can read afterwards. A goal that spends again inside what looks like its
+        # cadence window must be attributable to this moment.
+        self.assertEqual(
+            [type(w.message) for w in caught], [StreamTimeRewindWarning]
+        )
+        self.assertEqual(gate.time_discontinuities, 1)
+
+    def test_a_declared_reset_is_not_reported_as_a_rewind(self):
+        # A new replay epoch / new source restarts the timeline deliberately; the caller already
+        # said so by calling reset(), so it must not also be warned about.
+        gate = self._gate(2.0)
+        gate.evaluate(still(), ts=100.0)
+        gate.reset()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            gate.evaluate(motion(), ts=0.0)
+        self.assertEqual(caught, [])
+        self.assertEqual(gate.time_discontinuities, 0)
+
+    def test_a_not_a_number_timestamp_does_not_buy_an_admission_the_cadence_forbids(self):
+        # Rewritten from an xfail pin that asserted `escalate is False`. The fix is stronger than
+        # the pin asked for: a NaN is refused at the boundary rather than quietly scored, because
+        # there is no admission decision to make on one. Both halves of the original defect are
+        # closed — the cadence is not bypassed, AND _last_escalate is never poisoned with a NaN.
+        gate = self._gate(2.0)
+        gate.evaluate(still(), ts=0.0)
+        self.assertTrue(gate.evaluate(motion(), ts=1.0).escalate)
+        for bad in (float("nan"), float("inf"), float("-inf"), None, "1.0", True):
+            with self.subTest(ts=repr(bad)):
+                with self.assertRaises(ValueError):
+                    gate.evaluate(still(), ts=bad)
+        # the brake is intact afterwards: 1.5 is still inside the 2.0 s window, 3.0 is not
+        self.assertFalse(gate.evaluate(still(), ts=1.5).escalate)
+        self.assertTrue(gate.evaluate(motion(), ts=3.0).escalate)
+
+    def test_an_external_wake_is_guarded_by_the_same_timeline_as_the_visual_path(self):
+        # admit_external carried the identical unguarded expression, so an audio wake could be
+        # muted (or could over-spend) by a route the visual path is protected against.
+        gate = self._gate(2.0)
+        self.assertEqual(gate.admit_external(["g"], ts=0.0), ("g",))
+        self.assertEqual(gate.admit_external(["g"], ts=1.0), ())  # inside the cadence window
+        with self.assertRaises(ValueError):
+            gate.admit_external(["g"], ts=float("nan"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(gate.admit_external(["g"], ts=0.5), ("g",))  # rewind -> brake cleared
+        self.assertEqual([type(w.message) for w in caught], [StreamTimeRewindWarning])
+
+    def test_two_readings_at_one_instant_are_a_duplicate_not_a_rewind(self):
+        # evaluate() and admit_external() share one timeline, and a visual frame and an external
+        # wake legitimately carry the SAME ts. That must not read as a discontinuity and drop the
+        # cadence brake for every goal.
+        gate = self._gate(2.0)
+        gate.evaluate(still(), ts=9.0)
+        self.assertTrue(gate.evaluate(motion(), ts=10.0).escalate)
+        self.assertEqual(gate.admit_external(["g"], ts=10.0), ())  # same instant, still throttled
+        self.assertEqual(gate.time_discontinuities, 0)
+
+
+class WakeFusionAndAdapterBoundaryTests(unittest.TestCase):
+    """What a wake policy does to gate_on, what one energy reading is worth, and non-numeric channels."""
+
+    def setUp(self):
+        self.cfg = load_settings()
+
+    def _spec(self, *, threshold=0.10, gate_on="motion", goal_ids=("g",)) -> WatchSpec:
+        return WatchSpec(conditions=[
+            WatchCondition(goal_id=gid, anchor_text="x", threshold=threshold, gate_on=gate_on)
+            for gid in goal_ids
+        ])
+
+    def test_a_semantic_goal_gates_on_its_own_channel_when_no_policy_is_present(self):
+        gate = MotionGate(
+            self._spec(gate_on="semantic"), settings=self.cfg, semantic_adapter=lambda f: 0.0
+        )
+        gate.evaluate(still(), ts=0.0)
+        self.assertFalse(gate.evaluate(gray_frame(W, H, 255), ts=1.0).escalate)
+
+    def test_a_semantic_goal_keeps_its_channel_when_a_wake_policy_is_present(self):
+        # Was a strict xfail (BUG-A-01-04). The `elif fused is not None` branch sat ABOVE the
+        # structural and semantic branches, so ANY non-None wake_policy replaced both for every goal
+        # in the spec — a semantic goal silently started gating on a noisy-OR over motion.
+        gate = MotionGate(
+            self._spec(gate_on="semantic"), settings=self.cfg,
+            wake_policy=WakePolicy(threshold=0.1), semantic_adapter=lambda f: 0.0,
+        )
+        gate.evaluate(still(), ts=0.0)
+        decision = gate.evaluate(gray_frame(W, H, 255), ts=1.0)  # heavy motion, zero semantics
+        self.assertEqual(decision.signal.semantic, 0.0)
+        self.assertFalse(decision.escalate)
+
+    def test_a_fused_admission_is_reported_as_the_fused_cause(self):
+        # REWRITTEN. This used to pin the reporting half of the same override as the contract: the
+        # decision named the SEMANTIC channel while the number actually compared was the fused
+        # noisy-OR over motion, so the receipt named a channel whose measured value was 0.0. `fused`
+        # is now a first-class channel a goal opts in to, and it reports itself.
+        gate = MotionGate(
+            self._spec(gate_on="fused"), settings=self.cfg,
+            wake_policy=WakePolicy(threshold=0.1), semantic_adapter=lambda f: 0.0,
+        )
+        gate.evaluate(still(), ts=0.0)
+        decision = gate.evaluate(gray_frame(W, H, 255), ts=1.0, include_outcomes=True)
+        self.assertTrue(decision.escalate)
+        self.assertEqual(decision.admission_causes, ("fused",))
+        self.assertEqual(decision.signal.semantic, 0.0)
+        # ...and the receipt names the fusion as the producer, not a tier-0 channel that isn't one
+        admitted = [o for o in decision.outcomes if o.admitted]
+        self.assertEqual([o.cause for o in admitted], ["fused"])
+        self.assertEqual([o.detector_id for o in admitted], ["wake_policy.noisy_or"])
+
+    def test_a_fused_goal_with_no_wake_policy_scores_zero_rather_than_falling_back(self):
+        # A goal that asked to be fused has nothing to be fused from, so it admits nothing — the same
+        # answer gate_on="fixed" gives with no cadence, and never a quiet fallback to motion.
+        gate = MotionGate(self._spec(threshold=0.1, gate_on="fused"), settings=self.cfg)
+        gate.evaluate(still(), ts=0.0)
+        decision = gate.evaluate(gray_frame(W, H, 255), ts=1.0, include_outcomes=True)
+        self.assertFalse(decision.escalate)
+        self.assertEqual(
+            [o.non_admission_reason for o in decision.outcomes], ["signal_below_threshold"]
+        )
+
+    def test_a_fixed_cadence_goal_is_unaffected_by_a_wake_policy(self):
+        spec = WatchSpec(conditions=[WatchCondition(
+            goal_id="g", anchor_text="x", threshold=0.99, cadence_s=2.0, gate_on="fixed",
+        )])
+        gate = MotionGate(spec, settings=self.cfg, wake_policy=WakePolicy(threshold=0.1))
+        self.assertTrue(gate.evaluate(still(), ts=0.0).escalate)  # fixed wins on a still frame
+
+    def test_one_energy_reading_populates_exactly_one_channel(self):
+        # REWRITTEN (BUG-A-01-05). evaluate() used to map `energy` into BOTH "audio" and
+        # "audio_event", so a policy that weighted them separately fused one microphone reading with
+        # itself — 0.51 against 0.30 for the same reading on one channel. The noisy-OR assumes its
+        # channels are INDEPENDENT cues, so the duplicate was worth more than the measurement.
+        one = WakePolicy(weights={"audio": 0.5})
+        both = WakePolicy(weights={"audio": 0.5, "audio_event": 0.5})
+        spec = self._spec(threshold=0.51, gate_on="fused")
+        single = MotionGate(spec, settings=self.cfg, wake_policy=one)
+        doubled = MotionGate(spec, settings=self.cfg, wake_policy=both)
+        self.assertFalse(single.evaluate(still(), ts=0.0, energy=0.6).escalate)   # 0.30 fused
+        # weighting the retired alias buys nothing: the gate never populates it, and an absent
+        # channel casts no vote
+        self.assertFalse(doubled.evaluate(still(), ts=0.0, energy=0.6).escalate)  # still 0.30
+        self.assertEqual(
+            cheap_signals(motion=0.0, structural=0.0, semantic=0.0, energy=0.6),
+            {"motion": 0.0, "structural": 0.0, "semantic": 0.0, "audio": 0.6},
+        )
+        self.assertAlmostEqual(wake_score({"audio": 0.6}, one), 0.30, places=12)
+        self.assertAlmostEqual(wake_score({"audio": 0.6}, both), 0.30, places=12)
+
+    def test_the_gate_omits_the_audio_channel_when_no_microphone_is_open(self):
+        # "no microphone is open" and "the room is silent" are different facts; only the second is
+        # evidence. The channel used to be present as a hard 0.0 either way.
+        self.assertNotIn(
+            "audio", cheap_signals(motion=0.1, structural=0.0, semantic=0.0, energy=None)
+        )
+        self.assertEqual(
+            cheap_signals(motion=0.1, structural=0.0, semantic=0.0, energy=0.0)["audio"], 0.0
+        )
+
+    def test_a_caller_overlay_is_applied_last_and_can_override_a_gate_channel(self):
+        self.assertEqual(
+            cheap_signals(
+                motion=0.1, structural=0.0, semantic=0.0, extra={"presence": 0.7, "motion": 0.9}
+            ),
+            {"motion": 0.9, "structural": 0.0, "semantic": 0.0, "presence": 0.7},
+        )
+
+    def test_an_adapter_returning_not_a_number_reads_as_zero_not_as_deafness(self):
+        # Rewritten: this used to assert `math.isnan(decision.signal.structural)` and that not even
+        # a 0.0 cutoff could admit — the defect encoded as the contract. A NaN is a broken reading,
+        # and a broken reading must be worth what "saw nothing" is worth, never strictly LESS than
+        # nothing. It used to be less: every comparison against NaN is False, so the goal could not
+        # clear a cutoff that admits every real number, permanently, on one bad frame.
+        gate = MotionGate(
+            self._spec(gate_on="structural"), settings=self.cfg,
+            structural_adapter=lambda f: float("nan"),
+        )
+        decision = gate.evaluate(motion(40), ts=0.0)
+        self.assertFalse(decision.escalate)          # 0.0 still does not clear a 0.10 cutoff
+        self.assertEqual(decision.signal.structural, 0.0)
+        self.assertFalse(math.isnan(decision.signal.structural))  # and no NaN rides the wire up
+        # a zero cutoff admits every real number, and 0.0 is a real number
+        wide = MotionGate(
+            self._spec(threshold=0.0, gate_on="structural"), settings=self.cfg,
+            structural_adapter=lambda f: float("nan"),
+        )
+        self.assertTrue(wide.evaluate(motion(40), ts=0.0).escalate)
+        # ...and the goal RECOVERS: a NaN frame does not poison the ones after it.
+        readings = iter([float("nan"), 0.9])
+        recovering = MotionGate(
+            self._spec(gate_on="structural"), settings=self.cfg,
+            structural_adapter=lambda f: next(readings),
+        )
+        self.assertFalse(recovering.evaluate(still(), ts=0.0).escalate)
+        self.assertTrue(recovering.evaluate(motion(40), ts=1.0).escalate)
+
+    def test_the_python_and_javascript_gates_agree_on_a_broken_channel(self):
+        # packages/percept-edge/src/skills.js `clamp01` has always been Number.isFinite-guarded, so
+        # before the shared helper the two runtimes forked on exactly this input: JS scored a NaN
+        # channel 0, Python passed it through into a comparison false against every cutoff. One
+        # admission rule, one implementation.
+        for reading, expected in (
+            (float("nan"), 0.0), (float("inf"), 0.0), (float("-inf"), 0.0),
+            (-0.5, 0.0), (1.5, 1.0), (0.25, 0.25),
+        ):
+            with self.subTest(reading=reading):
+                gate = MotionGate(
+                    self._spec(gate_on="semantic"), settings=self.cfg,
+                    semantic_adapter=lambda f, v=reading: v,
+                )
+                self.assertEqual(gate.evaluate(still(), ts=0.0).signal.semantic, expected)
+
+    def test_an_adapter_returning_none_aborts_the_frame_for_every_goal(self):
+        spec = self._spec(goal_ids=("semantic_goal", "motion_goal"))
+        healthy = MotionGate(spec, settings=self.cfg)
+        healthy.evaluate(still(), ts=0.0)
+        self.assertEqual(
+            healthy.evaluate(motion(40), ts=1.0).goal_ids, ("semantic_goal", "motion_goal")
+        )
+        # One adapter that answers None takes the WHOLE frame down — before any condition is
+        # evaluated, so the unrelated motion goal never gets its look either, on this frame or any
+        # frame after it.
+        broken = MotionGate(spec, settings=self.cfg, semantic_adapter=lambda f: None)
+        with self.assertRaises(TypeError):
+            broken.evaluate(still(), ts=0.0)
+        with self.assertRaises(TypeError):
+            broken.evaluate(motion(40), ts=1.0)
 
 
 if __name__ == "__main__":  # pragma: no cover

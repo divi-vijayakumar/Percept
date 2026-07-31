@@ -54,7 +54,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Protocol, runtime_checkable
 
-from .contracts import Box, Verdict
+from .contracts import Box, Verdict, verdict_defect
 
 DirectOutcome = Literal["confident", "uncertain", "degraded"]
 
@@ -97,10 +97,32 @@ class DirectRouting:
 def _coerce_verdict(spec: "Verdict | Mapping[str, Any] | None") -> Verdict | None:
     """Normalize a rule's answer into a real :class:`Verdict` — a dict or a Verdict both work, so
     a rule author can return a plain ``{"satisfied": True, "confidence": 0.95}`` without importing
-    the dataclass. ``None`` stays ``None`` (checked by :class:`DirectResult`)."""
-    if spec is None or isinstance(spec, Verdict):
-        return spec
-    return Verdict(**dict(spec))
+    the dataclass. ``None`` stays ``None`` (checked by :class:`DirectResult`).
+
+    Normalizing is not validating, and this used to do only the first: ``Verdict(**dict(spec))``
+    accepts a third-party rule's raw dict with zero shape checking, because a dataclass constructor
+    does not type-check its fields. A rule returning ``{"satisfied": True, "confidence": "high"}``
+    or a NaN produced a ``Verdict``-typed object carrying nonsense that the gate then read as a
+    confident yes. This is a judge seam — ADR-001 §7 says the backend contract is ``Verdict`` and
+    nothing else, and a rule answering instead of a model is no more trusted than the model — so
+    the one authority (:func:`percept.contracts.verdict_defect`) is asked here, as close to the
+    third-party value as it is possible to get.
+
+    Raises ``ValueError`` naming the failed term. :meth:`DirectJudge.route` catches whatever a rule
+    raises and returns ``outcome="degraded"``, so on the normal path this costs the vision call the
+    rule would have saved — fail-closed, exactly as the module docstring promises for a broken rule.
+    """
+    if spec is None:
+        return None
+    verdict = spec if isinstance(spec, Verdict) else Verdict(**dict(spec))
+    defect = verdict_defect(verdict, require_exact_type=True)
+    if defect is not None:
+        raise ValueError(
+            f"DirectRule returned a malformed Verdict ({defect}): {verdict!r}. A direct rule's "
+            "answer goes to the gate unchanged, so it must satisfy the same contract a vision "
+            "backend does (see percept.contracts.VERDICT_DEFECTS)."
+        )
+    return verdict
 
 
 @dataclass(frozen=True)
@@ -115,6 +137,16 @@ class DirectResult:
     reason: str = ""
 
     def __post_init__(self) -> None:
+        """Validate the outcome vocabulary and the verdict SHAPE at construction.
+
+        This used to check only that a ``confident`` result carried a non-``None`` verdict — the
+        presence of an answer, never its well-formedness. A rule's verdict reaches
+        ``percept.gate.classify`` unchanged, so presence alone is not the contract (ADR-001 §10
+        invariant 4); :func:`_coerce_verdict` now enforces the full one. Any verdict is checked, not
+        just a ``confident`` one: a ``Verdict`` this object hands out is a ``Verdict``, and a rule
+        attaching a malformed one to an ``uncertain`` result is reporting a bug worth raising on
+        rather than a value that happens to go unread today.
+        """
         if self.outcome not in DIRECT_OUTCOMES:
             raise ValueError(f"DirectResult.outcome must be one of {DIRECT_OUTCOMES}, got {self.outcome!r}")
         verdict = _coerce_verdict(self.verdict)

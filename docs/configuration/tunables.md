@@ -1,6 +1,6 @@
 ---
 title: Tunables
-updated: 2026-07-30
+updated: 2026-07-31
 applies_to: percept-vision 1.0.0
 status: stable
 generated_by: tools/build_tunables_doc.py
@@ -50,10 +50,10 @@ takes effect.
 | `Settings.cache.threshold` | ExecutionPolicy | float | `0.0` | 0.0 – 1.0 | `PERCEPT_CACHE_THRESHOLD` | medium | cascade short-circuit cutoff — the ONLY consumer of a cache hit's decayed confidence (how near the frame matched, decayed by how stale the entry is). At the 0.0 default that comparison passes unconditionally, so the similarity radius and the age decay gate nothing and every hit is served. Raise it to make the layer's own trust model load-bearing. |
 | `Settings.cache.ttl_s` | ExecutionPolicy | float | `8.0` | — | `PERCEPT_CACHE_TTL_S` | low | hard ceiling on slow drift before a cache HIT is distrusted. Raising it does not by itself raise the hit rate: the layer holds at most ONE entry per (goal, entity, condition) and overwrites on every store, so under dense admission the slot already holds the immediately preceding judged frame whatever the TTL says. Size it to how long the SCENE stays decidable from one frame, not to how often frames repeat. |
 | `Settings.routing.confidence_threshold` | ExecutionPolicy | float | `0.6` | 0.0 – 1.0 | `PERCEPT_ROUTE_THRESHOLD` | low | below this, the local router defers to the conductor (defer-on-miss is structural). |
-| `WatchProfile.cadence.base_fps` | ExecutionPolicy | float | `4.0` | 0.0 – inf | — | low | fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings'). |
+| `WatchProfile.cadence.base_fps` | ExecutionPolicy | float | `4.0` | 5e-324 – inf | — | low | fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings'). Finite and strictly > 0, and <= max_fps — enforced for every consumer by percept.sampling.validate_cadence, which SensePolicy and CadenceProfile both delegate to. 0 is not a slow cadence: it is a concern that is never perceived at all while the scene is quiet. |
 | `WatchProfile.cadence.escalate_threshold` | ExecutionPolicy | float | `0.15` | 0.0 – 1.0 | — | low | motion level that triggers a saccade toward max_fps. |
 | `WatchProfile.cadence.hold_s` | ExecutionPolicy | float | `0.5` | 0.0 – inf | — | low | keeps an escalation alive briefly after a spike. |
-| `WatchProfile.cadence.max_fps` | ExecutionPolicy | float | `15.0` | 0.0 – inf | — | low | fovea cost ceiling; must be >= base_fps (CadenceProfile.__post_init__). |
+| `WatchProfile.cadence.max_fps` | ExecutionPolicy | float | `15.0` | 5e-324 – inf | — | low | fovea cost ceiling; finite, strictly > 0 and >= base_fps — enforced by percept.sampling.validate_cadence, which SensePolicy (the type every consumer runs on) and CadenceProfile both delegate to. An inverted envelope processes QUIET frames at base_fps, straight through this ceiling, and de-escalates on motion. |
 | `AcousticOnset.high` | SourceProfile | float | `0.001` | 0.0 – 1.0 | — | low | hysteresis-crossing high threshold, in MEAN-SQUARE ENERGY (the constructor's unit). run(audio_wake={'high': ...}) is the AMPLITUDE form and is squared before it reaches the detector, so audio_wake 0.032 == this 0.001. Calibrated against annotated-sound material rather than assumed: ordinary speech and room audio sit well below 0.03 energy, so a threshold above that admits nothing at all. |
 | `AcousticOnset.low` | SourceProfile | float | `0.00025` | 0.0 – 1.0 | — | low | hysteresis-crossing low threshold (re-arm), MEAN-SQUARE ENERGY. Held at high/4 — a factor of 4 in energy is a factor of 2 in amplitude. |
 | `AcousticOnset.refractory_s` | SourceProfile | float | `0.0` | 0.0 – inf | — | low | detector-level debounce (distinct from Gate.refractory_s). |
@@ -130,10 +130,10 @@ takes effect.
 | `Settings.episodes.max_episodes` | int | `64` | 1.0 – inf | `PERCEPT_MAX_EPISODES` | — | low | bound on the per-goal episode log; resource ceiling. |
 | `Settings.events.preroll_max_bytes` | int | `134217728` | 0.0 – inf | `PERCEPT_PREROLL_MAX_BYTES` | — | medium | byte budget for the incident pre-roll ring; the measured 'runaway memory' fix. |
 | `Settings.routing.confidence_threshold` | float | `0.6` | 0.0 – 1.0 | `PERCEPT_ROUTE_THRESHOLD` | ✅ | low | below this, the local router defers to the conductor (defer-on-miss is structural). |
-| `WatchProfile.cadence.base_fps` | float | `4.0` | 0.0 – inf | — | ✅ | low | fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings'). |
+| `WatchProfile.cadence.base_fps` | float | `4.0` | 5e-324 – inf | — | ✅ | low | fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings'). Finite and strictly > 0, and <= max_fps — enforced for every consumer by percept.sampling.validate_cadence, which SensePolicy and CadenceProfile both delegate to. 0 is not a slow cadence: it is a concern that is never perceived at all while the scene is quiet. |
 | `WatchProfile.cadence.escalate_threshold` | float | `0.15` | 0.0 – 1.0 | — | ✅ | low | motion level that triggers a saccade toward max_fps. |
 | `WatchProfile.cadence.hold_s` | float | `0.5` | 0.0 – inf | — | ✅ | low | keeps an escalation alive briefly after a spike. |
-| `WatchProfile.cadence.max_fps` | float | `15.0` | 0.0 – inf | — | ✅ | low | fovea cost ceiling; must be >= base_fps (CadenceProfile.__post_init__). |
+| `WatchProfile.cadence.max_fps` | float | `15.0` | 5e-324 – inf | — | ✅ | low | fovea cost ceiling; finite, strictly > 0 and >= base_fps — enforced by percept.sampling.validate_cadence, which SensePolicy (the type every consumer runs on) and CadenceProfile both delegate to. An inverted envelope processes QUIET frames at base_fps, straight through this ceiling, and de-escalates on motion. |
 
 ### `Gate` — 9 tunables (0 safe to optimize)
 
@@ -197,7 +197,7 @@ takes effect.
 
 | path | type | default | bounds / choices | env | safe? | risk | note |
 |---|---|---|---|---|---|---|---|
-| `Goal.state.cadence.gate_on` | enum | — | motion – structural – semantic – fixed | — | — | high | Per-Watch tier-0 admission mode; sustained worker Watches require fixed. |
+| `Goal.state.cadence.gate_on` | enum | — | motion – structural – semantic – fixed – fused | — | — | high | Per-Watch tier-0 admission mode; sustained worker Watches require fixed, and fused requires a wake_policy. |
 | `Goal.state.cadence.min_judge_interval` | float | — | 0.0 – inf | — | — | medium | Per-Watch minimum observation interval consumed by tier-0 admission. |
 | `Goal.state.cadence_s` | float | — | 1.0 – inf | — | — | low | interval-rearm period; clamped to _MIN_CADENCE_S=1.0 so it can't busy-loop. |
 | `Goal.state.deadline_after_s` | float | — | 0.0 – inf | — | — | low | deadline-rearm DURATION from arm time (never an absolute stamp — A-2). |

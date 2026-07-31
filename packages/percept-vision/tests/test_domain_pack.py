@@ -11,6 +11,7 @@ No runtime execution beyond the offline scripted seam (percept.agent.Percept.cre
 
 from __future__ import annotations
 
+import typing
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
@@ -901,6 +902,209 @@ class TestZeroCoreEditsProof(unittest.TestCase):
             goal = core.goals.get(receipt.watch_ids[0])
             program = behavior_mod.program_of(goal)
             self.assertEqual(program.sense, sense, f"{name} expected sense={sense!r}")
+
+
+# ---------------------------------------------------------------------------
+# _MISS_COST_ORDER: the duplicated ordering, the unknown-cost hole, the explicit-path precedence,
+# and the two clamp boundaries that sit exactly ON the comparison operator.
+# ---------------------------------------------------------------------------
+
+
+class TestMissCostOrderAndClampBoundaries(unittest.TestCase):
+    """The severity ordering behind ``false_negative_cost_min``, and the edges of both clamps.
+
+    ``percept.resolver`` deliberately DUPLICATES ``_MISS_COST_ORDER`` rather than importing it
+    (resolver.py:356-360) so its enforcement never depends on what ``percept.domain_pack`` picks —
+    and its comment says the two are "checked to agree by ``tests/test_domain_pack.py``". Until
+    this class, that comment named a check that did not exist.
+    """
+
+    # -- the duplication -----------------------------------------------------
+
+    def test_both_modules_ship_the_same_ordering(self) -> None:
+        """The claim resolver.py:356-359 makes about this file. Two distinct dict objects (drift is
+        physically possible, which is exactly why it needs asserting), identical content."""
+        from percept import resolver as resolver_mod
+
+        expected = {"trivial": 0, "mild": 1, "severe": 2}
+        self.assertEqual(domain_pack_mod._MISS_COST_ORDER, expected)
+        self.assertEqual(resolver_mod._MISS_COST_ORDER, expected)
+        self.assertEqual(domain_pack_mod._MISS_COST_ORDER, resolver_mod._MISS_COST_ORDER)
+        self.assertIsNot(
+            domain_pack_mod._MISS_COST_ORDER,
+            resolver_mod._MISS_COST_ORDER,
+            "the two are meant to be independent copies — if they became one object this test "
+            "would be vacuous and the drift guard would be gone",
+        )
+
+    def test_ordering_agrees_with_the_shipped_closed_miss_cost_vocabularies(self) -> None:
+        """Both copies must also agree with the two OTHER places the miss_cost vocabulary is
+        declared: ``percept.behavior._VALID_MISS`` (the runtime firewall) and
+        ``percept.contracts.Cost`` (the typed contract). Four declarations, one vocabulary."""
+        from percept import contracts as contracts_mod
+        from percept import resolver as resolver_mod
+
+        for name, order in (
+            ("domain_pack", domain_pack_mod._MISS_COST_ORDER),
+            ("resolver", resolver_mod._MISS_COST_ORDER),
+        ):
+            self.assertEqual(set(order), behavior_mod._VALID_MISS, f"{name} vs behavior")
+            # ranks are dense, distinct and ascend in the same order the Literal declares.
+            by_rank = tuple(k for k, _ in sorted(order.items(), key=lambda kv: kv[1]))
+            self.assertEqual(
+                by_rank, typing.get_args(contracts_mod.Cost), f"{name} vs contracts.Cost"
+            )
+            self.assertEqual(sorted(order.values()), list(range(len(order))), f"{name} ranks")
+
+    def test_every_vocabulary_member_is_a_legal_authored_floor(self) -> None:
+        """The authoring side of the same vocabulary: DomainPack accepts exactly these three as a
+        ``false_negative_cost_min`` and rejects anything else BY NAME."""
+        for cost in domain_pack_mod._MISS_COST_ORDER:
+            pack = DomainPack(id="dp_floor", policy_clamps={"false_negative_cost_min": cost})
+            self.assertEqual(pack.policy_clamps["false_negative_cost_min"], cost)
+        with self.assertRaises(DomainPackError) as ctx:
+            DomainPack(id="dp_floor", policy_clamps={"false_negative_cost_min": "sevrre"})
+        self.assertIn("must be one of ['mild', 'severe', 'trivial']", str(ctx.exception))
+        self.assertIn("'sevrre'", str(ctx.exception))
+
+    # -- the unknown-cost hole -----------------------------------------------
+
+    def test_unknown_miss_cost_is_reported_as_a_typo_not_as_below_the_floor(self) -> None:
+        """A typo'd cost is UNRANKED, not low. Mapping it to -1 makes it violate every floor,
+        including ``"trivial"`` — the lowest one there is, which nothing can legally sit below —
+        and the raised message reads as if the author declared a cost that was too low.
+
+        DomainPack's own authoring validator gets this right for the FLOOR side (it names the
+        value and lists the legal vocabulary); resolve-time does not do the same for the PLAN side.
+        """
+        resolver = ConfigResolver()
+        pack = DomainPack(id="dp1", policy_clamps={"false_negative_cost_min": "trivial"})
+        plan = WatchPlan(condition="x", consequence={"miss_cost": "sevrre"})
+        with self.assertRaises(ConfigError) as ctx:
+            resolver.resolve(plan, domain_pack=pack)
+        message = str(ctx.exception)
+        self.assertIn("not a recognized miss_cost", message)
+        self.assertIn(str(sorted(domain_pack_mod._MISS_COST_ORDER)), message)
+        self.assertNotIn("is below the pack's false_negative_cost_min", message)
+
+    def test_the_lowest_legal_cost_clears_the_lowest_legal_floor(self) -> None:
+        """The green companion that isolates the typo as the SOLE cause above: same pack, same
+        floor, a correctly-spelled ``"trivial"`` — resolution is clean. So the failure above is not
+        'trivial is rejected by a trivial floor', it is 'an unrecognized string ranks below it'."""
+        resolver = ConfigResolver()
+        pack = DomainPack(id="dp1", policy_clamps={"false_negative_cost_min": "trivial"})
+        plan = WatchPlan(condition="x", consequence={"miss_cost": "trivial"})
+        resolved = resolver.resolve(plan, domain_pack=pack)
+        self.assertEqual(resolved.effective.get("Goal.state.miss_cost"), None)
+
+    # -- explicit path beats consequence -------------------------------------
+
+    def test_consequence_only_plan_is_judged_on_its_consequence(self) -> None:
+        """Baseline for the precedence pair: nothing on the explicit path, so
+        ``WatchPlan.consequence`` is what ``_effective_miss_cost`` returns — ``severe`` clears a
+        ``mild`` floor."""
+        resolver = ConfigResolver()
+        pack = DomainPack(id="dp1", policy_clamps={"false_negative_cost_min": "mild"})
+        plan = WatchPlan(condition="x", consequence={"miss_cost": "severe"})
+        self.assertIsNotNone(resolver.resolve(plan, domain_pack=pack))
+
+    def test_explicit_goal_state_miss_cost_beats_consequence(self) -> None:
+        """The SAME ``consequence={"miss_cost": "severe"}`` that just passed now fails, because the
+        more specific ``Goal.state.miss_cost`` explicit path says ``trivial`` and
+        ``_effective_miss_cost`` (resolver.py:365-375) prefers it whenever it is non-None. The
+        rejected value quoted back is ``trivial``, proving which channel was read."""
+        resolver = ConfigResolver()
+        pack = DomainPack(id="dp1", policy_clamps={"false_negative_cost_min": "mild"})
+        plan = WatchPlan(
+            condition="x",
+            consequence={"miss_cost": "severe"},
+            explicit={"Goal.state.miss_cost": "trivial"},
+        )
+        with self.assertRaises(ConfigError) as ctx:
+            resolver.resolve(plan, domain_pack=pack)
+        message = str(ctx.exception)
+        self.assertIn("value='trivial'", message)
+        self.assertNotIn("value='severe'", message)
+
+    def test_explicit_path_survives_into_effective_when_it_clears_the_floor(self) -> None:
+        """Precedence is not only a rejection path: when the explicit value clears the floor it is
+        the value the resolution actually settles on, and ``consequence`` does not override it."""
+        resolver = ConfigResolver()
+        pack = DomainPack(id="dp1", policy_clamps={"false_negative_cost_min": "mild"})
+        plan = WatchPlan(
+            condition="x",
+            consequence={"miss_cost": "trivial"},
+            explicit={"Goal.state.miss_cost": "severe"},
+        )
+        resolved = resolver.resolve(plan, domain_pack=pack)
+        self.assertEqual(resolved.effective["Goal.state.miss_cost"], "severe")
+
+    def test_violation_names_the_path_the_value_was_actually_read_from(self) -> None:
+        """A plan that sets ONLY the explicit path and no ``consequence`` at all is still told to
+        look at ``consequence.miss_cost`` — a field it never authored. FieldDiagnostic.path is
+        meant to be the stable dotted locator of the offending field; this one points elsewhere."""
+        resolver = ConfigResolver()
+        pack = DomainPack(id="dp1", policy_clamps={"false_negative_cost_min": "mild"})
+        plan = WatchPlan(condition="x", explicit={"Goal.state.miss_cost": "trivial"})
+        self.assertIsNone(plan.consequence)
+        with self.assertRaises(ConfigError) as ctx:
+            resolver.resolve(plan, domain_pack=pack)
+        self.assertIn("path='Goal.state.miss_cost'", str(ctx.exception))
+
+    # -- boundary equality on both clamps ------------------------------------
+
+    def test_window_s_exactly_at_retention_max_days_passes(self) -> None:
+        """``window_days > max_days`` (resolver.py:409) — so exactly at the ceiling is legal, and
+        one second over is not. A pack declaring a 7-day ceiling must admit a 7-day window."""
+        from percept.config import Settings
+
+        base = Settings()
+        pack = DomainPack(id="dp1", policy_clamps={"retention_max_days": 7.0})
+        at_ceiling = replace(base, episodes=replace(base.episodes, window_s=7 * 86400.0))
+        resolver = ConfigResolver()
+        resolved = resolver.resolve(
+            WatchPlan(condition="x"), domain_pack=pack, settings=at_ceiling
+        )
+        self.assertEqual(resolved.effective["Settings.episodes.window_s"], 7 * 86400.0)
+
+    def test_one_second_over_retention_max_days_raises(self) -> None:
+        from percept.config import Settings
+
+        base = Settings()
+        pack = DomainPack(id="dp1", policy_clamps={"retention_max_days": 7.0})
+        over = replace(base, episodes=replace(base.episodes, window_s=7 * 86400.0 + 1.0))
+        with self.assertRaises(ConfigError) as ctx:
+            ConfigResolver().resolve(WatchPlan(condition="x"), domain_pack=pack, settings=over)
+        message = str(ctx.exception)
+        self.assertIn("retention_max_days", message)
+        self.assertIn("Settings.episodes.window_s", message)
+
+    def test_miss_cost_exactly_at_the_floor_passes_and_one_step_below_raises(self) -> None:
+        """``_MISS_COST_ORDER[value] < _MISS_COST_ORDER[floor]`` (resolver.py:394) — equality is
+        NOT a violation. Same floor, adjacent ranks, opposite outcomes."""
+        resolver = ConfigResolver()
+        pack = DomainPack(id="dp1", policy_clamps={"false_negative_cost_min": "mild"})
+        at_floor = WatchPlan(condition="x", consequence={"miss_cost": "mild"})
+        self.assertIsNotNone(resolver.resolve(at_floor, domain_pack=pack))
+        below = WatchPlan(condition="x", consequence={"miss_cost": "trivial"})
+        with self.assertRaises(ConfigError):
+            resolver.resolve(below, domain_pack=pack)
+
+    def test_equality_holds_at_every_rank_in_the_vocabulary(self) -> None:
+        """Not just at ``mild``: for each of the three costs, cost==floor resolves and every
+        strictly-lower cost raises. The whole ordering, exercised through the real clamp."""
+        resolver = ConfigResolver()
+        order = domain_pack_mod._MISS_COST_ORDER
+        for floor, floor_rank in order.items():
+            pack = DomainPack(id="dp1", policy_clamps={"false_negative_cost_min": floor})
+            for cost, rank in order.items():
+                plan = WatchPlan(condition="x", consequence={"miss_cost": cost})
+                with self.subTest(floor=floor, cost=cost):
+                    if rank >= floor_rank:
+                        self.assertIsNotNone(resolver.resolve(plan, domain_pack=pack))
+                    else:
+                        with self.assertRaises(ConfigError):
+                            resolver.resolve(plan, domain_pack=pack)
 
 
 if __name__ == "__main__":

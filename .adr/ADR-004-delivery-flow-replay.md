@@ -73,11 +73,11 @@ ADR states plainly what that does and does not guarantee.
 and, per goal, computes `base_key = (goal.id, focus.id if focus else None)` (`agent.py:1135`) then
 calls `self._fire_concern(...)`, which is `BehaviorExecutor.fire_judged` (`behavior.py:320-378`,
 aliased per `behavior.py:3-10`). `fire_judged` classifies the verdict
-(`classify(verdict, freshness, threshold, fresh_min)`, `gate.py:186-198`) and calls
+(`classify(verdict, freshness, threshold, fresh_min)`, `gate.py:220-236`) and calls
 `self.gate.evaluate(key, verdict, freshness=freshness, hold_s=..., now=t, ...)` — "the only firing
-path" (`gate.py:202`; `evaluate` returns the `.action` of `Gate.decide`, `gate.py:321-342`) —
+path" (`gate.py:289`; `evaluate` returns the `.action` of `Gate.decide`, `gate.py:465-486`) —
 which returns exactly one of `FIRE` / `ASK` / `SILENT`
-(`GateAction = Literal["fire","ask","silent"]`, `gate.py:76`). `fire_judged` then maps that:
+(`GateAction = Literal["fire","ask","silent"]`, `gate.py:80`). `fire_judged` then maps that:
 
 - `FIRE` → optionally gated further by an authored `fire_when(n)` nth-distinct-occurrence rule
   (`behavior.py:342-345`); then, if `is_hard_quadrant(consequence_of(goal))`
@@ -138,22 +138,22 @@ that reaching it means using `run()` rather than `watch()`.
 entity does not double-fire until it goes confident-`false` and re-arms. Mechanically, inside
 `Gate.evaluate`:
 
-- A `FIRE` decision sets `self._armed[key] = False` and stamps `self._last_fire[key] = now`
-  (`gate.py:444-448`; the dwell-satisfied fire does the same at `gate.py:467-471`) — this happens
+- A `FIRE` decision sets `fired.armed = False` and stamps `fired.last_fire = now`
+  (`gate.py:601-606`; the dwell-satisfied fire does the same at `gate.py:627-631`) — this happens
   **before** `fire_judged`'s hard-quadrant escalation check, so the edge is consumed identically
   whether the outward `WatchAction` the caller receives ends up being `"fire"` or the escalated
   `"ask"`. The guarantee is anchored to edge consumption, not to the literal string in
   `WatchEvent.action`.
-- A confident-`false` re-arms it: `self._armed[key] = True` (`gate.py:414-417`).
+- A confident-`false` re-arms it: `self._state(key).armed = True` (`gate.py:568-571`).
 - `refractory_s` (L3, off by default — `None`/`0` = "byte-for-byte the historical gate," `gate.py:
-  17-20, 365-375`) is an additional time-based guard: a fire landing within `refractory_s` seconds of
+  17-20, 474-484`) is an additional time-based guard: a fire landing within `refractory_s` seconds of
   that key's last **real** fire is suppressed even if a spurious confident-`false` blip re-armed
-  the edge in between (`gate.py:434-443`). It is set gate-wide from
+  the edge in between (`gate.py:594-600`). It is set gate-wide from
   `cfg.gate.refractory_s or None` at construction (`agent.py:504-507`) — off unless a caller's
   `Settings`/profile turns it on.
 - `require_false_first` (opt-in, default off) and `hold_s` (dwell, opt-in via a goal's program)
-  are two further, off-by-default authored variants on the same edge (`gate.py:360-383,406-433,
-  449-472`) — neither changes the default at-most-once semantics described above.
+  are two further, off-by-default authored variants on the same edge (`gate.py:504-527,550-590,
+  607-632`) — neither changes the default at-most-once semantics described above.
 
 So: **the guarantee is "at most one edge-consuming outward event per `(goal, entity)` per
 continuous true-episode,"** not "at most one event per goal ever" (multiple entities under one
@@ -223,7 +223,7 @@ argument's type:
   - `sense_policy` (cadence) and `plan_mode`, threaded into `Percept.create` directly.
   Everything a `WatchProfile` has no opinion on — including `gate.threshold` — is left at the
   `load_settings()` value; `Gate` itself is constructed from `cfg.gate` at `agent.py:504-511`, and
-  `fresh_min` is a `Gate` constructor default (`gate.py:207`), not a profile-settable knob.
+  `fresh_min` is a `Gate` constructor default (`gate.py:294`), not a profile-settable knob.
 - A bare `Settings` is used directly, and any other object's `.settings` attribute is read if
   present (`_settings_from_profile`, `watch.py:58-74`). Neither of those shapes carries a
   `sense_policy`/`plan_mode` override — only a real `WatchProfile` does.
@@ -251,9 +251,9 @@ goals, and (c) the same sequence of `now` values, the entire path from a `Verdic
 `WatchEvent` is a pure function of its inputs:
 
 - `classify()` is pure arithmetic — `verdict.confidence < threshold`, `freshness < fresh_min`,
-  `verdict.satisfied` (`gate.py:186-198`). No randomness, no I/O.
+  `verdict.satisfied` (`gate.py:220-236`). No randomness, no I/O.
 - `Gate.evaluate`'s armed-bit rising edge, `require_false_first`, dwell, and refractory logic are
-  all pure state transitions over `(key, truth, now)` (`gate.py:405-472`) — deterministic given the
+  all pure state transitions over `(key, truth, now)` (`gate.py:549-632`) — deterministic given the
   same key and the same `now` sequence.
 - `BehaviorExecutor.fire_judged`'s mapping from `GateAction` to `Fired`/`None`, including the
   hard-quadrant `FIRE`→`ASK` escalation, is a pure function of the goal's authored config and the

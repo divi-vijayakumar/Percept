@@ -67,7 +67,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..contracts import Verdict
+from ..contracts import Verdict, is_valid_verdict
 from ..judge_context_producers import (
     RESERVED_CONTEXT_KEYS,
     spec_for,
@@ -323,17 +323,22 @@ class _RouteResult:
 
 
 def _valid_verdict(value: Any) -> bool:
-    satisfied = getattr(value, "satisfied", None)
-    confidence = getattr(value, "confidence", None)
-    evidence = getattr(value, "evidence", None)
-    return (
-        isinstance(satisfied, bool)
-        and not isinstance(confidence, bool)
-        and isinstance(confidence, (int, float))
-        and math.isfinite(float(confidence))
-        and 0.0 <= float(confidence) <= 1.0
-        and isinstance(evidence, str)
-    )
+    """Is this route's answer a well-formed :class:`Verdict`? (ADR-001 §7, §10 invariant 4.)
+
+    The pool's whole malformed-detection surface: a ``False`` here becomes a ``malformed`` route
+    outcome and the route fails over. A one-line alias for the single authority in
+    :mod:`percept.contracts.verdict_validation` — this used to be its own six-term implementation,
+    and ``percept.agent``'s twin was a DIFFERENT three-term one that accepted the non-finite and
+    out-of-range confidences this side has always refused.
+
+    ``require_exact_type=False`` is deliberate and belongs to THIS call site, not to the authority.
+    This is the provider seam: a deployment may hand the pool a ``Verdict``-shaped object of its own
+    (``_VerdictSubclass`` in the tests is the benign case), and the pool's job here is to classify a
+    route's answer as decisive / uncertain / malformed, not to police the type. The agent-side call
+    site passes ``True`` because the contract it enforces is the dataclass itself. Making either the
+    global default would silently loosen one boundary or break the other.
+    """
+    return is_valid_verdict(value, require_exact_type=False)
 
 
 def _context_refusals(

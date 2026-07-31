@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Literal, Sequence
 
+from percept._numeric import clamp01 as _clamp01
+from percept._numeric import finite as _finite
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
 from percept.behavior_routes import (
     UndrivenBehaviorRouteWarning,
@@ -40,6 +42,9 @@ from percept.behavior_routes import (
     skipped_route_message,
     worker_can_drive,
 )
+from percept._streamtime import StreamTimeGuard, StreamTimeRewindWarning
+from percept.behavior import _VALID_GATE_ON
+from percept.behavior import coerce_authored_cadence as _coerce_cadence
 from percept.config import Settings, load_settings
 from percept.duration_routes import (
     require_duration_routes,
@@ -164,6 +169,9 @@ def motion_score(
 
     The block partition uses floor-of-product boundaries and integer per-block denominators so the
     Python and JS (``percept-edge``) results are bit-identical (a release-gated parity invariant).
+    ``block_grid`` dims must be positive (a non-positive grid raises, exactly as an unknown ``stat``
+    does) and are clamped down to the active area when finer than it, so the percentile always ranks
+    a population of real blocks — see :func:`_partition`.
     """
     if prev_frame is None:
         return 0.0
@@ -230,10 +238,70 @@ def _motion_score_region(a: Frame, b: Frame, region: Box) -> float:
     return total / (n * 255.0)
 
 
+#: ADR-002 §2 reason code for the block partition the wired area cannot carry. A ``region_hint``
+#: narrower than the grid is literally the ADR's own example of the shape ("a ROI outside frame
+#: bounds") — a *configuration* failure, not a runtime one — and ADR-002 maps it to ``state``
+#: directly rather than to a 0..1 coverage axis, because "this grid cannot be laid on this area" is
+#: binary. Deliberately the same string as :data:`UNSUPPORTED_DETECTOR_REASON`: one closed
+#: vocabulary, two occasions.
+DEGENERATE_PARTITION_REASON = "PLAN_UNOBSERVABLE"
+
+
+class DegenerateBlockPartitionWarning(UserWarning):
+    """The requested block grid does not fit the active area, so a coarser one was used.
+
+    Raised as a *warning*, not an error, for the same reason
+    :class:`UnsupportedEdgeCapabilityWarning` is: the Watch still admits frames and still buys judge
+    calls, so refusing the frame would be a worse answer than a degraded one. It is not silence
+    because the localizing statistic really did change meaning — a ``p95`` over 24 real blocks is a
+    different number from a ``p95`` over 48 blocks, half of which were empty padding, and an
+    operator reading a suspiciously quiet ``p95`` has no other way to learn that their 10%-square
+    ``region_hint`` is 6x4 px at the shipped 48x36 gate raster.
+
+    Deliberately no companion log line: unlike the compile-time capability drop, this is reached on
+    the per-frame hot path, and a ``logger.warning`` there is a 30-per-second log flood. Python's
+    default warning filter shows one line per call site per configuration, which is the right
+    cardinality for a fact that is a property of the plan, not of the frame.
+    """
+
+
+def _partition(
+    x0: int, y0: int, x1: int, y1: int, gx: int, gy: int
+) -> tuple[int, int, bool]:
+    """The block grid actually laid on the active area ``[x0,x1) x [y0,y1)``, and whether it bit.
+
+    ONE guard point, TWO deliberately distinct rules — the inputs look alike and are not:
+
+    * **An impossible grid raises.** A non-positive ``Gx``/``Gy`` describes no partition at all;
+      there is no salience it could plausibly be. It used to answer ``0.0``, which is a *reading* —
+      "the scene is still" — for a frame that may have inverted end to end. That matches
+      :func:`_motion_score_blocks`'s own refusal of an unknown ``stat`` name and
+      :meth:`Frame.__post_init__`'s refusal of a non-positive frame dimension: an input outside the
+      domain is a contract error, not a quiet zero.
+    * **A grid finer than the area is CLAMPED, not padded.** ``Gx x Gy`` blocks over an ``aw x ah``
+      area with ``aw < Gx`` used to emit ``Gx - aw`` columns of 0-px blocks, each contributing a
+      literal ``0.0`` to the percentile population. That is a valid, authored input — a 10%-square
+      ``region_hint`` is 6x4 px at the shipped 48x36 gate raster — so it must not raise; but the
+      padding made the population fictional. Clamping to ``min(G, a)`` means every block holds at
+      least one real pixel and the percentile ranks a real sample.
+
+    Returns ``(effective_gx, effective_gy, degenerate)``. ``degenerate`` is True exactly when the
+    clamp bit, i.e. when the caller does not get the partition it asked for — the caller surfaces
+    it as ADR-002's :data:`DEGENERATE_PARTITION_REASON`. An empty active area clamps to ``0``, which
+    is also degenerate: a zero-extent ``region_hint`` is a permanent never-fire.
+    """
+    if gx <= 0 or gy <= 0:
+        raise ValueError(f"block_grid dims must be positive, got {gx}x{gy}")
+    aw, ah = x1 - x0, y1 - y0
+    effective_gx = gx if gx < aw else aw
+    effective_gy = gy if gy < ah else ah
+    return effective_gx, effective_gy, (effective_gx != gx or effective_gy != gy)
+
+
 def _block_scores(
     a: Frame, b: Frame, region: Box | None, block_grid: tuple[int, int]
-) -> tuple[list[float], int, int]:
-    """The per-block salience list for the active area, plus ``(total_abs_diff, area_px)``.
+) -> tuple[list[float], int, int, bool]:
+    """The per-block salience list for the active area, plus ``(total_abs_diff, area_px, degenerate)``.
 
     ONE pass over the pixels; every salience statistic in this module is a pure selector over what
     this returns (``block_max`` = ``max``, ``p95`` = nearest-rank, ``mean`` =
@@ -244,8 +312,11 @@ def _block_scores(
     Block boundaries are floor-of-product (``bx(i) = x0 + (i * aw) // Gx``): blocks differ by <=1 px
     and are bit-identical to the JS edge (``i * aw`` stays far under 2**53). Each block's score is
     ``sum_abs_diff / (block_px * 255)`` — an integer sum over an integer denominator, so numpy and
-    stdlib return the same float. A degenerate block (0 px, only possible when the area is smaller
-    than the grid) contributes ``0.0``.
+    stdlib return the same float.
+
+    The grid comes from :func:`_partition`, which clamps it to the active area, so **no block is
+    ever empty**: with ``Gx <= aw`` every column band spans at least ``aw // Gx >= 1`` px, and the
+    same for rows. The 0-px branch this used to carry is not defensive, it is unreachable.
     """
     w, h = a.w, a.h
     if region is not None:
@@ -253,11 +324,9 @@ def _block_scores(
     else:
         x0, y0, x1, y1 = 0, 0, w, h
     aw, ah = x1 - x0, y1 - y0
-    if aw <= 0 or ah <= 0:
-        return [], 0, 0
-    gx, gy = int(block_grid[0]), int(block_grid[1])
-    if gx <= 0 or gy <= 0:
-        return [], 0, 0
+    gx, gy, degenerate = _partition(x0, y0, x1, y1, int(block_grid[0]), int(block_grid[1]))
+    if gx <= 0 or gy <= 0:  # an empty / off-frame active area — nothing in-zone to diff.
+        return [], 0, 0, degenerate
     diff = None
     if _np is not None:
         pa = _np.frombuffer(bytes(a.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
@@ -272,9 +341,6 @@ def _block_scores(
             bx0 = x0 + (i * aw) // gx
             bx1 = x0 + ((i + 1) * aw) // gx
             block_px = (bx1 - bx0) * (by1 - by0)
-            if block_px == 0:
-                scores.append(0.0)
-                continue
             if diff is not None:
                 total = int(diff[by0:by1, bx0:bx1].sum())
             else:
@@ -286,7 +352,22 @@ def _block_scores(
                         total += pav - pbv if pav >= pbv else pbv - pav
             grand_total += total
             scores.append(total / (block_px * 255.0))
-    return scores, grand_total, aw * ah
+    return scores, grand_total, aw * ah, degenerate
+
+
+def _warn_degenerate_partition(
+    region: Box | None, block_grid: tuple[int, int], caller: str
+) -> None:
+    """Report a clamped partition once per call site (see :class:`DegenerateBlockPartitionWarning`)."""
+    warnings.warn(
+        f"{caller} asked for a {int(block_grid[0])}x{int(block_grid[1])} block grid over an active "
+        "area too small to carry it"
+        + (f" (region_hint {region!r})" if region is not None else "")
+        + "; the grid was clamped to the area, so the statistic is computed over a coarser "
+        f"partition than the one configured ({DEGENERATE_PARTITION_REASON})",
+        DegenerateBlockPartitionWarning,
+        stacklevel=3,
+    )
 
 
 def _motion_score_blocks(
@@ -294,8 +375,10 @@ def _motion_score_blocks(
 ) -> float:
     """Localized salience: partition the active area into blocks (:func:`_block_scores`), select
     per ``stat``. ``block_max`` = the top block; ``p95`` = the nearest-rank 95th-percentile block
-    (integer rank, no float percentile)."""
-    scores, _total, _px = _block_scores(a, b, region, block_grid)
+    (integer rank, no float percentile). A clamped partition still scores — it warns."""
+    scores, _total, _px, degenerate = _block_scores(a, b, region, block_grid)
+    if degenerate:
+        _warn_degenerate_partition(region, block_grid, f"motion_score(stat={stat!r})")
     if not scores:
         return 0.0
     if stat == "block_max":
@@ -334,7 +417,9 @@ def salience_stats(
     b = _as_frame(frame)
     if a.w != b.w or a.h != b.h:
         raise ValueError(f"frame size mismatch: {a.w}x{a.h} vs {b.w}x{b.h}")
-    scores, total, area_px = _block_scores(a, b, region, block_grid)
+    scores, total, area_px, degenerate = _block_scores(a, b, region, block_grid)
+    if degenerate:
+        _warn_degenerate_partition(region, block_grid, "salience_stats")
     if not scores or area_px == 0:
         return {stat: 0.0 for stat in SALIENCE_STATS}
     return {
@@ -364,7 +449,9 @@ def _nearest_rank_p95(scores: list[float]) -> float:
     return s[idx]
 
 
-def ego_residual_score(prev_frame: Any, frame: Any, *, k: int = 4) -> float:
+def ego_residual_score(
+    prev_frame: Any, frame: Any, *, k: int = 4, region: Box | None = None
+) -> float:
     """Ego-motion-compensated salience: the minimum mean-abs-diff over an integer-pixel global shift.
 
     Estimates and removes whole-frame translation (camera pan / head turn) by searching integer
@@ -373,6 +460,19 @@ def ego_residual_score(prev_frame: Any, frame: Any, *, k: int = 4) -> float:
     shift, so its residual is ``~0`` (no false escalate); a subject entering the frame cannot be
     shifted away, so its residual stays high. Deterministic and O(k**2 * pixels); the ``(0, 0)`` shift
     equals the uncompensated mean, so the residual is always ``<=`` the full-frame :func:`motion_score`.
+
+    ``region`` (the watch-out zone) restricts **what is measured**, never **what is estimated**. The
+    shift search still runs over the whole frame, because a pan is a whole-frame property: a zone
+    can be too small, too flat, or too busy to identify a translation, and letting it pick the shift
+    would mean each zone reporting its own private opinion of how the camera moved. Once the global
+    shift is chosen, the residual sum *and its denominator* cover only ``region ∩ overlap``, so
+    movement outside the zone can no longer escalate the goal. ``region=None`` (the default) is the
+    whole-frame path, byte-for-byte unchanged. A zone that misses the winning shift's overlap
+    entirely -> ``0.0`` (nothing in-zone to measure), matching :func:`_motion_score_region`.
+
+    Without ``region`` this silently discarded the zone: the gate's ego branch returns before its
+    localized branch, so a goal carrying BOTH ego compensation and a watch-out zone escalated on
+    motion entirely outside the zone, while still reporting the zone to the caller.
 
     ``prev_frame is None`` -> ``0.0`` (no predecessor). Mirrors the JS ``egoResidualScore`` bit-for-bit
     (integer overlap sums, integer overlap denominator).
@@ -392,6 +492,7 @@ def ego_residual_score(prev_frame: Any, frame: Any, *, k: int = 4) -> float:
         grid_a = _np.frombuffer(bytes(a.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
         grid_b = _np.frombuffer(bytes(b.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
     best: float | None = None
+    best_shift: tuple[int, int] | None = None
     for dy in range(-kk, kk + 1):
         oh = h - (dy if dy >= 0 else -dy)  # overlap height = h - |dy|
         if oh <= 0:
@@ -419,7 +520,61 @@ def ego_residual_score(prev_frame: Any, frame: Any, *, k: int = 4) -> float:
             score = total / (npx * 255.0)
             if best is None or score < best:
                 best = score
-    return 0.0 if best is None else best
+                best_shift = (dx, dy)
+    if best is None or best_shift is None:
+        return 0.0
+    if region is None:
+        return best
+    return _ego_region_residual(a, b, grid_a, grid_b, region, *best_shift)
+
+
+def _ego_region_residual(
+    a: Frame,
+    b: Frame,
+    grid_a: Any,
+    grid_b: Any,
+    region: Box,
+    dx: int,
+    dy: int,
+) -> float:
+    """The residual of the ALREADY-CHOSEN shift ``(dx, dy)``, measured over ``region ∩ overlap``.
+
+    Two rectangles in ``frame`` (``b``) coordinates: the overlap the shift leaves behind, and the
+    watch-out zone. Their intersection is the only place the zone's promise ("movement elsewhere is
+    ignored") and the shift's validity ("both frames have a pixel here") both hold. Integer sum over
+    an integer denominator, exactly like the unmasked path, so numpy and stdlib agree and so does JS.
+    """
+    w, h = a.w, a.h
+    rx0, ry0, rx1, ry1 = _region_bounds(region, w, h)
+    # The overlap rectangle in frame coordinates: x in [fx0, fx0+ow), y in [fy0, fy0+oh).
+    ox0 = dx if dx > 0 else 0
+    oy0 = dy if dy > 0 else 0
+    ox1 = ox0 + w - (dx if dx >= 0 else -dx)
+    oy1 = oy0 + h - (dy if dy >= 0 else -dy)
+    mx0, my0 = (rx0 if rx0 > ox0 else ox0), (ry0 if ry0 > oy0 else oy0)
+    mx1, my1 = (rx1 if rx1 < ox1 else ox1), (ry1 if ry1 < oy1 else oy1)
+    mw, mh = mx1 - mx0, my1 - my0
+    # Per DIMENSION, not on the product: a zone sitting outside the overlap on BOTH axes makes mw
+    # and mh negative, and their product positive again. The loops below would still be empty (so
+    # the answer is 0.0 either way), but a positive `npx` from two empty spans is not something to
+    # leave standing in a denominator.
+    if mw <= 0 or mh <= 0:
+        return 0.0
+    npx = mw * mh
+    if grid_a is not None:
+        fb = grid_b[my0:my1, mx0:mx1]
+        pa = grid_a[my0 - dy:my1 - dy, mx0 - dx:mx1 - dx]
+        total = int(_np.abs(pa - fb).sum())
+    else:
+        total = 0
+        for fy in range(my0, my1):
+            fb_base = fy * w
+            pa_base = (fy - dy) * w
+            for fx in range(mx0, mx1):
+                pav = a.pixels[pa_base + (fx - dx)]
+                pbv = b.pixels[fb_base + fx]
+                total += pav - pbv if pav >= pbv else pbv - pav
+    return total / (npx * 255.0)
 
 
 # ---------------------------------------------------------------------------
@@ -475,17 +630,26 @@ REGION_HINT_KEY = "region_hint"
 # Optional per-goal arming Schedule (a Schedule, or its windows/days dict) under this key.
 SCHEDULE_KEY = "schedule"
 # Optional per-goal temporal cadence: {"min_judge_interval": float, "gate_on": motion|structural|
-# semantic|fixed} under this key. Controls how OFTEN to look (distinct from PerceptionSpec = how DEEP).
+# semantic|fixed|fused} under this key. Controls how OFTEN to look (distinct from PerceptionSpec =
+# how DEEP).
 CADENCE_KEY = "cadence"
 # Optional per-goal salience MODE overrides (tracks the camera mount). Fall back to the deployment
 # default passed to compile_watchspec (from settings.edge) when absent / malformed.
 SALIENCE_STAT_KEY = "salience_stat"
 EGO_COMPENSATE_KEY = "ego_compensate"
-_GATE_ON_VOCAB = {"motion", "structural", "semantic", "fixed"}
+#: The closed ``gate_on`` vocabulary, ONE copy. It is :data:`percept.behavior._VALID_GATE_ON` itself,
+#: not a duplicate of it — this module used to carry a byte-identical second copy beside a
+#: byte-identical second cadence coercer, held equal only by a drift test.
+_GATE_ON_VOCAB = _VALID_GATE_ON
 _SALIENCE_STAT_VOCAB = {"mean", "block_max", "p95"}
-AdmissionCause = Literal["motion", "structural", "semantic", "fixed"]
+#: Which channel a Watch was admitted ON. ``"fused"`` is a first-class channel, not a mode: a
+#: ``wake_policy`` used to override every other branch and then report the admission as the goal's own
+#: ``gate_on``, so a receipt could name ``semantic`` for a frame whose measured semantic value was
+#: 0.0. A goal now OPTS IN to fusion by authoring ``gate_on="fused"``, and the cause it reports is the
+#: channel the number actually came from.
+AdmissionCause = Literal["motion", "structural", "semantic", "fixed", "fused"]
 ADMISSION_CAUSES: tuple[AdmissionCause, ...] = (
-    "motion", "structural", "semantic", "fixed",
+    "motion", "structural", "semantic", "fixed", "fused",
 )
 NonAdmissionReason = Literal[
     "signal_below_threshold",
@@ -501,11 +665,81 @@ NON_ADMISSION_REASONS: tuple[NonAdmissionReason, ...] = (
 )
 
 
+class UnsupportedEdgeCapabilityWarning(UserWarning):
+    """The connected edge cannot run a detector the brain selected, so a boundary can never arrive.
+
+    Raised as a *warning*, not an error: the Watch still admits frames and still buys judge calls, so
+    aborting the compile would be a worse answer than a degraded one. But the silence it replaces was
+    the defect — ``capabilities=None`` ("run the whole registry") and ``capabilities=[]`` ("run
+    nothing") are opposite instructions, and the second one used to compile a detector-less condition
+    without a word. A deployment that wants the drop to be fatal filters this to ``"error"``.
+    """
+
+
+#: ADR-002 §2 reason code for a plan the wired configuration cannot answer in principle. A dropped
+#: detector is exactly that shape — not a runtime failure, a configuration one — and ADR-002 maps it
+#: to ``state`` directly rather than to a 0..1 coverage axis, because "this boundary can never
+#: arrive" is binary.
+UNSUPPORTED_DETECTOR_REASON = "PLAN_UNOBSERVABLE"
+
+#: The health-event kind :class:`GatedWatchLoop` emits alongside the warning and the log line — the
+#: same three-channel report ``_preflight_routes`` makes for an undriven behavior route.
+UNSUPPORTED_DETECTOR_HEALTH_KIND = "unsupported_edge_detectors"
+
+
+def watchspec_kwargs(settings: Settings) -> dict[str, Any]:
+    """The deployment's salience configuration, as :func:`compile_watchspec` keyword arguments.
+
+    ``compile_watchspec``'s ``salience_stat`` / ``ego_compensate`` / ``stat_thresholds`` defaults
+    (``'mean'`` / ``False`` / ``None``) are **signature defaults, not the product's defaults** — the
+    shipped deployment is ``block_max`` at ``motion_gate_block_max``. Any caller that compiles
+    without passing them silently gates on a different statistic, at a different cutoff, than the one
+    ``settings.edge`` configured; every number it then measures describes a configuration nobody
+    deployed. There is one right answer, so it lives in one place and every compile site reads it
+    from here.
+
+    A caller with a per-Watch override (a bound WatchPlan) **overlays** onto this mapping rather than
+    replacing it — a plan that names one field must not silently revert the other three to the
+    signature defaults.
+    """
+    edge = settings.edge
+    return {
+        "threshold": edge.motion_gate,
+        "salience_stat": edge.salience_stat,
+        "ego_compensate": edge.ego_compensate,
+        "stat_thresholds": {
+            "mean": edge.motion_gate,
+            "block_max": edge.motion_gate_block_max,
+            "p95": edge.motion_gate_p95,
+        },
+    }
+
+
+def _capability_traversal(
+    goals: Iterable[Goal], edge_capabilities: Iterable[str] | None
+) -> list[tuple[Goal, list[str], list[str]]]:
+    """THE per-goal traversal: which goals become conditions, and how the capability filter split them.
+
+    Returns ``(goal, supported, dropped)`` for every goal that needs a WatchCondition. One
+    implementation of one rule: :func:`compile_watchspec` (the compiling half) and
+    :func:`watchspec_unsupported` (the reporting half) both read *this*. They used to be two
+    independent walks each recomputing ``needs_watch_condition`` + ``detectors_for`` +
+    ``partition_by_capability``, i.e. two implementations of one rule, free to drift apart on which
+    goals even count as watch goals — and the compiling one threw its ``dropped`` half away.
+    """
+    return [
+        (goal, *partition_by_capability(detectors_for(goal), edge_capabilities))
+        for goal in goals
+        if needs_watch_condition(goal_behavior_route(goal))
+    ]
+
+
 def compile_watchspec(
     goals: Iterable[Goal], *, threshold: float, version: int = 1,
     edge_capabilities: Iterable[str] | None = None,
     salience_stat: str = "mean", ego_compensate: bool = False,
     stat_thresholds: dict[str, float] | None = None,
+    on_unsupported: Callable[[list[tuple[str, list[str]]]], None] | None = None,
 ) -> WatchSpec:
     """Compile active *watch* goals DOWN to a :class:`~percept.adapters.WatchSpec`.
 
@@ -524,8 +758,16 @@ def compile_watchspec(
 
     ``edge_capabilities`` (optional): the skill set the connected edge advertised. When given, each goal's
     detectors are intersected with it so the brain never sends a skill the edge can't run; ``None``
-    (default, in-process topology A — the edge runs the whole registry) sends the full selection. Use
-    :func:`watchspec_unsupported` to see what was dropped (to pick a fallback).
+    (default, in-process topology A — the edge runs the whole registry) sends the full selection.
+
+    **A drop is reported, never swallowed.** A goal whose detectors were all filtered out compiles a
+    condition that admits frames but can never emit a boundary, so the same traversal that filters
+    also warns (:class:`UnsupportedEdgeCapabilityWarning`), logs, and — when the caller wired one —
+    hands the whole ``[(goal_id, dropped)]`` list to ``on_unsupported`` so a structured health event
+    can carry it (ADR-002 ``PLAN_UNOBSERVABLE``). ``on_unsupported`` is a callback rather than a new
+    ``WatchSpec`` field on purpose: the WatchSpec shape is the wire contract the JS ``contract.js``
+    mirrors, and a diagnostic does not belong on the wire. :func:`watchspec_unsupported` reports the
+    same list without compiling, for a caller choosing a fallback before it arms anything.
 
     Every frame-worker route compiles: ordinary Watches, transitions, and process observation.
     External event, boundary, rhythm, and scheduler primitives never become frame Watches.
@@ -542,11 +784,11 @@ def compile_watchspec(
         remote=edge_capabilities is not None,
     )
     conditions: list[WatchCondition] = []
-    for goal in goals:
-        if not needs_watch_condition(goal_behavior_route(goal)):
-            continue
-        bias = float(goal.state.get(MOTION_BIAS_KEY, 0.0))
-        supported, _dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
+    unsupported: list[tuple[str, list[str]]] = []
+    for goal, supported, dropped in _capability_traversal(goals, edge_capabilities):
+        if dropped:
+            unsupported.append((goal.id, dropped))
+        bias = _coerce_bias(goal.state.get(MOTION_BIAS_KEY), goal_id=goal.id)
         cadence_s, gate_on = _coerce_cadence(goal.state.get(CADENCE_KEY))
         # Salience MODE = deployment default (settings.edge) overlaid with a per-goal override. The
         # resolved value rides the wire so the edge honors it without reading Python settings.
@@ -569,6 +811,17 @@ def compile_watchspec(
                 ego_compensate=ego,
             )
         )
+    if unsupported:
+        for goal_id, dropped in unsupported:
+            message = (
+                f"goal {goal_id!r} selected edge detector(s) {dropped!r} the connected edge does "
+                "not advertise; they were dropped, so this Watch admits frames but can never emit "
+                f"a boundary from them ({UNSUPPORTED_DETECTOR_REASON})"
+            )
+            warnings.warn(message, UnsupportedEdgeCapabilityWarning, stacklevel=2)
+            get_logger("percept.harness.tier0").warning("%s", message)
+        if on_unsupported is not None:
+            on_unsupported(unsupported)
     return WatchSpec(conditions=conditions, version=version)
 
 
@@ -578,19 +831,66 @@ def watchspec_unsupported(
     """``(goal_id, dropped_detectors)`` the brain selected but the advertised edge can't run — so the
     caller can pick a fallback (server-side detection / a coarser skill / skip). Empty when the edge
     supports everything selected. The reporting half of :func:`compile_watchspec`'s capability handshake.
+
+    A thin read of :func:`_capability_traversal` — the SAME traversal :func:`compile_watchspec` runs
+    — so the two halves cannot disagree about which goals are watch goals or which detectors a goal
+    selected. Quiet by construction: this is the *asking* path, and a caller who asked has already
+    been told.
     """
-    out: list[tuple[str, list[str]]] = []
-    for goal in goals:
-        if not needs_watch_condition(goal_behavior_route(goal)):
-            continue
-        _, dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
-        if dropped:
-            out.append((goal.id, dropped))
-    return out
+    return [
+        (goal.id, dropped)
+        for goal, _supported, dropped in _capability_traversal(goals, edge_capabilities)
+        if dropped
+    ]
 
 
-def _clamp01(v: float) -> float:
-    return 0.0 if v < 0.0 else 1.0 if v > 1.0 else float(v)
+class UnsupportedMotionBiasError(ValueError):
+    """A goal's ``state['motion_bias']`` is not a real, finite number, so no cutoff can be computed.
+
+    Typed and attributed — it names the goal and the field — because the untyped ``float()`` it
+    replaces raised a bare stdlib ``ValueError``/``TypeError`` naming neither, from inside a compile
+    of a whole batch of goals. That aborts every Watch in the batch (the module's own precedent for
+    an unusable authored value: :func:`~percept.duration_routes.require_duration_routes` refuses the
+    same way), and an operator staring at ``could not convert string to float: 'high'`` has no way to
+    tell WHICH goal carried it.
+    """
+
+    def __init__(self, goal_id: str, value: Any, reason: str) -> None:
+        self.goal_id = goal_id
+        self.value = value
+        super().__init__(
+            f"compile_watchspec rejected goal {goal_id!r}: "
+            f"state[{MOTION_BIAS_KEY!r}]={value!r} — {reason}"
+        )
+
+
+def _coerce_bias(obj: Any, *, goal_id: str) -> float:
+    """Per-goal threshold bias -> float; absent -> ``0.0``; anything unusable -> a typed refusal.
+
+    The last untrusted goal-state hint with no coercer. It is deliberately the *strict* member of the
+    ``_coerce_*`` family — the others widen a malformed hint to a harmless default (no region, no
+    schedule, no cadence), because for them "malformed" and "absent" are the same watch. A bias is
+    not: it moves the admission cutoff, so silently reading it as ``0.0`` would ship a Watch tuned to
+    a number nobody authored.
+
+    ``bool`` is refused rather than accepted, which is the second real defect here: ``True`` passes
+    ``float()`` as ``1.0``, saturating the cutoff to the clamp ceiling, and a Watch with a threshold
+    of ``1.0`` admits **nothing, ever** — the loudest possible failure delivered in total silence.
+    """
+    if obj is None:
+        return 0.0
+    if isinstance(obj, bool):
+        raise UnsupportedMotionBiasError(
+            goal_id, obj,
+            "a bool is not a bias (True reads as a full point of threshold, so the Watch would be "
+            "compiled at a cutoff of 1.0 and admit nothing, ever)",
+        )
+    try:
+        return _finite(f"goal {goal_id!r} state[{MOTION_BIAS_KEY!r}]", obj)
+    except ValueError as exc:
+        raise UnsupportedMotionBiasError(
+            goal_id, obj, "the bias must be a finite int or float",
+        ) from exc
 
 
 def _coerce_box(obj: Any) -> Box | None:
@@ -618,24 +918,12 @@ def _coerce_schedule(obj: Any) -> Schedule | None:
     return None  # pragma: no cover - defensive: unknown schedule shape -> always armed.
 
 
-def _coerce_cadence(obj: Any) -> tuple[float | None, str]:
-    """Goal-state cadence hint -> ``(cadence_s, gate_on)``; the firewall for the temporal cadence.
-
-    Accepts ``{"min_judge_interval": float, "gate_on": "motion"|"structural"|"semantic"|"fixed"}``.
-    Unknown shape / out-of-vocab -> ``(None, "motion")`` (the default, no cadence cap). A non-positive
-    interval is dropped; ``gate_on="fixed"`` without an interval falls back to ``"motion"`` (a fixed
-    cadence with no period is meaningless), so a malformed hint can never silently break a watch.
-    """
-    if not isinstance(obj, dict):
-        return None, "motion"
-    raw = obj.get("min_judge_interval")
-    cadence_s = float(raw) if isinstance(raw, (int, float)) and raw > 0 else None
-    gate_on = obj.get("gate_on", "motion")
-    if gate_on not in _GATE_ON_VOCAB:
-        gate_on = "motion"
-    if gate_on == "fixed" and cadence_s is None:
-        gate_on = "motion"
-    return cadence_s, gate_on
+# The cadence firewall used to live here TWICE — once in this module and once in ``percept.behavior``
+# (so the pure-stdlib plan compiler could run it without importing the harness), held byte-identical
+# only by a drift test. There is now one implementation: ``_coerce_cadence`` above is
+# :func:`percept.behavior.coerce_authored_cadence`, imported. Its vocabulary is
+# :data:`_GATE_ON_VOCAB`, which is that module's set object, so ``fused`` cannot be added to one
+# authoring surface and not the other.
 
 
 def _coerce_salience_stat(obj: Any, default: str) -> str:
@@ -663,14 +951,76 @@ def _condition_motion(
 
     The default (``salience_stat == "mean"``, no ``region_hint``, no ``ego_compensate``) returns the
     precomputed full-frame ``full_motion`` unchanged — byte-for-byte the pre-mode path. Otherwise ego
-    compensation (whole-frame residual) takes precedence; else the localized block statistic (optionally
-    masked to ``region_hint``). Ego + block compose is deferred: an ego goal uses the whole-frame residual.
+    compensation takes precedence; else the localized block statistic (optionally masked to
+    ``region_hint``).
+
+    **Ego composes with the zone, not with the block statistic.** The ego branch passes
+    ``region_hint`` through, because a watch-out zone is a promise that movement elsewhere is
+    ignored, and turning on ego compensation must not quietly convert the goal back into a
+    whole-frame watch (it used to: the residual was always whole-frame while the condition still
+    carried and reported its zone). Ego + ``block_max``/``p95`` composition stays deferred — an ego
+    goal gets the region-masked residual, not the localized block statistic; that deferral is pinned
+    by ``test_an_ego_goal_falls_back_to_the_whole_frame_and_loses_its_localization``.
     """
     if c.ego_compensate:
-        return ego_residual_score(prev, f)
+        return ego_residual_score(prev, f, region=c.region_hint)
     if c.salience_stat != "mean" or c.region_hint is not None:
         return motion_score(prev, f, region=c.region_hint, stat=c.salience_stat)
     return full_motion
+
+
+def cheap_signals(
+    *,
+    motion: float,
+    structural: float,
+    semantic: float,
+    energy: float | None = None,
+    extra: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """The gate's cheap-channel vector — the named producer the wake fusion consumes.
+
+    THE INVARIANT: **one physical measurement populates exactly one channel.** Four measurements, four
+    channels, and no aliases.
+
+    ==============  ============================================================
+    channel         measurement
+    ==============  ============================================================
+    ``motion``      the frame-diff gauge (always available)
+    ``structural``  the structural adapter, ``0.0`` when none is wired
+    ``semantic``    the semantic adapter, ``0.0`` when none is wired
+    ``audio``       ``Tier0Signal.energy``; ABSENT when no audio source is open
+    ==============  ============================================================
+
+    This used to build SEVEN keys from those four measurements — ``change`` aliased ``motion``,
+    ``semantic_relevance`` aliased ``semantic``, and ``audio_event`` aliased ``audio``. The noisy-OR
+    in :func:`~percept.harness.detectors.wake_score` assumes its channels are INDEPENDENT cues, so an
+    alias fuses one measurement with itself: a policy weighting ``motion`` and ``change`` at 0.5 each
+    scored 0.51 on one reading of 0.6, against 0.30 for the same reading on the single channel. The
+    duplicate was worth more than the measurement.
+
+    ``audio_event`` is absent rather than aliased for a second reason: it names an ACOUSTIC-EVENT
+    class, and ``detectors_in_category(CATEGORY_AUDIO_EVENT)`` is empty — nothing in this build
+    classifies acoustic events. Mapping raw energy onto it would have claimed a sense that does not
+    exist. A weight on an absent channel now contributes nothing, which is the honest answer.
+
+    ``audio`` is OMITTED, not zeroed, when ``energy is None``: "no microphone is open" and "the room
+    is silent" are different facts, and the fusion reads an absent channel as "no vote" rather than as
+    evidence of quiet.
+
+    ``extra`` is the caller's overlay (the gate's ``signals=`` argument) — the supported way to add a
+    channel a real detector measures (``presence``, ``pose``, an acoustic-event classifier). It is
+    applied last, so a caller measuring a channel itself overrides the gate's value for it.
+    """
+    out: dict[str, float] = {
+        "motion": motion,
+        "structural": structural,
+        "semantic": semantic,
+    }
+    if energy is not None:
+        out["audio"] = energy
+    if extra:
+        out.update(extra)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -723,14 +1073,23 @@ def _watch_admission_outcome(
     non_admission_reason: NonAdmissionReason | None,
     score: float,
 ) -> WatchAdmissionOutcome:
-    """Build the typed lifecycle-only view of one already-computed gate outcome."""
+    """Build the typed lifecycle-only view of one already-computed gate outcome.
+
+    ``detector_id`` names WHAT produced the score. A ``fused`` admission names the wake policy rather
+    than a tier-0 channel, because the number is the noisy-OR over several channels and no single
+    ``tier0.signal.*`` produced it.
+    """
     detector_id = (
         f"motion_score.{condition.salience_stat}"
         if condition.gate_on == "motion"
         else (
             "cadence.fixed"
             if condition.gate_on == "fixed"
-            else f"tier0.signal.{condition.gate_on}"
+            else (
+                "wake_policy.noisy_or"
+                if condition.gate_on == "fused"
+                else f"tier0.signal.{condition.gate_on}"
+            )
         )
     )
     return WatchAdmissionOutcome(
@@ -802,6 +1161,31 @@ class GateDecision:
             raise ValueError("GateDecision evidence_id must be a non-empty string or None")
 
 
+# ``StreamTimeRewindWarning`` is defined in :mod:`percept._streamtime` beside the guard that raises
+# it, and re-exported here (it is in this module's ``__all__``) so the existing
+# ``from percept.harness.tier0 import StreamTimeRewindWarning`` callers keep working. It is shared
+# rather than gate-local because the fovea (:mod:`percept.sampling`) chose the same RESET policy on
+# the same untrusted timeline: one warning class means a caller catches every stream discontinuity,
+# whichever seam noticed it first.
+
+
+def _adapter_reading(value: Any) -> float:
+    """One pluggable structural/semantic adapter's answer, as a usable salience in ``[0, 1]``.
+
+    ``float()`` runs FIRST and its exceptions propagate: an adapter that answers ``None`` (or any
+    junk ``float()`` refuses) takes the frame down loudly, which is documented intent — a broken
+    adapter stops the watch rather than quietly scoring 0.0 forever.
+
+    The finiteness firewall runs SECOND, and it absorbs: a NaN or an infinity is a *reading*, not a
+    broken contract, and a NaN reading must be worth what "saw nothing" is worth. Left alone it was
+    worth strictly less than nothing — every comparison against NaN is False, so the goal could not
+    clear even a ``0.0`` cutoff, for the rest of the run. Matches the edge's JS ``clamp01``, which
+    has always mapped a non-finite channel to 0; before this the two runtimes forked on exactly this
+    input.
+    """
+    return _clamp01(float(value))
+
+
 class MotionGate:
     """The coarse tier-0 gate: diff frames, report salience, decide escalate-vs-skip.
 
@@ -852,6 +1236,9 @@ class MotionGate:
         # edge). None -> 0.0, so the reported signal and escalation are byte-for-byte the motion-only path.
         self._structural_adapter = structural_adapter
         self._semantic_adapter = semantic_adapter
+        # The caller's stream timeline is untrusted (see StreamTimeGuard). Shared by evaluate() and
+        # admit_external(), which share ``_last_escalate`` and therefore share one timeline.
+        self._ts_guard = StreamTimeGuard()
 
     @property
     def spec(self) -> WatchSpec:
@@ -864,8 +1251,15 @@ class MotionGate:
         return min(c.threshold for c in self._spec.conditions)
 
     def reset(self) -> None:
-        """Forget the previous frame (e.g. a stream discontinuity / new source)."""
+        """Forget the previous frame (e.g. a stream discontinuity / new source).
+
+        Also forgets the timeline baseline, so a *declared* restart (a new replay epoch, a new
+        source) is not additionally reported as a rewind by :meth:`_gate_ts` — the caller already
+        said the stream changed. Cadence policy (``_last_escalate``) is deliberately untouched, as
+        it always has been.
+        """
         self._prev = None
+        self._ts_guard.reset()
 
     def adopt_state(self, prev: "MotionGate") -> None:
         """Carry a PRIOR gate's per-goal throttle + prev frame into this freshly-recompiled gate.
@@ -887,6 +1281,51 @@ class MotionGate:
         }
         self._prev = prev._prev
 
+    @property
+    def time_discontinuities(self) -> int:
+        """How many backwards timestamp steps this gate absorbed — the traceable half of the reset.
+
+        A silent reset is only half a fix: the cadence brake really was dropped, and an operator
+        reading "this goal spent more than its cadence allows" needs to be able to see why. Non-zero
+        means the source's timeline restarted at least once (a reconnect, a seek, a corrected host
+        clock); each one also warned and logged when it happened.
+        """
+        return self._ts_guard.rewinds
+
+    def _gate_ts(self, ts: Any) -> float:
+        """Validate one caller-supplied stream timestamp before ANY temporal policy reads it.
+
+        Two failures, two answers (see :class:`~percept.clock.StreamTimeGuard`):
+
+        * **not finite** — refused loudly. A NaN does not tighten the cadence brake, it *bypasses*
+          it: ``ts - last < cadence_s`` is False against a NaN, so the goal spends inside a window it
+          was told not to, and then NaN is written into ``_last_escalate`` and poisons every later
+          comparison for that goal. There is no sane admission decision to make on a NaN, and one
+          bad timestamp must not be able to buy a judge call the deployment forbade.
+        * **backwards** — a stream discontinuity, and treated as one: forget the per-goal cadence
+          brake, exactly as :meth:`reset` forgets ``_prev``, and carry on. This is deliberately NOT
+          :mod:`percept.interest`'s raise-on-rewind policy. A rewind here is a reconnect or a file
+          seek — recoverable source noise — and raising would convert it into a dead watch. Leaving
+          it alone is worse still: ``ts - last`` stays negative forever, so ``< cadence_s`` is always
+          true and the goal is **permanently, silently muted** while frames keep arriving.
+
+        The ``-inf`` seed is not a rewind: an unseen goal has no prior timeline, so a loop joined
+        mid-stream still spends on its first qualifying frame whatever the wall time says.
+        """
+        verdict = self._ts_guard.check("ts", ts)
+        value = float(ts)
+        if verdict == "rewind":
+            message = (
+                f"tier-0 gate saw the stream timeline step backwards to ts={value!r}; treating it as "
+                "a source discontinuity and clearing the per-goal cadence brake "
+                f"({len(self._last_escalate)} goal(s)) so the affected Watches are not muted for the "
+                "rest of the run"
+            )
+            warnings.warn(message, StreamTimeRewindWarning, stacklevel=3)
+            get_logger("percept.harness.tier0").warning("%s", message)
+            self._last_escalate.clear()
+        return value
+
     def admit_external(
         self,
         goal_ids: Sequence[str],
@@ -898,8 +1337,11 @@ class MotionGate:
 
         The external signal decides *why* the worker asks, but it does not bypass the same temporal
         policy that guards visual admission. Accepted ids share ``_last_escalate`` with
-        :meth:`evaluate`, so an audio wake cannot double-spend inside a goal's cadence window.
+        :meth:`evaluate`, so an audio wake cannot double-spend inside a goal's cadence window — and
+        share :meth:`_gate_ts` with it too, so an external wake carrying a hostile ``ts`` cannot mute
+        or over-spend a goal by a route the visual path is guarded against.
         """
+        ts = self._gate_ts(ts)
         requested = frozenset(goal_ids)
         when = now if now is not None else (self._clock() if self._clock is not None else None)
         admitted: list[str] = []
@@ -941,6 +1383,7 @@ class MotionGate:
         prev-frame cursor. ``include_outcomes`` and ``include_evidence_id`` are lifecycle-only opt-ins;
         the normal gate path allocates neither outcome DTOs nor causal hashes.
         """
+        ts = self._gate_ts(ts)
         f = _as_frame(frame)
         prev = self._prev
         # Full-frame mean motion is always the REPORTED gauge (the Tier0Signal is a region-agnostic,
@@ -949,20 +1392,25 @@ class MotionGate:
         motion = motion_score(prev, f)
         # structural/semantic default to 0.0 (motion-only reference); optional adapters fill them
         # (CLIP/pose/privacy on the real edge). None -> 0.0 keeps the default path byte-for-byte.
-        structural = 0.0 if self._structural_adapter is None else float(self._structural_adapter(f))
-        semantic = 0.0 if self._semantic_adapter is None else float(self._semantic_adapter(f))
-        cheap_signals = {
-            "motion": motion,
-            "change": motion,
-            "structural": structural,
-            "semantic": semantic,
-            "semantic_relevance": semantic,
-            "audio": 0.0 if energy is None else energy,
-            "audio_event": 0.0 if energy is None else energy,
-        }
-        if signals:
-            cheap_signals.update(signals)
-        fused = wake_score(cheap_signals, self._wake_policy) if self._wake_policy is not None else None
+        #
+        # ``_clamp01`` is the SHARED firewall (percept._numeric), matching the edge's JS ``clamp01``:
+        # a non-finite reading is 0.0, not a NaN. It must not be ``float()`` alone — a NaN compares
+        # False against EVERY cutoff, including 0.0, so an adapter that hiccups once made its goal
+        # permanently unable to admit and the two runtimes forked on what a broken channel is worth.
+        # An adapter returning ``None`` still raises out of the gate: that is documented intent (a
+        # broken adapter stops the watch loudly), and ``float(None)`` is where it raises.
+        structural = (
+            0.0 if self._structural_adapter is None
+            else _adapter_reading(self._structural_adapter(f))
+        )
+        semantic = (
+            0.0 if self._semantic_adapter is None
+            else _adapter_reading(self._semantic_adapter(f))
+        )
+        channels = cheap_signals(
+            motion=motion, structural=structural, semantic=semantic, energy=energy, extra=signals
+        )
+        fused = wake_score(channels, self._wake_policy) if self._wake_policy is not None else None
         when = now if now is not None else (self._clock() if self._clock is not None else None)
         # Armed = in-schedule conditions only; an out-of-schedule goal cannot escalate or set the cutoff.
         escalate = False
@@ -999,12 +1447,20 @@ class MotionGate:
                         )
                     )
                 continue
+            # ONE branch per channel, each reached only by the goal that asked for it. The fused
+            # branch used to sit ABOVE structural/semantic and fire on `fused is not None`, so a
+            # configured wake_policy replaced every goal's channel — and the admission was then
+            # recorded as `c.gate_on`, naming a channel whose measured value could be 0.0. A goal now
+            # opts in with `gate_on="fused"` and is reported as cause `"fused"`.
             if c.gate_on == "fixed":
                 score = 1.0 if c.cadence_s is not None else 0.0
                 fired = c.cadence_s is not None  # cadence elapsed (checked above) -> escalate regardless of motion
-            elif fused is not None:
-                score = fused
-                fired = fused >= c.threshold
+            elif c.gate_on == "fused":
+                # No wake_policy wired -> `wake_score` was never called, and a goal that asked to be
+                # fused has nothing to be fused from. It scores 0.0 rather than silently falling back
+                # to motion, the same way `gate_on="fixed"` with no cadence scores 0.0.
+                score = fused if fused is not None else 0.0
+                fired = score >= c.threshold
             elif c.gate_on == "structural":
                 score = structural
                 fired = structural >= c.threshold
@@ -1243,10 +1699,29 @@ class GatedWatchLoop:
                     "rhythm_goal_refused_at_arm",
                     data={"goal_id": _rhythm_goal_id, "reason": _rhythm_reason},
                 ))
-        thr = cfg.edge.motion_gate if threshold is None else threshold
+        # The deployment's salience configuration, in one place (see watchspec_kwargs): the stat, the
+        # ego mode and the per-stat cutoffs, not just a bare threshold. Passing only `threshold` here
+        # took compile_watchspec's SIGNATURE defaults (mean @ threshold) for the other three, so this
+        # loop gated on the whole-frame mean while the deployment — and the runtime worker, which
+        # reads the same settings — was configured for the localized statistic at its own higher
+        # cutoff. Every recall/economics number ever measured through this loop described a
+        # configuration nobody ran.
+        kwargs = watchspec_kwargs(cfg)
+        if threshold is not None:
+            # An explicit threshold is a cutoff, not a mean-scale cutoff: it overrides the whole
+            # per-stat table (which would otherwise shadow it for every non-mean stat) while leaving
+            # the configured statistic itself alone.
+            kwargs["threshold"] = threshold
+            kwargs["stat_thresholds"] = None
+        self._unsupported_detectors: list[tuple[str, list[str]]] = []
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
         # subset and the brain selects within it (the capability handshake).
-        self._spec = compile_watchspec(driven, threshold=thr, edge_capabilities=edge_capabilities)
+        self._spec = compile_watchspec(
+            driven,
+            edge_capabilities=edge_capabilities,
+            on_unsupported=self._report_unsupported_detectors,
+            **kwargs,
+        )
         # clock=None -> schedules are not enforced (default path, byte-for-byte unchanged). A caller that
         # arms scheduled goals injects a civil clock (e.g. civil_now) here; pure logic never reads wall-clock.
         self._gate = MotionGate(self._spec, settings=cfg, clock=clock, wake_policy=wake_policy)
@@ -1311,6 +1786,45 @@ class GatedWatchLoop:
 
                 on_health(RuntimeHealthEvent("undriven_behavior_route", data=record))
         return [goal for goal in active if worker_can_drive(goal_behavior_route(goal))]
+
+    def _report_unsupported_detectors(
+        self, unsupported: list[tuple[str, list[str]]]
+    ) -> None:
+        """The third channel for a dropped detector — the structured health event.
+
+        ``compile_watchspec`` already warned and logged (channels one and two); this adds the one a
+        24/7 deployment can route, on exactly ``_preflight_routes``' terms. ADR-002 §2 names
+        ``PLAN_UNOBSERVABLE`` for precisely this shape — "the wired source/goal combination cannot in
+        principle answer what the plan asks" — and maps it to ``state`` directly rather than to a
+        coverage float, because a boundary that can never arrive is binary, not a rate.
+        """
+        self._unsupported_detectors.extend(unsupported)
+        if self._on_health is None:
+            return
+        from percept.runtime.worker import RuntimeHealthEvent  # noqa: PLC0415 — import cycle
+
+        for goal_id, dropped in unsupported:
+            self._on_health(RuntimeHealthEvent(
+                UNSUPPORTED_DETECTOR_HEALTH_KIND,
+                data={
+                    "goal_id": goal_id,
+                    "dropped_detectors": list(dropped),
+                    "source": self._source,
+                    "driver": _GATED_LOOP_DRIVER,
+                    "reason": UNSUPPORTED_DETECTOR_REASON,
+                },
+            ))
+
+    @property
+    def unsupported_detectors(self) -> list[tuple[str, list[str]]]:
+        """``(goal_id, dropped_detectors)`` the connected edge could not run — as data.
+
+        The accessor half of the capability handshake, so a caller can pick a fallback without
+        re-deriving the partition. A separate accessor rather than a ``WatchSpec`` field on purpose:
+        ``WatchSpec`` is the wire contract ``contract.js`` mirrors, and adding a field to it would be
+        a wire MINOR for what is purely a local diagnostic.
+        """
+        return [(goal_id, list(dropped)) for goal_id, dropped in self._unsupported_detectors]
 
     @property
     def skipped_routes(self) -> list[dict]:
@@ -1393,7 +1907,18 @@ class GatedWatchLoop:
                 current_interest_frame = (
                     _as_frame(item.frame) if self._interest is not None else None
                 )
-                decision = self._gate.evaluate(item.frame, ts=item.ts, energy=energy, signals=extra)
+                decision = self._gate.evaluate(
+                    item.frame, ts=item.ts, energy=energy, signals=extra,
+                    # The interest adapter scores intervals from `decision.outcomes` — the per-Watch
+                    # typed result — and falls back to the whole-frame `mean` gauge when the tuple is
+                    # empty. Without this opt-in the fallback was not a fallback, it was the only
+                    # path: a localized-salience Watch admits on `block_max` while its mean gauge sits
+                    # near zero, so the replay loop handed the adapter a decision that could not
+                    # describe why it admitted and the timeline came back empty. Gated on the adapter
+                    # being wired, so a run with no interest recorder does not pay per-Watch outcome
+                    # construction on every frame. The live path (worker.py) already opts in.
+                    include_outcomes=self._interest is not None,
+                )
                 for goal_id, cause in zip(decision.goal_ids, decision.admission_causes):
                     report.admission_by_goal[goal_id] = report.admission_by_goal.get(goal_id, 0) + 1
                     report.admission_by_cause[cause] = report.admission_by_cause.get(cause, 0) + 1
@@ -1657,7 +2182,15 @@ __all__ = [
     "civil_now",
     "schedule_active",
     "compile_watchspec",
+    "watchspec_kwargs",
     "watchspec_unsupported",
+    "UnsupportedEdgeCapabilityWarning",
+    "UnsupportedMotionBiasError",
+    "StreamTimeRewindWarning",
+    "DegenerateBlockPartitionWarning",
+    "UNSUPPORTED_DETECTOR_REASON",
+    "UNSUPPORTED_DETECTOR_HEALTH_KIND",
+    "DEGENERATE_PARTITION_REASON",
     "MOTION_BIAS_KEY",
     "REGION_HINT_KEY",
     "SCHEDULE_KEY",

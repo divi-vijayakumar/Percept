@@ -143,6 +143,12 @@ class TunableSpec:
         return d
 
 
+# A ``bounds`` pair is INCLUSIVE, so a field the code enforces as strictly positive cannot honestly
+# declare 0.0 as its low end — that reads as "0 is a legal value", and for a ``safe_to_optimize`` field
+# it reads as "0 is a value an optimizer may select". This is the inclusive stand-in for the open
+# interval ``(0, ...]``: the smallest positive double, i.e. every rate above zero and nothing else.
+_SMALLEST_POSITIVE_FLOAT = 5e-324  # math.ulp(0.0)
+
 # ======================================================================================================
 # Section A — the ``Settings`` tree (``percept.config``, 10 dataclass sections, ``load_settings()``).
 # Read ONCE at ``Percept.create()`` time (config.py module docstring: "Read once via load_settings()")
@@ -611,8 +617,9 @@ _GOAL_STATE: tuple[TunableSpec, ...] = (
     TunableSpec(
         path="Goal.state.cadence.gate_on", owner="WatchPlan", visibility="public",
         safe_to_optimize=False, default=None, value_type="enum",
-        choices=("motion", "structural", "semantic", "fixed"), risk="high",
-        note="Per-Watch tier-0 admission mode; sustained worker Watches require fixed.",
+        choices=("motion", "structural", "semantic", "fixed", "fused"), risk="high",
+        note="Per-Watch tier-0 admission mode; sustained worker Watches require fixed, and fused "
+             "requires a wake_policy.",
     ),
     TunableSpec(
         path="Goal.state.from", owner="WatchPlan", visibility="public", safe_to_optimize=False,
@@ -841,15 +848,27 @@ _WATCH_PROFILE: tuple[TunableSpec, ...] = (
         default="single", value_type="enum", choices=("single", "strip", "window", "sprite"), risk="medium",
         note="explicit per-context evidence-gathering shape; Corrections(a) 'sprite' deprecation applies.",
     ),
+    # The two fps knobs are STRICTLY positive, and both are safe_to_optimize — so their low bound may
+    # not be 0.0, which advertised a zero cadence as an in-bounds value an optimizer could select. A
+    # `bounds` pair is INCLUSIVE and the enforced constraint is an open interval, so the low end is the
+    # smallest positive float: any rate above zero is legal, zero itself never is.
     TunableSpec(
         path="WatchProfile.cadence.base_fps", owner="ExecutionPolicy", visibility="public",
-        safe_to_optimize=True, default=4.0, value_type="float", bounds=(0.0, float("inf")), risk="low",
-        note="fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings').",
+        safe_to_optimize=True, default=4.0, value_type="float",
+        bounds=(_SMALLEST_POSITIVE_FLOAT, float("inf")), risk="low",
+        note="fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings'). Finite and "
+        "strictly > 0, and <= max_fps — enforced for every consumer by percept.sampling."
+        "validate_cadence, which SensePolicy and CadenceProfile both delegate to. 0 is not a slow "
+        "cadence: it is a concern that is never perceived at all while the scene is quiet.",
     ),
     TunableSpec(
         path="WatchProfile.cadence.max_fps", owner="ExecutionPolicy", visibility="public",
-        safe_to_optimize=True, default=15.0, value_type="float", bounds=(0.0, float("inf")), risk="low",
-        note="fovea cost ceiling; must be >= base_fps (CadenceProfile.__post_init__).",
+        safe_to_optimize=True, default=15.0, value_type="float",
+        bounds=(_SMALLEST_POSITIVE_FLOAT, float("inf")), risk="low",
+        note="fovea cost ceiling; finite, strictly > 0 and >= base_fps — enforced by percept.sampling."
+        "validate_cadence, which SensePolicy (the type every consumer runs on) and CadenceProfile both "
+        "delegate to. An inverted envelope processes QUIET frames at base_fps, straight through this "
+        "ceiling, and de-escalates on motion.",
     ),
     TunableSpec(
         path="WatchProfile.cadence.escalate_threshold", owner="ExecutionPolicy", visibility="public",

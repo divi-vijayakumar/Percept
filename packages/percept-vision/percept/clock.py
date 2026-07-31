@@ -10,13 +10,24 @@ fills it needs: a real :data:`WallClock` and a test-driven :class:`FakeClock`.
 
 ``FakeClock`` is a drop-in for the ``clock`` callable (it IS callable) **plus** an ``advance()`` the test or
 the timeline-replay harness drives — so a deadline / absence fire can be exercised deterministically
-with zero wall-clock waits and no change to any call site. Pure stdlib.
+with zero wall-clock waits and no change to any call site.
+
+The *stream* timeline is the other half, and it is the untrusted one: the explicit ``t`` a caller passes
+in comes from a file, a decoder, a socket or a host clock, none of which promise monotonicity or even
+finiteness. :class:`StreamTimeGuard` names that boundary. It lives in :mod:`percept._streamtime`, not
+here, and is only re-exported for the harness callers that already import it from this module — because
+this module is **harness-only** (ADR-001 §5, enforced by
+``tests/test_adr001_status_honesty.py::test_clock_module_is_harness_only``) while the untrusted stream
+timeline is read by run-time cognition too. Importing the guard from here outside ``harness/`` would make
+the ADR's implementation-status note stale; import it from :mod:`percept._streamtime` instead.
 """
 
 from __future__ import annotations
 
 import time
 from typing import Callable
+
+from ._streamtime import StreamTimeGuard, StreamTimeVerdict
 
 # The Clock contract: a zero-arg callable returning the current time in SECONDS (monotonic in production).
 # Kept as a structural type alias rather than a Protocol class so the existing ``Callable[[], float]``
@@ -50,4 +61,4 @@ class FakeClock:
         self._t = float(seconds)
 
 
-__all__ = ["Clock", "WallClock", "FakeClock"]
+__all__ = ["Clock", "WallClock", "FakeClock", "StreamTimeGuard", "StreamTimeVerdict"]

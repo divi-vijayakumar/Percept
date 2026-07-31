@@ -64,7 +64,8 @@ class ClaimOutcome:
     - ``effective`` — what was actually applied (equals ``requested`` unless an authority downgrade
       rewrote a mutating op to ``mention``).
     - ``value_after`` / ``normalized_after`` — the slot value after this operation.
-    - ``applied`` — did the slot value actually change (a real write)?
+    - ``applied`` — did the slot actually change (a real write)? Computed over the WHOLE slot,
+      ``(value, normalized_value)``, so a correction that moves only the canonical form counts.
     - ``downgraded`` — was a mutating op refused for lack of authority (then ``effective == 'mention'``)?
     - ``supersedes`` — for an applied ``replace``/``retract``/``close``, the revision id it acted on
       (the prior authoritative revision), or ``None`` when there was nothing to supersede.
@@ -139,6 +140,21 @@ def apply_operation(
     * ``replace`` — supersede the current revision with the stated value.
     * ``retract``/``close`` — clear the slot to ``None`` (valueless).
     * ``confirm``/``mention`` — leave the value untouched.
+
+    THE SLOT IS THE PAIR ``(value, normalized_value)``, and two rules follow from that:
+
+    1. **An OMITTED normalization is NOT a cleared one.**
+       :attr:`~percept.contracts.Verdict.normalized_value` defaults to ``None`` and is documented as
+       an OPTIONAL canonical form, so ``None`` from a writing act means NOT STATED and the
+       established canonical form is KEPT. Without this, a speaker restating the agreed number
+       ("still $25K") — an act that writes nothing, mints no revision and reports ``applied=False``
+       — silently destroyed the machine-readable ``25000`` behind it, with nothing in the outcome to
+       notice it by. ``retract``/``close`` still clear BOTH fields unconditionally: a retraction is
+       an EXPLICIT clear, not an omission, and the two must not be conflated.
+    2. **``applied`` is computed over the WHOLE pair**, not over ``value`` alone. A correction that
+       moves only the canonical form (same display text, a fixed normalization) is a real write and
+       now mints a revision, where before it changed state invisibly. This is the one behavior
+       change a caller can observe: such a correction shifts subsequent ``revision_id`` numbering.
     """
     requested = operation
     effective = operation
@@ -158,25 +174,29 @@ def apply_operation(
                 value=value,
             )
 
-    before = state.value
+    # The WHOLE slot, not just the display value — see rule (2) in the docstring.
+    before = (state.value, state.normalized_value)
     supersedes: str | None = None
     minted: str | None = None
 
     if effective == "assert":
         if state.value is None:  # establish ONLY into an empty slot — never overwrite
             state.value = value
-            state.normalized_value = normalized_value
+            if normalized_value is not None:  # None == not stated, never "clear it"
+                state.normalized_value = normalized_value
     elif effective == "replace":
         supersedes = state.revision_id  # the revision being superseded (None if never established)
         state.value = value
-        state.normalized_value = normalized_value
+        if normalized_value is not None:  # None == not stated, never "clear it"
+            state.normalized_value = normalized_value
     elif effective in VALUE_CLEARING:
         supersedes = state.revision_id  # the revision being withdrawn
+        # Unconditional on BOTH fields: a retraction is an explicit clear, not an omission.
         state.value = None
         state.normalized_value = None
     # confirm / mention (and any downgraded mutating op) leave the value untouched.
 
-    applied = state.value != before
+    applied = (state.value, state.normalized_value) != before
     if applied and effective in VALUE_SETTING:
         state.revisions += 1
         minted = revision_id(state.claim_id, state.revisions)

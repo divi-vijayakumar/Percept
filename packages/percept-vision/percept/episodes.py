@@ -71,6 +71,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+from ._time_compare import within
 from .events import frame_nbytes
 from .observability import get_logger, log
 
@@ -1197,7 +1198,13 @@ class EpisodeLog:
 # duration. The trailing observation is NEVER extended past itself even when a horizon is set: with
 # no successor to bound it, extending into the open future would itself be forward-filling.
 
-CoverageKind = Literal["observed", "validity_horizon"]
+# ONE kind, deliberately. A second literal (``validity_horizon``) was declared here for a long time
+# and NEVER emitted — both construction sites hard-code ``observed`` — so every consumer that
+# branched on it was branching on a value it could not receive. Splitting the spans for real would
+# change span CARDINALITY and the meaning of ``observed_total_s`` for every merged run, breaking any
+# client that sums them; the same client question ("how much of this was granted rather than
+# sampled?") is answered ADDITIVELY instead, by :attr:`Coverage.horizon_granted_s`.
+CoverageKind = Literal["observed"]
 GapReason = Literal["unobserved", "judge_degraded"]
 
 
@@ -1255,11 +1262,21 @@ class Coverage:
     ``observed_total_s`` is the sum of span durations ONLY — a gap contributes zero, because an
     unobserved second is not a second of coverage. This is the number a client should quote for
     "time accounted for"; the gaps are what they must NOT quote as either presence or absence.
+
+    ``horizon_granted_s`` is the CONCERN-AUTHORED validity horizon this coverage was built under
+    (``0.0`` when none was authored). It is the provenance the single :data:`CoverageKind` no longer
+    carries: an observation is an INSTANT, so every second strictly inside a span was granted by
+    this horizon rather than directly sampled. At ``0.0`` no span can be longer than an instant and
+    ``observed_total_s`` is necessarily ``0.0`` — so a non-zero total ALWAYS implies a horizon, and
+    this field says how generous it was. A client deciding whether to quote ``observed_total_s`` as
+    a duration should read it: 0.5s of coverage under a 0.5s horizon is one sample's benefit of the
+    doubt, and the same 0.5s under a 60s horizon is not a measurement at all.
     """
 
     spans: tuple[CoverageSpan, ...]
     gaps: tuple[CoverageGap, ...]
     observed_total_s: float
+    horizon_granted_s: float = 0.0
 
 
 def _gap_reason(observations: "list[Observation]", start: float, end: float) -> GapReason:
@@ -1284,12 +1301,23 @@ def interval_coverage(
     falls inside it, else ``unobserved``). Coverage is defined over ``[first positive, last
     positive]`` only — nothing is claimed before the first or after the last thing observed.
 
-    Returns a :class:`Coverage`; ``observed_total_s`` counts span time only.
+    The boundary is INCLUSIVE and is compared through :func:`percept._time_compare.within`, NOT with
+    a bare ``<=``: a uniformly sampled stream does not produce uniform differences in binary float
+    (at 10 Hz ``0.4 - 0.3 > 0.1``), so a bare compare turns the most natural configuration there is
+    — horizon exactly equal to the sampling cadence — into phantom ``unobserved`` gaps on some steps
+    and not others. Authoring the horizon strictly above the cadence is explicitly NOT the answer;
+    that is our floating-point problem, not the client's.
+
+    Returns a :class:`Coverage`; ``observed_total_s`` counts span time only, and
+    ``horizon_granted_s`` echoes the horizon that time was granted under.
     """
+    horizon_granted_s = float(observation_valid_for_s or 0.0)
     ordered = sorted(observations, key=lambda o: o.t)
     positives = [o for o in ordered if o.positive]
     if not positives:
-        return Coverage(spans=(), gaps=(), observed_total_s=0.0)
+        return Coverage(
+            spans=(), gaps=(), observed_total_s=0.0, horizon_granted_s=horizon_granted_s
+        )
 
     spans: list[CoverageSpan] = []
     gaps: list[CoverageGap] = []
@@ -1297,7 +1325,7 @@ def interval_coverage(
     prev_t = positives[0].t
     for cur in positives[1:]:
         dt = cur.t - prev_t
-        mergeable = observation_valid_for_s is not None and dt <= observation_valid_for_s
+        mergeable = observation_valid_for_s is not None and within(dt, observation_valid_for_s)
         if mergeable:
             prev_t = cur.t
             continue
@@ -1309,7 +1337,12 @@ def interval_coverage(
     spans.append(CoverageSpan(start=span_start, end=prev_t, kind="observed"))
 
     total = sum(s.duration for s in spans)
-    return Coverage(spans=tuple(spans), gaps=tuple(gaps), observed_total_s=total)
+    return Coverage(
+        spans=tuple(spans),
+        gaps=tuple(gaps),
+        observed_total_s=total,
+        horizon_granted_s=horizon_granted_s,
+    )
 
 
 __all__ = [

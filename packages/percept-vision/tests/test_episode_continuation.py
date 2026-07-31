@@ -6,8 +6,13 @@ NECESSARY EVIDENCE for continuation, never its definition::
 
     continues = (same_subject
                  and episode.status == "open"
-                 and observation.ts - episode.last_seen <= continuity_gap_s
+                 and observation.ts - episode.last_seen < continuity_gap_s
                  and mutation_is_compatible)
+
+The gap conjunct is STRICT. This docstring said ``<=`` until 2026-07-30, which contradicted both the
+shipped comparison (``percept/episodes.py:865`` reads ``>=`` for "exceeded") and
+``EpisodeLog.continuation_reason``'s own docstring. A separation of EXACTLY ``continuity_gap_s``
+opens a new episode; ``TestTheGapBoundaryIsInclusive`` pins that boundary from both sides.
 
 The stream cases (inside-gap continues / after-gap opens new / A-B-A no spurious third fire /
 terminal-reopen) are driven from ``eval/synthetic/continuation/cases.json`` when that fixture tree is
@@ -16,6 +21,7 @@ criteria either way.
 """
 
 import json
+import math
 import unittest
 from pathlib import Path
 
@@ -26,6 +32,7 @@ from percept.episodes import (
     CLOSED,
     CONTINUATION_REASONS,
     EPISODE_POLICIES,
+    Episode,
     EpisodeLog,
     EpisodePolicy,
     episode_policy_of,
@@ -233,6 +240,146 @@ class TestThreeDecisionsAreSeparate(unittest.TestCase):
         log.observe_decision(1.0, "x", subject_key="s")
         log.observe_decision(50.0, "x", subject_key="s")
         self.assertEqual([d.reason for d in seen], ["new_subject", "continued", "gap_exceeded"])
+
+
+class TestTheGapBoundaryIsInclusive(unittest.TestCase):
+    """The one value nobody agrees on by accident: ``t - last_seen`` EXACTLY ``continuity_gap_s``.
+
+    "Inclusive" names which side owns the boundary: the EXCEEDED side does. ``episodes.py:865``
+    compares ``(t - episode.last_seen) >= policy.continuity_gap_s``, so a separation of exactly the
+    gap is a NEW episode, and ``continuity_gap_s`` is the first separation that no longer continues.
+    Get this wrong by one comparison and a concern authored ``door_interval`` (5.0 s) silently merges
+    a second door opening at t=5.0 into the first — one incident where the user asked for two.
+    """
+
+    GAP = 10.0
+
+    def _log(self, **policy_fields) -> EpisodeLog:
+        return EpisodeLog("g", policy=EpisodePolicy(continuity_gap_s=self.GAP, **policy_fields))
+
+    @staticmethod
+    def _episode(last_seen: float = 0.0, status: "str | None" = None) -> Episode:
+        """A bare episode, so the pure predicate is pinned independently of the log."""
+        ep = Episode(id="g:ep1", goal_id="g", started_at=0.0, last_seen=last_seen, exemplar="s",
+                     subject_key="s")
+        if status is not None:
+            ep.status = status
+        return ep
+
+    # -- through the log -------------------------------------------------------------------------
+    def test_exactly_at_the_gap_opens_a_new_episode(self):
+        log = self._log()
+        first = log.observe_decision(0.0, "s", subject_key="s")
+        at = log.observe_decision(self.GAP, "s", subject_key="s")
+        self.assertEqual(at.reason, "gap_exceeded")
+        self.assertTrue(at.is_new)
+        self.assertTrue(at.subject_matched)   # decision (1) still says "same subject"...
+        self.assertTrue(at.denied)            # ...decision (2) refuses anyway, and says so
+        self.assertEqual(at.gap_s, self.GAP)
+        self.assertEqual(at.prior_episode_id, first.episode.id)
+        self.assertNotEqual(at.episode.id, first.episode.id)
+        self.assertEqual(log.count(), 2)
+        # The refused episode must not have been quietly extended on the way past.
+        self.assertEqual(first.episode.last_seen, 0.0)
+        self.assertEqual(first.episode.observations, 1)
+
+    def test_a_hair_inside_the_gap_still_continues(self):
+        log = self._log()
+        first = log.observe_decision(0.0, "s", subject_key="s")
+        inside = log.observe_decision(9.999, "s", subject_key="s")
+        self.assertEqual(inside.reason, "continued")
+        self.assertFalse(inside.is_new)
+        self.assertFalse(inside.denied)
+        self.assertEqual(inside.episode.id, first.episode.id)
+        self.assertEqual(log.count(), 1)
+        self.assertEqual(first.episode.last_seen, 9.999)
+        self.assertEqual(first.episode.observations, 2)
+
+    def test_the_boundary_is_the_separation_not_the_absolute_timestamp(self):
+        # Same log, walked forward: each step is exactly the gap from the PREVIOUS observation, so
+        # every one of them splits. Three observations, three episodes.
+        log = self._log()
+        reasons = [
+            log.observe_decision(t, "s", subject_key="s").reason
+            for t in (0.0, self.GAP, 2 * self.GAP)
+        ]
+        self.assertEqual(reasons, ["new_subject", "gap_exceeded", "gap_exceeded"])
+        self.assertEqual(log.count(), 3)
+
+    def test_every_shipped_preset_with_a_gap_splits_at_its_own_boundary(self):
+        # The rule is the comparison, not the number 10.0 — pin it against each shipped preset.
+        for name, policy in EPISODE_POLICIES.items():
+            if policy.continuity_gap_s is None:
+                continue
+            with self.subTest(policy=name, gap=policy.continuity_gap_s):
+                log = EpisodeLog("g", policy=policy)
+                log.observe_decision(0.0, "s", subject_key="s")
+                at = log.observe_decision(policy.continuity_gap_s, "s", subject_key="s")
+                self.assertEqual(at.reason, "gap_exceeded")
+                self.assertEqual(log.count(), 2)
+
+    # -- the pure predicate, with no log at all ---------------------------------------------------
+    def test_continuation_reason_at_the_boundary_is_gap_exceeded(self):
+        policy = EpisodePolicy(continuity_gap_s=self.GAP)
+        self.assertEqual(
+            EpisodeLog.continuation_reason(self._episode(), self.GAP, policy), "gap_exceeded"
+        )
+        # ...and from a non-zero last_seen, so it is the difference that decides.
+        self.assertEqual(
+            EpisodeLog.continuation_reason(self._episode(last_seen=3.25), 13.25, policy),
+            "gap_exceeded",
+        )
+
+    def test_continuation_reason_one_ulp_below_the_boundary_still_continues(self):
+        # The tightest statement of "the boundary is exactly at the gap": the largest representable
+        # separation below it continues, so nothing sits between "continued" and "gap_exceeded".
+        policy = EpisodePolicy(continuity_gap_s=self.GAP)
+        just_under = math.nextafter(self.GAP, 0.0)
+        self.assertLess(just_under, self.GAP)
+        self.assertEqual(
+            EpisodeLog.continuation_reason(self._episode(), just_under, policy), "continued"
+        )
+
+    def test_the_gap_conjunct_is_read_before_the_mutation_conjunct(self):
+        # Ordering matters for the REASON a caller is told: at the boundary the gap is the first
+        # failed conjunct, so an incompatible mutation must not be the one reported.
+        policy = EpisodePolicy(continuity_gap_s=self.GAP)
+        self.assertEqual(
+            EpisodeLog.continuation_reason(
+                self._episode(), self.GAP, policy, mutation_compatible=False
+            ),
+            "gap_exceeded",
+        )
+        self.assertEqual(
+            EpisodeLog.continuation_reason(
+                self._episode(), 1.0, policy, mutation_compatible=False
+            ),
+            "mutation_incompatible",
+        )
+
+    def test_the_gap_beats_reopen_at_the_boundary(self):
+        # allow_reopen resurrects a terminal episode INSIDE the gap only; at the boundary the gap
+        # still wins, so a reopen policy cannot smuggle the exactly-at-gap case back into one episode.
+        policy = EpisodePolicy(continuity_gap_s=self.GAP, allow_reopen=True)
+        closed = self._episode(status=CLOSED)
+        self.assertEqual(EpisodeLog.continuation_reason(closed, self.GAP, policy), "gap_exceeded")
+        self.assertEqual(EpisodeLog.continuation_reason(closed, 9.0, policy), "reopened")
+
+    def test_an_unbounded_policy_never_reports_gap_exceeded(self):
+        policy = EpisodePolicy()
+        self.assertIsNone(policy.continuity_gap_s)   # the shipped default
+        for t in (0.0, self.GAP, 86_400.0, 1e9):
+            with self.subTest(t=t):
+                self.assertEqual(
+                    EpisodeLog.continuation_reason(self._episode(), t, policy), "continued"
+                )
+        log = EpisodeLog("g", policy=policy)
+        first = log.observe_decision(0.0, "s", subject_key="s")
+        late = log.observe_decision(1e9, "s", subject_key="s")
+        self.assertEqual(late.reason, "continued")
+        self.assertFalse(late.is_new)
+        self.assertEqual(late.episode.id, first.episode.id)
+        self.assertEqual(log.count(), 1)
 
 
 class TestEpisodePolicyIsPerConcern(unittest.TestCase):

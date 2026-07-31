@@ -18,8 +18,10 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from percept._snapshot import reject
 from percept.incidents import incident_revision, incident_supersedes
 from percept.observability import get_logger, log
+from percept.runtime._bounds import BoundedRecencyMap
 
 
 class UrlPolicyError(ValueError):
@@ -426,6 +428,11 @@ class IdempotencyLedger:
     let this grow without limit; an event_id that ages out of the ledger simply becomes eligible for
     (re)delivery again, same as one that was never delivered.
 
+    Both bounds are now the shared :class:`~percept.runtime._bounds.BoundedRecencyMap` — this class's
+    own pop-then-reinsert refresh and evict-from-the-front sweep, lifted out unchanged so the delivery
+    merge in ``percept/behavior.py`` stops hand-rolling a second, wronger copy of them. ``_trace``
+    stays here: the hook and the log line are this ledger's contract, not the map's.
+
     SURVIVES RESTART: :meth:`snapshot`/:meth:`restore` round-trip only ``(event_id, ts)`` pairs — no
     secrets, no raw media, no incident payload (ADR-001 §1 lifecycle) — through the SAME
     ``Persistence`` backend (``percept.persistence``) the runtime already uses for goals/entities. The
@@ -437,10 +444,24 @@ class IdempotencyLedger:
         self, *, max_records: int = 10_000, ttl_s: float | None = 3600.0,
         on_evict: "Callable[[str, str], None] | None" = None,
     ) -> None:
-        self.max_records = max_records
         self.ttl_s = ttl_s
         self.on_evict = on_evict
-        self._delivered: "dict[str, float]" = {}  # event_id -> ts of terminal-OK delivery, insertion-ordered
+        # event_id -> ts of terminal-OK delivery, in RECENCY order: `mark_delivered` moves a
+        # refreshed id to the back, both bounds drop from the front. Every drop routes through
+        # `_trace`, so the map's own fallback log is never the one that fires here.
+        self._delivered: BoundedRecencyMap = BoundedRecencyMap(
+            max_records, on_evict=self._trace, bound_reason="max_records",
+        )
+
+    @property
+    def max_records(self) -> int:
+        """The COUNT bound. A property so the ledger and the map it delegates to can never disagree
+        about it — the two used to be separate attributes and a caller raising one raised nothing."""
+        return self._delivered.max_keys
+
+    @max_records.setter
+    def max_records(self, value: int) -> None:
+        self._delivered.max_keys = int(value)
 
     def is_delivered(self, event_id: str, *, now: float | None = None) -> bool:
         """True iff ``event_id`` already reached a terminal-OK delivery and that record hasn't aged
@@ -456,21 +477,15 @@ class IdempotencyLedger:
     def mark_delivered(self, event_id: str, *, ts: float) -> None:
         """Record a TERMINAL-OK delivery for ``event_id``. Idempotent — marking an already-delivered
         id just refreshes its recency (moves it to the back of the LRU eviction order)."""
-        self._delivered.pop(event_id, None)
-        self._delivered[event_id] = ts
-        self._evict(now=ts)
+        self._delivered.note(event_id, ts)  # recency refresh + the COUNT bound
+        self._evict(now=ts)                 # ...and the AGE bound this ledger adds on top of it
 
     def _evict(self, *, now: float) -> None:
-        while self.ttl_s is not None and self._delivered:
-            oldest_id, oldest_ts = next(iter(self._delivered.items()))
-            if (now - oldest_ts) <= self.ttl_s:
-                break
-            self._delivered.pop(oldest_id)
-            self._trace(oldest_id, "ttl")
-        while len(self._delivered) > self.max_records:
-            oldest_id, _oldest_ts = next(iter(self._delivered.items()))
-            self._delivered.pop(oldest_id)
-            self._trace(oldest_id, "max_records")
+        """Apply both bounds. Age first: a record that has aged out is reported as ``ttl`` rather
+        than being swept up by the count bound behind it."""
+        if self.ttl_s is not None:
+            self._delivered.expire(lambda _id, ts: (now - ts) > self.ttl_s, "ttl")
+        self._delivered.enforce()
 
     def _trace(self, event_id: str, reason: str) -> None:
         if self.on_evict is not None:
@@ -490,10 +505,27 @@ class IdempotencyLedger:
 
     def restore(self, snap: Any) -> None:
         """Rehydrate from :meth:`snapshot`. Missing/malformed input is a no-op — a corrupt or absent
-        ledger snapshot must never block a restart, it just means the ledger starts blank."""
+        ledger snapshot must never block a restart, it just means the ledger starts blank.
+
+        ``if not snap`` alone screened only FALSY input, so a truthy NON-ITERABLE — the shape a
+        half-written or type-confused persistence record produces — reached the ``for`` and raised
+        ``TypeError`` from OUTSIDE the per-item guard, straight into the restart path this docstring
+        promises it cannot block. The top-level shape is checked first now, and rejected the same way
+        a bad item is: logged, then skipped. Per-ITEM handling is unchanged."""
         if not snap:
             return
-        for item in snap:
+        if isinstance(snap, (str, bytes, bytearray, dict)):
+            items: list = []  # iterable, but not a list of [event_id, ts] records
+        else:
+            try:
+                items = list(snap)
+            except TypeError:
+                items = []
+        if not items:
+            if snap:
+                reject("<root>", "ledger snapshot is not a list of [event_id, ts] records", snap)
+            return
+        for item in items:
             try:
                 event_id, ts = item[0], float(item[1])
             except (TypeError, ValueError, IndexError, KeyError):
@@ -517,26 +549,77 @@ class IdempotentSink:
 
     Handles both sync and async sinks (``on_incident`` may be either — see ``worker._call_sink``):
     a coroutine result is marked delivered only once it actually completes without raising.
+
+    THE DEDUPE DROP IS A DIAGNOSTIC, NEVER A MERGE AND NEVER A RAISE. The dropped call carries a
+    payload nobody downstream will ever see, so it is reported — ``on_duplicate(event_id, incident)``
+    when wired, a structured ``idempotency.deduped`` line otherwise — which is the bar the module's
+    other two drop paths (:meth:`BoundedDeadLetterQueue._evict`, :meth:`IdempotencyLedger._trace`)
+    already meet under ADR-001 §9, and the only one this path used to miss. The two louder responses
+    are both wrong here, for reasons worth keeping written down:
+
+    * **Merging the two payloads is forbidden.** ADR-001 §10.2 freezes a judgment event after
+      construction and §6 defines ``event_id`` as PER-EVENT, so folding a second incident into an
+      already-delivered one would manufacture a finding that never occurred. A dropped payload stays
+      dropped.
+    * **Raising is wrong.** The dedupe hit is the DESIGNED happy path — ADR-001 §6 makes delivery
+      at-least-once with idempotency, and ADR-004 §1 names this class as ``run()``'s dedupe on
+      ``incident.id`` — so it fires on every ordinary post-restart redelivery. This sink sits INSIDE
+      ``run()``'s delivery path, where a raise would route a perfectly healthy redelivery to the
+      dead-letter queue and re-drive the retry loop that produced it.
+
+    The default line is DEBUG, not INFO, and never stringifies the payload: on a retry-heavy sink it
+    fires once per redelivery, and an INFO line carrying an incident body would be the loudest thing
+    in the log for the most ordinary thing the sink does. Operators who need it lower the level on
+    ``percept.runtime.sinks``; integrations that need to COUNT it wire ``on_duplicate``.
+
+    What it deliberately does NOT do is distinguish a redelivery from a genuine ``event_id``
+    COLLISION (two different incidents sharing one id). That would need a payload digest beside the
+    ``(event_id, ts)`` pair, and the ledger's ``snapshot()`` wire shape — ``[[event_id, ts], ...]``,
+    read back with ``dict(snapshot())`` — is pinned by the restart tests as exactly two elements per
+    row. Shipped code cannot produce the collision anyway: ``make_incident`` mints
+    ``inc-{goal_id}-{ts}-{uuid4}``, so it takes a caller passing an explicit ``id=`` or a corrupting
+    persistence layer to reach it.
     """
 
     def __init__(
         self, sink: Callable, ledger: "IdempotencyLedger", *, clock: "Callable[[], float] | None" = None,
+        on_duplicate: "Callable[[str, Any], None] | None" = None,
     ) -> None:
         self._sink = sink
         self._ledger = ledger
         self._clock = clock or time.monotonic
+        #: Fires once per deduped delivery, mirroring ``BoundedDeadLetterQueue.on_drop`` and
+        #: ``IdempotencyLedger.on_evict``: wired -> the hook owns the report; unwired -> the log line.
+        self.on_duplicate = on_duplicate
 
     def __call__(self, incident: Any) -> Any:
         event_id = getattr(incident, "id", None)
         now = self._clock()
         if event_id is not None and self._ledger.is_delivered(event_id, now=now):
-            return None  # already terminal-OK — dedupe: no re-delivery, no duplicate logical incident
+            # Already terminal-OK — dedupe: no re-delivery, no duplicate logical incident. Traced,
+            # because a delivery that silently does nothing is indistinguishable from one that failed.
+            self._trace_duplicate(event_id, incident)
+            return None
         result = self._sink(incident)
         if inspect.isawaitable(result):
             return self._await_and_mark(result, event_id)
         if event_id is not None:
             self._ledger.mark_delivered(event_id, ts=now)
         return result
+
+    def _trace_duplicate(self, event_id: str, incident: Any) -> None:
+        """Report one deduped delivery. The hook when wired, a DEBUG log line when not.
+
+        ``incident`` reaches the HOOK (an integration may want the payload it just lost) but never
+        the log line — see the class docstring: this fires on every redelivery, and the fields stay
+        ``event_id`` + ``reason`` so the line is cheap enough to leave on."""
+        if self.on_duplicate is not None:
+            self.on_duplicate(event_id, incident)
+            return
+        get_logger("percept.runtime.sinks").debug(
+            "idempotency.deduped",
+            extra={"fields": {"event_id": event_id, "reason": "already_delivered"}},
+        )
 
     async def _await_and_mark(self, awaitable: Any, event_id: str | None) -> Any:
         out = await awaitable
@@ -565,22 +648,31 @@ class SupersessionLedger:
     def __init__(
         self, *, max_records: int = 10_000, on_evict: "Callable[[str, str], None] | None" = None,
     ) -> None:
-        self.max_records = max_records
         self.on_evict = on_evict
-        self._by_revision: "dict[str, str]" = {}  # revision_id -> incident.id, insertion-ordered (LRU)
+        # revision_id -> incident.id, in RECENCY order — the same shared bound the idempotency
+        # ledger and the delivery merge use; see percept.runtime._bounds.
+        self._by_revision: BoundedRecencyMap = BoundedRecencyMap(
+            max_records, on_evict=self._trace, bound_reason="max_records",
+        )
+
+    @property
+    def max_records(self) -> int:
+        return self._by_revision.max_keys
+
+    @max_records.setter
+    def max_records(self, value: int) -> None:
+        self._by_revision.max_keys = int(value)
 
     def record(self, revision_id: str, incident_id: str) -> None:
         """Remember that ``revision_id`` was delivered as incident ``incident_id``."""
-        self._by_revision.pop(revision_id, None)
-        self._by_revision[revision_id] = incident_id
-        while len(self._by_revision) > self.max_records:
-            oldest = next(iter(self._by_revision))
-            self._by_revision.pop(oldest)
-            if self.on_evict is not None:
-                self.on_evict(oldest, "max_records")
-            else:
-                log(get_logger("percept.runtime.sinks"), "supersession_ledger.evicted",
-                    reason="max_records", revision_id=oldest)
+        self._by_revision.note(revision_id, incident_id)
+
+    def _trace(self, revision_id: str, reason: str) -> None:
+        if self.on_evict is not None:
+            self.on_evict(revision_id, reason)
+        else:
+            log(get_logger("percept.runtime.sinks"), "supersession_ledger.evicted",
+                reason=reason, revision_id=revision_id)
 
     def resolve(self, revision_id: str) -> "str | None":
         """The incident id a prior ``revision_id`` was delivered as, or ``None`` if unknown/aged out."""

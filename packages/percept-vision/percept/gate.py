@@ -47,10 +47,14 @@ it — the firing path drops a silent decision rather than surfacing it (see
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Callable, Hashable, Literal
 
+from ._snapshot import (SnapshotError, as_bool, as_float, key_tuple, parse_keys, parse_pairs,
+                        parse_records, reject)
 from .adapters import Verdict
+from .identity_policy import is_entity_scoped
 from .observability import get_logger, log
 
 # GATE_STATE_LEAK defaults — a bare ``Gate()`` must not be able to grow without bound (ADR-001
@@ -183,19 +187,102 @@ class GateOutcome:
         return self.action in DELIVERED_ACTIONS
 
 
+def _confidence_is_usable(verdict: Verdict) -> bool:
+    """Is ``verdict.confidence`` a number the ``< threshold`` comparison can actually refuse?
+
+    Defence in depth for ADR-001 §10 invariant 4, and EXACTLY ONE TERM of the verdict contract —
+    the single one whose failure this function's own arithmetic cannot detect. Every comparison
+    against NaN is ``False``, so a ``nan`` confidence walks straight through ``confidence <
+    threshold`` and out the other side as a confident ``"yes"``: the refusal-to-guess rule silently
+    inverts into a confident wrong fire. ``inf`` and a ``bool`` (``isinstance(True, int)`` is
+    ``True``, and ``True < 0.7`` is ``False``) do the same. A non-numeric confidence raises
+    ``TypeError`` from the comparison instead — a crash, which invariant 4 also forbids.
+
+    The real fix is the boundary: :func:`percept.contracts.verdict_defect` refuses all of this
+    before a malformed verdict ever reaches the gate. This is the second line, for the paths that
+    construct a ``Verdict`` internally and reach ``classify`` without crossing a judge seam.
+
+    **The range check is deliberately NOT here.** A finite ``7.5`` stays classifiable. Refusing an
+    out-of-range confidence inside ``classify`` would silently change behaviour for a deployment
+    whose backend reports on a 0-100 scale — a scale error belongs at the boundary, where it is
+    reported as ``confidence_out_of_range`` and fails the call over, not swallowed into an ``ASK``
+    the operator never sees. Restricted to non-finiteness, this guard is provably behaviour-
+    preserving on EVERY finite numeric input, which is what makes it safe to put on the hot path.
+    """
+    confidence = verdict.confidence
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        return False
+    # Only a float can be NaN/inf; an int is finite by construction, and ``math.isfinite`` on a
+    # very large one raises OverflowError converting it — so never ask.
+    return math.isfinite(confidence) if isinstance(confidence, float) else True
+
+
 def classify(
     verdict: Verdict, freshness: float, threshold: float, fresh_min: float
 ) -> _Truth:
     """Map a verdict + freshness to yes / no / unknown (the pre-edge decision).
 
     Low confidence OR a stale supporting fact is ``unknown`` -> ASK. This is the refusal-to-guess
-    rule: ambiguity never becomes a confident fire.
+    rule: ambiguity never becomes a confident fire — and an UNUSABLE confidence (NaN/inf/bool/
+    non-numeric, see :func:`_confidence_is_usable`) is the most ambiguous input of all, so it takes
+    the same refusal rather than defeating the comparison that implements it.
     """
+    if not _confidence_is_usable(verdict):
+        return "unknown"
     if verdict.confidence < threshold:
         return "unknown"
     if freshness < fresh_min:
         return "unknown"
     return "yes" if verdict.satisfied else "no"
+
+
+@dataclass
+class _KeyState:
+    """Everything the gate remembers about ONE key, in ONE record.
+
+    This used to be SIX parallel dicts, and every iterator over them had drifted apart: ``_drop``
+    covered all six, ``reset_goal`` swept three, ``reset_entity`` swept exactly one, and the
+    ``max_keys`` ceiling counted a seventh population (``len(_armed)``) that excluded any key the
+    dwell branches had touched. The bugs that produced were not independent — they were one bug,
+    "the keyspace is defined by whichever map you happened to iterate", wearing three faces:
+    orphaned dwell state for a dead entity, an LRU ceiling that under-bounded by exactly the
+    dwell-pending population, and a per-key eviction exemption that a sibling reset threw away.
+
+    With one record per key the question "which keys exist?" has exactly one answer (``_keys``), so
+    ``_drop`` is total by construction, the ceiling's denominator is right by construction, and no
+    sweep can leave a map behind because there are no other maps.
+
+    ``armed`` is ``None``, not ``False``, when the bit was never written. That distinction is
+    load-bearing twice over: an absent bit means "fresh edge, default ARMED"
+    (``self._armed.get(key, True)`` historically), and ``require_false_first`` keys off "was this
+    key ever armed?" (``key not in self._armed``). A dwell-pending key legitimately has state
+    without ever having had an armed bit, which is why it cannot collapse to a plain ``bool``.
+    """
+
+    armed: bool | None = None            # `_armed`: None = never written = a fresh edge -> ARMED
+    dwell_since: float | None = None     # `_dwell_since`: when it first became continuously true
+    dwell_last_supported: float | None = None  # `_dwell_last_supported`: its last supported read
+    touched: float | None = None         # `_touched`: eviction stamp, when it was last evaluated
+    no_evict: bool = False               # `_no_evict`: exempt from TTL + LRU (never-once semantics)
+    last_fire: float | None = None       # `_last_fire`: this key's last REAL fire (precision track)
+
+    def is_empty(self) -> bool:
+        """True iff this record carries nothing — the gate then forgets the key entirely, so a
+        record can never linger as an invisible occupant of the ``max_keys`` ceiling."""
+        return (
+            self.armed is None
+            and self.dwell_since is None
+            and self.dwell_last_supported is None
+            and self.touched is None
+            and not self.no_evict
+            and self.last_fire is None
+        )
+
+
+#: Snapshot payload version. v2 writes self-describing per-key RECORDS (each field named on the
+#: entry that owns it) alongside the v1 pair-lists, so an older build can still read a newer
+#: snapshot. :meth:`Gate.restore` prefers the records and falls back to the pair-lists.
+SNAPSHOT_VERSION = 2
 
 
 class Gate:
@@ -226,22 +313,17 @@ class Gate:
         # Precision track: gate-wide default time-refractory (WatchProfile ``gate.refractory_s``).
         # ``None``/``0``/negative = off = byte-for-byte the historical gate (no per-call override needed).
         self.refractory_s = refractory_s
-        self._armed: dict[Hashable, bool] = {}  # key -> ready-to-fire
-        # R-1 sustained-duration (dwell): key -> the time it first became continuously true. Only
-        # populated when a goal sets ``hold_s``; empty otherwise, so the no-dwell path is byte-for-byte.
-        self._dwell_since: dict[Hashable, float] = {}
-        # Positive-dwell support continuity: the last confidently-true observation for a pending key.
-        # Empty on every no-hold Watch and cleared together with pending dwell, never restored.
-        self._dwell_last_supported: dict[Hashable, float] = {}
-        # Precision track: key -> the ``now`` timestamp of that key's last REAL fire (only set when a fire is
-        # actually emitted, never on a refractory-suppressed one — the window is anchored to the last
-        # genuine notification, not re-triggered by the suppression itself). Empty unless refractory is
-        # used somewhere on this key, so the no-refractory path stays byte-for-byte.
-        self._last_fire: dict[Hashable, float] = {}
-        # R-1 growth bound (24/7). `_armed`/`_dwell_since` are fed by unbounded key sources (per-entity,
-        # per-time-bucket, per-answer); on a 24/7 watch they grow without limit. Eviction is ON BY DEFAULT
+        # THE keyspace: one :class:`_KeyState` per key, and nothing else. Its fields are the six
+        # per-key facts the gate holds — the armed bit (`_armed`), the R-1 sustained-duration timer
+        # and its support-continuity stamp (`_dwell_since` / `_dwell_last_supported`), the eviction
+        # stamp (`_touched`), the never-once exemption (`_no_evict`), and the precision track's
+        # last-real-fire stamp (`_last_fire`). Read them individually through the same-named
+        # read-only views below.
+        self._keys: dict[Hashable, _KeyState] = {}
+        # R-1 growth bound (24/7). The keyspace is fed by unbounded key sources (per-entity,
+        # per-time-bucket, per-answer); on a 24/7 watch it grows without limit. Eviction is ON BY DEFAULT
         # (see `_DEFAULT_MAX_KEYS`/`_DEFAULT_KEY_TTL_S` above) — pass ``max_keys=None``/``key_ttl_s=None``
-        # explicitly to opt back out to the old unbounded gate (no `_touched` bookkeeping at all).
+        # explicitly to opt back out to the old unbounded gate (no eviction bookkeeping at all).
         #   * key_ttl_s — a key untouched (unevaluated) this long is dropped (the primary bound; TTL sweep
         #     runs on the stream `now` the judge path already passes).
         #   * max_keys  — a hard LRU ceiling on the number of keys (the backstop when there is no clock).
@@ -250,12 +332,46 @@ class Gate:
         self.max_keys = max_keys
         self.key_ttl_s = key_ttl_s
         self._clock = clock
-        self._touched: dict[Hashable, float] = {}  # key -> last time it was evaluated (eviction stamp)
-        self._no_evict: set[Hashable] = set()       # keys exempt from TTL + LRU (never-once semantics)
         # GATE_STATE_LEAK: eviction must never be silent (ADR-001 §9). `on_evict(key, reason)` fires for
         # every bound-driven drop (reason is "ttl" or "max_keys"); default logs a structured line so a drop
         # is always observable even when the caller wires nothing.
         self.on_evict = on_evict
+
+    # -- the per-field views ------------------------------------------------------------------
+    # Read-only projections of `_keys`, one per `_KeyState` field, under the names the six parallel
+    # dicts used to carry. They exist so a reader (a test, a debugger, an operator at a REPL) can
+    # still ask "which keys are armed?" without knowing the record layout — and they are DERIVED, so
+    # they can never drift out of agreement with each other the way the six real dicts did. A field
+    # whose value is `None` means "never written", so that key is simply absent from its view,
+    # exactly as it was absent from the old dict.
+
+    @property
+    def _armed(self) -> dict[Hashable, bool]:
+        return {k: st.armed for k, st in self._keys.items() if st.armed is not None}
+
+    @property
+    def _dwell_since(self) -> dict[Hashable, float]:
+        return {k: st.dwell_since for k, st in self._keys.items() if st.dwell_since is not None}
+
+    @property
+    def _dwell_last_supported(self) -> dict[Hashable, float]:
+        return {
+            k: st.dwell_last_supported
+            for k, st in self._keys.items()
+            if st.dwell_last_supported is not None
+        }
+
+    @property
+    def _touched(self) -> dict[Hashable, float]:
+        return {k: st.touched for k, st in self._keys.items() if st.touched is not None}
+
+    @property
+    def _no_evict(self) -> set[Hashable]:
+        return {k for k, st in self._keys.items() if st.no_evict}
+
+    @property
+    def _last_fire(self) -> dict[Hashable, float]:
+        return {k: st.last_fire for k, st in self._keys.items() if st.last_fire is not None}
 
     @property
     def _evicting(self) -> bool:
@@ -264,13 +380,24 @@ class Gate:
         byte-for-byte gate."""
         return self.max_keys is not None or self.key_ttl_s is not None
 
+    def _state(self, key: Hashable) -> _KeyState:
+        """This key's record, minted empty on first write. The only place a key enters the keyspace."""
+        state = self._keys.get(key)
+        if state is None:
+            state = _KeyState()
+            self._keys[key] = state
+        return state
+
+    def _forget_if_empty(self, key: Hashable) -> None:
+        """Drop a record that has been emptied out, so clearing a key's last fact really removes the
+        key rather than parking a blank record inside the ``max_keys`` ceiling."""
+        state = self._keys.get(key)
+        if state is not None and state.is_empty():
+            del self._keys[key]
+
     def _drop(self, key: Hashable) -> None:
-        self._armed.pop(key, None)
-        self._dwell_since.pop(key, None)
-        self._dwell_last_supported.pop(key, None)
-        self._touched.pop(key, None)
-        self._no_evict.discard(key)
-        self._last_fire.pop(key, None)
+        """Forget a key COMPLETELY. Total by construction now: there is one record, and it is gone."""
+        self._keys.pop(key, None)
 
     def _evict(self, key: Hashable, reason: str) -> None:
         """Drop a key as a BOUND-DRIVEN eviction (TTL or max_keys) — as opposed to `_drop` used directly
@@ -284,20 +411,37 @@ class Gate:
 
     def _bound(self, current: Hashable, ref: float | None) -> None:
         """Sweep expired keys (TTL, needs a time ref) and enforce the LRU ceiling (max_keys). Never touches
-        a `no_evict` key. Called after the CURRENT key is stamped but BEFORE the edge logic writes it into
-        ``_armed``, so reserve a slot for it (``pending``) — otherwise the ceiling settles one key high."""
+        a `no_evict` key.
+
+        The ceiling counts ``_keys`` — the WHOLE keyspace. It used to count ``len(self._armed)``, one of
+        the six parallel maps, while ``_drop`` freed all six: a dwell-pending key therefore consumed
+        memory that the bound could not see, so ``max_keys`` under-bounded by exactly the population of
+        keys in flight on a duration goal. On a duration-heavy 24/7 watch that is unbounded growth wearing
+        a bound's clothes.
+
+        ``pending`` reserves a slot for a current key that has not entered the keyspace yet — which is
+        now only possible OFF-CLOCK, since a stamped key was already minted by ``_touched``. Without the
+        reservation the ceiling settles one key high forever.
+        """
         if self.key_ttl_s is not None and ref is not None:
             cutoff = ref - self.key_ttl_s
-            for key in [k for k, ts in self._touched.items()
-                        if ts < cutoff and k not in self._no_evict and k != current]:
+            for key in [k for k, st in self._keys.items()
+                        if st.touched is not None and st.touched < cutoff
+                        and not st.no_evict and k != current]:
                 self._evict(key, "ttl")
         if self.max_keys is not None:
-            pending = 0 if current in self._armed else 1  # the current key will be armed right after this
-            overflow = len(self._armed) + pending - self.max_keys
+            pending = 0 if current in self._keys else 1  # off-clock: it enters the keyspace right after
+            overflow = len(self._keys) + pending - self.max_keys
             if overflow > 0:
-                evictable = [k for k in self._armed if k not in self._no_evict and k != current]
+                evictable = [k for k, st in self._keys.items() if not st.no_evict and k != current]
                 # least-recently-touched first (unstamped keys sort oldest -> shed before live ones)
-                evictable.sort(key=lambda k: self._touched.get(k, float("-inf")))
+                evictable.sort(
+                    key=lambda k: (
+                        self._keys[k].touched
+                        if self._keys[k].touched is not None
+                        else float("-inf")
+                    )
+                )
                 for key in evictable[:overflow]:
                     self._evict(key, "max_keys")
 
@@ -398,9 +542,9 @@ class Gate:
         if self._evicting:
             ref = now if now is not None else (self._clock() if self._clock is not None else None)
             if no_evict:
-                self._no_evict.add(key)
+                self._state(key).no_evict = True
             if ref is not None:
-                self._touched[key] = ref
+                self._state(key).touched = ref
             self._bound(key, ref)
         truth = classify(verdict, freshness, self.threshold, self.fresh_min)
         if truth == "unknown":
@@ -409,25 +553,38 @@ class Gate:
             # ASK preserves the armed/fired rising-edge bit. For positive dwell it invalidates only
             # the unproven continuity timer above. The two ASK codes split the single "unknown" truth
             # into WHICH arm refused: low confidence or stale support.
-            reason: GateReason = "low_confidence" if verdict.confidence < self.threshold else "stale"
+            #
+            # This dereferences ``.confidence`` a SECOND time, so it needs the same one-term guard
+            # ``classify`` has (see :func:`_confidence_is_usable`) — without it a NaN confidence
+            # would answer ``False`` here too and get reported as ``stale``, blaming the freshness
+            # arm for a refusal the confidence arm made. Unusable confidence IS the confidence arm
+            # refusing, so it reads ``low_confidence``.
+            reason: GateReason = (
+                "low_confidence"
+                if not _confidence_is_usable(verdict) or verdict.confidence < self.threshold
+                else "stale"
+            )
             return _d(ASK, reason)
         if truth == "no":
-            self._armed[key] = True  # confident-false re-arms
+            self._state(key).armed = True  # confident-false re-arms
             self.clear_pending_dwell(key)  # ...and breaks any in-progress dwell (blip resets the clock)
             return _d(SILENT, "not_satisfied")
         # truth == "yes"
-        if (require_false_first or self.require_false_first) and key not in self._armed:
+        state = self._keys.get(key)
+        if (require_false_first or self.require_false_first) and (
+            state is None or state.armed is None
+        ):
             # Spec (v0.1 hero matrix: "already present when the runtime starts -> SILENT"): a condition
             # that is ALREADY true on the first observation of this key is not a rising edge we watched
             # become true. Record the key as seen-but-DISARMED (never fire on it); only a subsequent
             # confident-false (which arms it via the branch above) establishes the false->true baseline
             # a genuine rising-edge fire requires. Opt-in: without this flag a new key defaults to armed
             # (byte-for-byte the historical rising-edge gate) so existing callers are unchanged.
-            self._armed[key] = False
+            self._state(key).armed = False
             if hold_s is not None and hold_s > 0:
                 self.clear_pending_dwell(key)
             return _d(SILENT, "start_anchored")
-        if not self._armed.get(key, True):  # new keys default to armed -> fresh edge
+        if state is not None and state.armed is False:  # an absent bit defaults to armed -> fresh edge
             if hold_s is not None and hold_s > 0:
                 self.clear_pending_dwell(key)
             return _d(SILENT, "already_fired")  # already true / already fired this episode
@@ -436,19 +593,20 @@ class Gate:
         # fire (armed -> False) rather than leaving the edge live to fire again next tick.
         effective_refractory = self.refractory_s if refractory_s is None else refractory_s
         if effective_refractory is not None and effective_refractory > 0 and now is not None:
-            last_fire = self._last_fire.get(key)
+            last_fire = None if state is None else state.last_fire
             if last_fire is not None and (now - last_fire) < effective_refractory:
-                self._armed[key] = False  # treat as already-fired; a later confident-false re-arms it
+                self._state(key).armed = False  # already-fired; a later confident-false re-arms it
                 self.clear_pending_dwell(key)
                 return _d(SILENT, "refractory")
         if hold_s is None or hold_s <= 0 or now is None:
-            self._armed[key] = False
+            fired = self._state(key)
+            fired.armed = False
             if now is not None:
-                self._last_fire[key] = now
+                fired.last_fire = now
             return _d(FIRE, "rising_edge")  # no dwell -> the rising-edge fire (byte-for-byte)
         # dwell: require the condition to have held continuously for hold_s before firing.
-        t0 = self._dwell_since.get(key)
-        last_supported = self._dwell_last_supported.get(key)
+        t0 = None if state is None else state.dwell_since
+        last_supported = None if state is None else state.dwell_last_supported
         if (
             t0 is not None
             and last_supported is not None
@@ -460,14 +618,16 @@ class Gate:
             t0 = None
             self.clear_pending_dwell(key)
         if t0 is None:
-            self._dwell_since[key] = now  # first sustained-true tick -> start the dwell timer
-            self._dwell_last_supported[key] = now
+            pending = self._state(key)
+            pending.dwell_since = now  # first sustained-true tick -> start the dwell timer
+            pending.dwell_last_supported = now
             return _d(SILENT, "dwell_pending")
-        self._dwell_last_supported[key] = now
+        held = self._state(key)
+        held.dwell_last_supported = now
         if now - t0 >= hold_s:
-            self._armed[key] = False
+            held.armed = False
             self.clear_pending_dwell(key)
-            self._last_fire[key] = now
+            self._state(key).last_fire = now
             return _d(FIRE, "dwell_satisfied")
         return _d(SILENT, "dwell_pending")  # still accumulating dwell — true, but not long enough yet
 
@@ -475,86 +635,230 @@ class Gate:
         """Force a key back to armed (e.g. after a correction clears the edge). Also clears any
         refractory memory — an explicit rearm is a fresh episode boundary, so a stale last-fire stamp
         must not suppress the next legitimate fire."""
-        self._armed[key] = True
+        state = self._state(key)
+        state.armed = True
+        state.last_fire = None
         self.clear_pending_dwell(key)
-        self._last_fire.pop(key, None)
 
     def clear_pending_dwell(self, key: Hashable) -> None:
         """Drop only unproven duration support for ``key``; never re-arm or erase a prior fire."""
 
-        self._dwell_since.pop(key, None)
-        self._dwell_last_supported.pop(key, None)
+        state = self._keys.get(key)
+        if state is None:
+            return
+        state.dwell_since = None
+        state.dwell_last_supported = None
+        self._forget_if_empty(key)
 
     def clear_pending_dwell_goal(self, goal_id: str) -> None:
         """Drop pending duration support for every reducer key owned by ``goal_id``."""
 
-        keys = set(self._dwell_since) | set(self._dwell_last_supported)
-        for key in keys:
-            if isinstance(key, tuple) and key and key[0] == goal_id:
-                self.clear_pending_dwell(key)
+        for key in [
+            k for k, st in self._keys.items()
+            if (st.dwell_since is not None or st.dwell_last_supported is not None)
+            and isinstance(k, tuple) and k and k[0] == goal_id
+        ]:
+            self.clear_pending_dwell(key)
+
+    def _goal_keys(self, goal_id: str) -> list:
+        return [k for k in self._keys if isinstance(k, tuple) and k and k[0] == goal_id]
 
     def reset_goal(self, goal_id: str) -> None:
-        """Drop all edge state for a goal so its next evaluation starts fresh."""
-        for key in [k for k in self._armed if isinstance(k, tuple) and k and k[0] == goal_id]:
-            self._drop(key)
-        # `_drop` clears `_armed`/`_dwell_since`/`_touched`/`_no_evict`/`_last_fire` together; sweep any
-        # dwell/touched keys that never had an `_armed` entry too (e.g. an in-progress dwell), keeping
-        # the maps aligned. (`_last_fire` is only ever set alongside `_armed`, so it needs no extra sweep.)
-        for key in [k for k in self._dwell_since if isinstance(k, tuple) and k and k[0] == goal_id]:
-            self._drop(key)
-        for key in [
-            k for k in self._dwell_last_supported
-            if isinstance(k, tuple) and k and k[0] == goal_id
-        ]:
+        """Drop all edge state for a goal so its next evaluation starts fresh.
+
+        ONE sweep over ONE keyspace. This used to be three sweeps over three of the six maps —
+        `_armed`, then `_dwell_since`, then `_dwell_last_supported` — precisely because a key can
+        legitimately exist in one and not the others, and `reset_entity` (which had only the first)
+        is what that arrangement eventually broke."""
+        for key in self._goal_keys(goal_id):
             self._drop(key)
 
     def reset_entity(self, entity_id: Hashable) -> None:
         """Drop every gate key belonging to a dead entity (``(goal_id, entity_id)``), so an evicted
         entity leaves no orphan edge behind. Wired to :meth:`EntityGraph` eviction by :class:`Percept`.
         The per-goal singletons (``(goal_id, "__resolved__")`` etc.) never match — their second element is
-        a sentinel string, not an entity id — so they are untouched."""
+        a sentinel string, not an entity id — so they are untouched.
+
+        A NON-ENTITY scope is refused outright (:func:`~percept.identity_policy.is_entity_scoped`).
+        The scene sentinel is not an entity id, it is a per-goal singleton, and dropping its record
+        would discard the `no_evict` exemption the transition path registered — an absent gate key
+        defaults to ARMED, so the spent edge re-opens and a still-held ``to`` state re-notifies. The
+        primary guard is at the shared eviction hook (``Percept._on_entity_evicted``); this one
+        makes a DIRECT call safe too, and mirrors the identical refusal in
+        :meth:`percept.behavior.BehaviorExecutor.forget_entity` so the two halves of one latch can
+        no longer disagree about the same collision.
+
+        Note what this deliberately does NOT do: honour `no_evict` in general. Per-entity never-goal
+        keys are marked `no_evict` and MUST die with their entity — a blanket exemption would leak
+        every one of them."""
+        if not is_entity_scoped(entity_id):
+            return
         for key in [
-            k for k in self._armed
+            k for k in self._keys
             if isinstance(k, tuple) and len(k) >= 2 and k[1] == entity_id
         ]:
             self._drop(key)
 
     # -- persistence (the armed edge must survive a restart, or a 24/7 watch re-fires) ---------
+    @staticmethod
+    def _wire_key(key: Hashable) -> list:
+        """A key on the wire. ADR-006 §6 pins the gate key tuple as a PERSISTENCE contract: it
+        serializes as ``list(k)`` and re-tuples on the way back in, and widening it silently
+        invalidates every stored snapshot."""
+        return list(key) if isinstance(key, (list, tuple)) else [key]
+
     def snapshot(self) -> dict:
-        """Durable edge state. Keys are tuples ``(goal_id, entity[, answer])`` -> serialized as lists so
-        the whole snapshot stays JSON-able through the persistence backend. The in-progress dwell timer
-        is included for inspection but is NOT restored (see :meth:`restore`)."""
+        """Durable edge state, in TWO representations of the same keyspace.
+
+        * ``keys`` (v2, authoritative) — one SELF-DESCRIBING record per key, each field named on the
+          entry that owns it. This is what :meth:`restore` reads. The point of the shape is that a
+          lost nesting level becomes *unrepresentable* rather than merely detectable: there is no
+          positional slot a flattened key can slide into and be mistaken for a (key, value) pair.
+        * ``armed`` / ``dwell_since`` / ``touched`` / ``no_evict`` / ``last_fire`` (v1 pair-lists) —
+          kept so a snapshot written by THIS build still restores on an OLDER one. They are a mirror,
+          never an input to this build's own restore, which is exactly why tampering with one cannot
+          corrupt a round trip.
+
+        Keys are tuples ``(goal_id, entity[, answer])`` serialized as lists, so the whole payload
+        stays JSON-able through the persistence backend. The in-progress dwell timer is included for
+        inspection but is NOT restored (see :meth:`restore`)."""
+        items = list(self._keys.items())
         return {
-            "armed": [[list(k), bool(v)] for k, v in self._armed.items()],
-            "dwell_since": [[list(k), float(t)] for k, t in self._dwell_since.items()],
+            "version": SNAPSHOT_VERSION,
+            "keys": [
+                {
+                    "key": self._wire_key(k),
+                    "armed": st.armed,
+                    "dwell_since": st.dwell_since,
+                    "touched": st.touched,
+                    "no_evict": st.no_evict,
+                    "last_fire": st.last_fire,
+                }
+                for k, st in items
+            ],
+            # -- v1 mirror, for an older reader ---------------------------------------------
+            "armed": [[self._wire_key(k), bool(st.armed)]
+                      for k, st in items if st.armed is not None],
+            "dwell_since": [[self._wire_key(k), float(st.dwell_since)]
+                            for k, st in items if st.dwell_since is not None],
             # R-1: the last-touched eviction stamps + the no-evict exemption set travel with the edge, so a
             # restarted 24/7 watch keeps its TTL budget and its never-once exemptions (a fresh restore of a
             # legacy snapshot lacking these keys is a no-op — see :meth:`restore`).
-            "touched": [[list(k), float(t)] for k, t in self._touched.items()],
-            "no_evict": [list(k) for k in self._no_evict],
+            "touched": [[self._wire_key(k), float(st.touched)]
+                        for k, st in items if st.touched is not None],
+            "no_evict": [self._wire_key(k) for k, st in items if st.no_evict],
             # Precision track: last-real-fire stamps travel too, so a restarted 24/7 watch keeps its refractory memory
             # (otherwise a restart mid-refractory-window would silently re-open it to fire early).
-            "last_fire": [[list(k), float(t)] for k, t in self._last_fire.items()],
+            "last_fire": [[self._wire_key(k), float(st.last_fire)]
+                          for k, st in items if st.last_fire is not None],
         }
+
+    @staticmethod
+    def _record_to_state(record: dict) -> tuple:
+        """One self-describing ``keys`` record -> ``(key, _KeyState)``. Raises on an unusable record,
+        which :func:`~percept._snapshot.parse_records` turns into a logged skip of that record alone."""
+        key = key_tuple(record["key"])
+        armed = record.get("armed")
+        touched = record.get("touched")
+        last_fire = record.get("last_fire")
+        return key, _KeyState(
+            armed=None if armed is None else as_bool(armed),
+            # dwell is deliberately never rehydrated — see :meth:`restore`
+            dwell_since=None,
+            dwell_last_supported=None,
+            touched=None if touched is None else as_float(touched),
+            no_evict=bool(record.get("no_evict", False)),
+            last_fire=None if last_fire is None else as_float(last_fire),
+        )
+
+    @classmethod
+    def _from_records(cls, raw: object) -> dict:
+        return dict(parse_records(raw, "keys", cls._record_to_state))
+
+    @classmethod
+    def _from_legacy_pairs(cls, snap: dict) -> dict:
+        """The v1 reader: five independent pair-lists, re-assembled into one keyspace.
+
+        Kept because ADR-006 §6 makes the serialized key tuple a persistence contract — a snapshot
+        written before v2 must still restore. Each field is parsed independently and a bad ENTRY
+        costs only that entry; a flattened ``['goal-a', 'e1']`` is SKIPPED WITH A LOG rather than
+        reinterpreted as ``tuple('goal-a') -> True``, which is how it used to manufacture a
+        per-character key and leave the real one absent (and therefore ARMED).
+
+        One coupling rule spans the five lists, and it is the whole of BUG-D-02-01: **a key whose
+        value was PRESENT BUT UNREADABLE in any field is dropped entirely.** Skipping just that field
+        would restore the rest of the key — and "the disarmed latch survived, the refractory window
+        did not" is the one combination that re-notifies, because the next confident-false blip
+        unlatches an edge nothing is left to suppress. A key that was never in a field at all is a
+        different case (a legacy payload written before that field existed) and restores normally.
+        The v2 record reader gets the same rule for free: a bad field fails its whole record."""
+        keys: dict[Hashable, _KeyState] = {}
+        poisoned: set[Hashable] = set()
+
+        def state(key: Hashable) -> _KeyState:
+            return keys.setdefault(key, _KeyState())
+
+        def poison(key: Hashable) -> None:
+            if key is not None:
+                poisoned.add(key)
+
+        for key, value in parse_pairs(
+            snap.get("armed"), "armed", key_tuple, as_bool, on_skip=poison
+        ).items():
+            state(key).armed = value
+        for key, value in parse_pairs(
+            snap.get("touched"), "touched", key_tuple, as_float, on_skip=poison
+        ).items():
+            state(key).touched = value
+        for key in parse_keys(snap.get("no_evict"), "no_evict", on_skip=poison):
+            state(key).no_evict = True
+        # Precision track: restore last-fire stamps; missing field (legacy pre-refractory snapshot) ->
+        # nothing to resume, byte-for-byte the earlier restore.
+        for key, value in parse_pairs(
+            snap.get("last_fire"), "last_fire", key_tuple, as_float, on_skip=poison
+        ).items():
+            state(key).last_fire = value
+        # ``dwell_since`` is present in the payload for inspection and deliberately not read.
+        for key in poisoned:
+            keys.pop(key, None)
+        return keys
 
     def restore(self, snap: "dict | None") -> None:
         """Rehydrate the armed/disarmed edge per key (the anti-re-fire bit). A missing/empty snapshot is a
         no-op (byte-for-byte a fresh gate).
 
-        The in-progress dwell (``_dwell_since``) is EXPLICITLY DROPPED: its start is a wall-clock stamp on
+        **Validate, then swap — never assign as you go.** The keyspace is rebuilt into a local and
+        installed in ONE statement at the end, so a corrupt payload can never leave the gate holding
+        half of it. That mattered more here than anywhere else in the package, because the gate runs
+        TWO INDEPENDENT suppression belts: the disarmed latch (``armed``) and the refractory memory
+        (``last_fire``). Committing the first and failing before the second left a gate that is
+        latched shut but has forgotten why — and the next confident-false blip unlatches it and
+        re-notifies inside a window that had not expired. Losing exactly one belt is strictly worse
+        than losing both.
+
+        Policy on bad input, matching the ledger's long-standing per-item behaviour: a bad ENTRY is
+        skipped and logged; an unusable TOP-LEVEL payload is logged and the whole restore is declined,
+        leaving the gate exactly as it was. ``restore`` never raises on a restart path — a snapshot a
+        backend garbled must not be able to stop a process coming back up.
+
+        The in-progress dwell (``dwell_since``) is EXPLICITLY DROPPED: its start is a wall-clock stamp on
         the pre-restart timeline with no anchor to rebase from, so a half-completed dwell cannot be
         resumed correctly. Dropping it re-arms that edge's dwell from now — the loud, correct failure — in
         preference to silently resurrecting a stamp that would fire early or late."""
         if not snap:
             return
-        self._armed = {tuple(k): bool(v) for k, v in snap.get("armed", [])}
-        self._dwell_since = {}
-        self._dwell_last_supported = {}
-        self._touched = {tuple(k): float(t) for k, t in snap.get("touched", [])}
-        self._no_evict = {tuple(k) for k in snap.get("no_evict", [])}
-        # Precision track: restore last-fire stamps; missing key (legacy snapshot) -> empty, a no-op (no refractory
-        # memory to resume, byte-for-byte the earlier restore).
-        self._last_fire = {tuple(k): float(t) for k, t in snap.get("last_fire", [])}
+        if not isinstance(snap, dict):
+            reject("<root>", "gate snapshot is not a mapping", snap)
+            return
+        try:
+            if snap.get("keys") is not None:
+                restored = self._from_records(snap.get("keys"))
+            else:
+                restored = self._from_legacy_pairs(snap)
+        except SnapshotError as exc:
+            reject(exc.field, str(exc), snap)
+            return
+        self._keys = restored  # the swap: one statement, or nothing at all
 
 
 __all__ = [

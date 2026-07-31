@@ -5,6 +5,10 @@ import { parseTier0Signal } from "../src/contract.js";
 
 const PY_WATCHSPEC =
   '{"conditions":[{"goal_id":"g1","anchor_text":"the user is drinking coffee","threshold":0.3,"region_hint":null}],"version":1}';
+// The same spec with the goal OPTING IN to the wake-policy fusion. A configured policy no longer
+// overrides the channel a goal asked for, so a fused goal has to say so (BUG-A-01-04).
+const FUSED_WATCHSPEC =
+  '{"conditions":[{"goal_id":"g1","anchor_text":"the user is drinking coffee","threshold":0.3,"region_hint":null,"gate_on":"fused"}],"version":1}';
 
 function makeEdge(opts = {}) {
   const signals = [];
@@ -147,11 +151,13 @@ describe("Edge — WatchSpec down / Tier0Signal up wired loop", () => {
     expect(signals).toHaveLength(2);
   });
 
-  it("a wake policy can escalate from an audio event without changing default behavior", () => {
-    const { edge, signals } = makeEdge({
-      wakePolicy: { weights: { audio_event: 1.0 } },
-    });
-    edge.applyWatchSpec(PY_WATCHSPEC); // threshold 0.3
+  it("a wake policy can escalate from an audio event, on a goal that asked to be fused", () => {
+    // Rewritten. This used to author no `gate_on` at all and pass, because a present wake policy
+    // overrode every condition's channel. Fusion is now a channel a goal OPTS IN to, and `audio` is
+    // the channel a microphone reading populates (`audio_event` names an acoustic-event CLASS, which
+    // nothing on this edge classifies).
+    const { edge, signals } = makeEdge({ wakePolicy: { weights: { audio: 1.0 } } });
+    edge.applyWatchSpec(FUSED_WATCHSPEC); // threshold 0.3, gate_on "fused"
     const still = makeFrame(8, 8, 120);
     const sig = edge.processFrame(still, { energy: 0.5 });
     expect(sig).not.toBeNull();
@@ -159,17 +165,39 @@ describe("Edge — WatchSpec down / Tier0Signal up wired loop", () => {
     expect(signals).toHaveLength(1);
   });
 
-  it("a wake policy can combine weak presence and semantic-relevance signals", () => {
-    const { edge } = makeEdge({
-      wakePolicy: { weights: { presence: 0.8, semantic_relevance: 0.8 } },
-    });
-    edge.applyWatchSpec(PY_WATCHSPEC); // threshold 0.3
+  it("a wake policy no longer overrides the channel a goal asked to gate on", () => {
+    // BUG-A-01-04's JS twin. The same policy, the same loud audio, on a goal gated on `motion`:
+    // the goal's own channel decides, and a still frame has no motion. Before, the policy replaced
+    // the motion branch for every condition and this escalated.
+    const { edge, signals } = makeEdge({ wakePolicy: { weights: { audio: 1.0 } } });
+    edge.applyWatchSpec(PY_WATCHSPEC); // threshold 0.3, gate_on defaults to "motion"
     const still = makeFrame(8, 8, 120);
-    const sig = edge.processFrame(still, {
-      signals: { presence: 0.3, semantic_relevance: 0.3 },
-    });
+    expect(edge.processFrame(still, { energy: 0.5 })).toBeNull();
+    expect(edge.processFrame(still, { energy: 0.9 })).toBeNull();
+    expect(signals).toHaveLength(0);
+  });
+
+  it("a fused goal with no wake policy wired scores zero rather than falling back to motion", () => {
+    const { edge } = makeEdge(); // no wakePolicy
+    edge.applyWatchSpec(FUSED_WATCHSPEC);
+    const still = makeFrame(8, 8, 0);
+    const moved = makeFrame(8, 8, 255); // motion ~1.0, well over the 0.3 bar
+    expect(edge.processFrame(still)).toBeNull();
+    expect(edge.processFrame(moved)).toBeNull();
+  });
+
+  it("a wake policy can combine weak presence and semantic signals", () => {
+    // `semantic_relevance` was an ALIAS of `semantic`, so this used to fuse one adapter reading with
+    // itself. The caller now overlays `presence` (a channel it measures) beside the gate's own
+    // `semantic`, and the noisy-OR combines two independent cues: 1-(1-0.24)(1-0.24) = 0.4224.
+    const { edge } = makeEdge({ wakePolicy: { weights: { presence: 0.8, semantic: 0.8 } } });
+    edge.applyWatchSpec(FUSED_WATCHSPEC); // threshold 0.3
+    edge.setSemanticAdapter(() => 0.3);
+    const still = makeFrame(8, 8, 120);
+    const sig = edge.processFrame(still, { signals: { presence: 0.3 } });
     expect(sig).not.toBeNull();
     expect(sig.motion).toBe(0);
+    expect(sig.semantic).toBeCloseTo(0.3, 10);
   });
 
   it("invokes the publisher slot with the gated frame + signal on escalation", () => {
@@ -328,6 +356,48 @@ describe("Edge — salience modes (per-condition) + energy on the signal", () =>
     expect(ego.edge.processFrame(cur)).toBeNull(); // ego suppresses it
   });
 
+  it("an ego_compensate condition still honours its watch-out zone", () => {
+    // A watch-out zone is a promise that movement elsewhere is ignored. Turning ego compensation on
+    // used to revoke it silently: `conditionMotion` returned the WHOLE-FRAME residual while the
+    // condition still carried and still reported its `region_hint`. Twin of Python
+    // `EgoResidualBoundaryTests.test_an_ego_goal_still_honours_its_watch_out_zone`.
+    const w = 16, h = 16;
+    const base = new Uint8Array(w * h);
+    let s = 20260731;
+    for (let i = 0; i < w * h; i++) {
+      s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+      base[i] = (s >>> 16) & 0xff;
+    }
+    const a = new Uint8Array(base);
+    const b = new Uint8Array(base);
+    for (let y = 10; y < 16; y++)
+      for (let x = 10; x < 16; x++) {
+        a[y * w + x] = 0;      // every changed pixel is in the BOTTOM-RIGHT quadrant
+        b[y * w + x] = 255;
+      }
+    const prev = { width: w, height: h, data: a };
+    const cur = { width: w, height: h, data: b };
+    const topLeft = { x: 0, y: 0, w: 0.5, h: 0.5 };
+
+    const noZone = makeEdge();
+    noZone.edge.applyWatchSpec({
+      conditions: [{ goal_id: "g", anchor_text: "x", threshold: 0.1, ego_compensate: true }],
+      version: 1,
+    });
+    noZone.edge.processFrame(prev);
+    expect(noZone.edge.processFrame(cur)).not.toBeNull(); // the control: unmasked, it fires
+
+    const zoned = makeEdge();
+    zoned.edge.applyWatchSpec({
+      conditions: [
+        { goal_id: "g", anchor_text: "x", threshold: 0.1, region_hint: topLeft, ego_compensate: true },
+      ],
+      version: 1,
+    });
+    zoned.edge.processFrame(prev);
+    expect(zoned.edge.processFrame(cur)).toBeNull(); // nothing happened in-zone
+  });
+
   it("carries audio energy through onto the emitted Tier0Signal", () => {
     const { edge } = makeEdge();
     edge.applyWatchSpec(PY_WATCHSPEC);
@@ -337,5 +407,66 @@ describe("Edge — salience modes (per-condition) + energy on the signal", () =>
     const sig = edge.processFrame(b, { energy: 0.42 });
     expect(sig).not.toBeNull();
     expect(sig.energy).toBeCloseTo(0.42, 10);
+  });
+
+  it("the motion channel is clamped before the threshold compare, like structural and semantic", () => {
+    // `conditionMotion`'s result was compared `>= c.threshold` RAW, while the structural and
+    // semantic adapters were both read through clamp01 — so the one channel that is always live was
+    // the only one with no floor or ceiling under it. `data` is documented as `Uint8Array|number[]`
+    // and a plain array is not range-checked, so a per-pixel diff above 255 pushes the salience
+    // above 1. A threshold above 1 must be unsatisfiable on EVERY channel, or the three channels do
+    // not share a scale.
+    const outOfRange = (w, h, v) => ({ width: w, height: h, data: new Array(w * h).fill(v) });
+    const spec = (threshold, gate_on) => ({
+      conditions: [{ goal_id: "g", anchor_text: "x", threshold, gate_on }],
+      version: 1,
+    });
+
+    const hot = makeEdge();
+    hot.edge.applyWatchSpec(spec(2, "motion"));
+    hot.edge.processFrame(outOfRange(4, 4, 0));
+    expect(hot.edge.processFrame(outOfRange(4, 4, 100000))).toBeNull();
+
+    // The control: the same frames clear any threshold that is actually inside the salience range.
+    const ok = makeEdge();
+    ok.edge.applyWatchSpec(spec(1, "motion"));
+    ok.edge.processFrame(outOfRange(4, 4, 0));
+    expect(ok.edge.processFrame(outOfRange(4, 4, 100000))).not.toBeNull();
+
+    // And the two channels that already had the clamp, for the same threshold.
+    for (const gate_on of ["structural", "semantic"]) {
+      const e = makeEdge();
+      e.edge.applyWatchSpec(spec(2, gate_on));
+      e.edge.setStructuralAdapter(() => 5).setSemanticAdapter(() => 5);
+      e.edge.processFrame(makeFrame(4, 4, 0));
+      expect(e.edge.processFrame(makeFrame(4, 4, 255)), gate_on).toBeNull();
+    }
+  });
+
+  it("a DEGENERATE region_hint is a permanent never-fire — 0 escalations against the control's 1", () => {
+    // Reported as the generalization of BUG-G-04-02 and NOT closed by this change: `parseBox`
+    // validates finiteness but not area, the Python `Box` dataclass validates neither, and a
+    // zero-extent box masks the whole frame away. A WatchSpec carrying `{x:0,y:0,w:0,h:1}` is
+    // accepted by both runtimes, is indistinguishable from a working one at admission, and can
+    // never escalate on ANY frame at ANY threshold. Frozen here so the behaviour is at least
+    // documented and a future decision to reject it shows up as a deliberate change.
+    const still = makeFrame(32, 32, 0);
+    const moved = makeFrame(32, 32, 255);
+    const withRegion = (region_hint) => ({
+      conditions: [{ goal_id: "g", anchor_text: "x", threshold: 0.1, region_hint }],
+      version: 1,
+    });
+
+    const degenerate = makeEdge();
+    degenerate.edge.applyWatchSpec(withRegion({ x: 0, y: 0, w: 0, h: 1 }));
+    degenerate.edge.processFrame(still);
+    degenerate.edge.processFrame(moved);
+    expect(degenerate.signals).toHaveLength(0);
+
+    const control = makeEdge();
+    control.edge.applyWatchSpec(withRegion({ x: 0, y: 0, w: 1, h: 1 }));
+    control.edge.processFrame(still);
+    control.edge.processFrame(moved);
+    expect(control.signals).toHaveLength(1);
   });
 });

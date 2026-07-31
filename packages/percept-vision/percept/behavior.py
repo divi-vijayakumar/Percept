@@ -51,8 +51,9 @@ from .contracts import (
 from .episodes import EPISODE_POLICIES, ContinuationDecision
 from .duration_routes import duration_policy
 from .gate import ASK, FIRE, Gate, GateOutcome, classify
-from .identity_policy import SCENE_IDENTITY
-from .observability import get_logger
+from .identity_policy import SCENE_IDENTITY, is_entity_scoped
+from .observability import get_logger, log
+from .runtime._bounds import BoundedRecencyMap
 
 # --------------------------------------------------------------------------------------------------
 # The behavior program — authored data (the LLM fills these; presets compile legacy goal.state).
@@ -153,7 +154,16 @@ _CMP: dict[type, Callable[[float, float], bool]] = {
 
 
 class UnsafeExpression(ValueError):
-    """Raised when a ``fire_when`` expression contains a node/name outside the whitelist."""
+    """The ONE way :func:`compile_fire_when` refuses a ``fire_when`` string.
+
+    It covers both refusals, which used to be two: a node/name outside the whitelist, and text that
+    is not a parsable expression at all (``"import os"``, a JS-style predicate, an assignment typo, a
+    truncated reply). The second used to escape as ``SyntaxError``, which is NOT a ``ValueError`` and
+    therefore slipped past every guard written against this class — including the authoring firewall
+    in :func:`coerce_authored_behavior`, whose whole job is to absorb malformed LLM output. Nothing
+    in ``percept/`` ever distinguished the two by type, so they are one refusal now: a caller writes
+    ``except UnsafeExpression`` (or ``except ValueError``) and that is exhaustive.
+    """
 
 
 def _eval_node(node: ast.AST, env: dict):
@@ -190,8 +200,24 @@ def compile_fire_when(expr: str) -> Callable[[dict], bool]:
     names ``{n, t}`` and numeric constants. Anything else — a call, attribute, subscript, import, or a
     name outside ``{n, t}`` — raises :class:`UnsafeExpression`. The tree is INTERPRETED by
     :func:`_eval_node`; ``eval``/``exec``/``compile`` are never invoked on it.
+
+    **:class:`UnsafeExpression` is the only thing this raises**, including for input that is not an
+    expression at all. ``ast.parse`` refuses those with ``SyntaxError``, which is not a ``ValueError``
+    and so was invisible to every guard in the tree — the authoring firewall degraded a bad
+    ``fire_when`` to a plain watch only for the whitelist half and propagated the parse half straight
+    out of the authoring call, and the two FIRING-TIME callers (:meth:`BehaviorExecutor.fire_judged`
+    and :meth:`BehaviorExecutor.fire_clip_events`, both via :meth:`BehaviorExecutor._fire_when`) have
+    no handler at all, so a ``fire_when`` that reached ``goal.state`` by any door other than
+    :func:`coerce_authored_behavior` crashed the live tick. Converting at the authority fixes every
+    caller at once; converting at any one guard fixes none of the others.
     """
-    tree = ast.parse(expr, mode="eval")  # parse only — does not execute
+    try:
+        tree = ast.parse(expr, mode="eval")  # parse only — does not execute
+    except (SyntaxError, ValueError, TypeError) as exc:
+        # SyntaxError: not an expression. ValueError: embedded NUL bytes. TypeError: not a str at
+        # all (a programmatic ``goal.state["fire_when"] = 3``). All three mean the same thing to
+        # every caller — this text cannot become a predicate — so they arrive as one refusal.
+        raise UnsafeExpression(f"not an expression: {expr!r}") from exc
     # Validate the whole tree up-front so a bad node is rejected even on a short-circuited branch.
     for node in ast.walk(tree):
         if isinstance(node, (ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.Compare, ast.Load)):
@@ -802,6 +828,13 @@ INCIDENT_MERGE_WINDOW_S: float = 0.7
 #: bound" discipline (ADR-001 §9). Stamps older than the window are pruned on every delivery, so in
 #: real time the map holds only the keys that fired within the last window; this cap covers the
 #: degenerate case of a caller that never advances ``t``.
+#:
+#: It is enforced by :class:`~percept.runtime._bounds.BoundedRecencyMap`, which evicts the
+#: LEAST-RECENTLY-STAMPED key. It used to re-sort the map by timestamp and keep the top 1024, and
+#: that was wrong in exactly the case this cap exists for: under a frozen clock every stamp ties,
+#: Python's reverse sort is stable and does not reorder equal elements, so "newest wins" kept the
+#: 1024 EARLIEST-inserted keys and discarded the stamp taken one line earlier. Insertion order is a
+#: total order whatever the clock does; the stamps are not.
 _MERGE_MAX_KEYS = 1024
 
 #: Sentinel: "measure the window from this key's LIVE last-delivery stamp" (the default). A caller
@@ -844,8 +877,11 @@ class BehaviorExecutor:
         self.merge_window_s = float(merge_window_s)
         # When each gate key last passed the delivery seam with a DISTINCT occurrence. Written only
         # for a fire the merge admitted, never for one it dropped, so a dense duplicate stream can
-        # never slide the window forward indefinitely.
-        self._merge_anchors: dict[Hashable, float] = {}
+        # never slide the window forward indefinitely. Bounded and TRACED by the same map the
+        # idempotency ledger uses (see _MERGE_MAX_KEYS); it reads as a plain dict everywhere else.
+        self._merge_anchors: BoundedRecencyMap = BoundedRecencyMap(
+            _MERGE_MAX_KEYS, on_evict=self._merge_anchor_evicted,
+        )
 
     def ctx(self, concern_id: str) -> ConcernContext:
         return self._ctx.setdefault(concern_id, ConcernContext())
@@ -873,9 +909,17 @@ class BehaviorExecutor:
         that entity churn cannot multiply, and never an entity id. It is skipped explicitly, so a
         custom :class:`~percept.entity.EntityGraph` minting an id that collided with that sentinel
         still could not drop a live scene-scoped witness.
+
+        The exemption is now the SHARED predicate
+        :func:`~percept.identity_policy.is_entity_scoped`, applied at three places: the one hook both
+        halves are called from (``Percept._on_entity_evicted``), :meth:`~percept.gate.Gate.reset_entity`,
+        and here. The hook is where the policy belongs — it makes gate, executor and cache inherit
+        one answer — and the two local guards are kept because a DIRECT call must be safe too. This
+        method's guard used to be the ONLY one, which is precisely how the two halves of one latch
+        came to disagree about the same collision.
         """
 
-        if entity_id == SCENE_IDENTITY:
+        if not is_entity_scoped(entity_id):
             return  # the per-goal scene singleton is not an entity and is never reclaimed here
         for ctx in self._ctx.values():
             ctx.transitions.pop(entity_id, None)
@@ -983,20 +1027,34 @@ class BehaviorExecutor:
         # Half-open [0, window): a fire landing exactly ``window`` later is a separate occurrence.
         return 0.0 <= delta < window
 
+    def _merge_anchor_evicted(self, key: Hashable, reason: str) -> None:
+        """A stamp the CAP forced out. ADR-001 §9: a drop forced by a bound is never silent.
+
+        This is not the window prune below — that one retires a stamp the merge could never have
+        used again, which costs nothing and is not a drop. This one discards a LIVE anchor, which
+        fails open: the key's next fire is delivered instead of merged, so the cost is a duplicate
+        notification and never a lost one. Cheap, but not free, and only visible if it is reported.
+        """
+        self.metrics.incr("merge_anchor.evicted")
+        log(get_logger("percept.behavior"), "merge_anchor.evicted", reason=reason, key=repr(key)[:120])
+
     def _note_merge_anchor(self, key: Hashable, t: float) -> None:
         """Stamp a DISTINCT occurrence for ``key``, and prune stamps the window can no longer use."""
         if not (self.merge_window_s > 0.0) or not math.isfinite(t):
             return
         window = self.merge_window_s
         # Anything older than the window can never suppress again (for a non-decreasing clock); a
-        # stamp in the FUTURE of ``t`` is kept, since it is another key's clock running ahead.
-        self._merge_anchors = {
-            k: v for k, v in self._merge_anchors.items() if t - v < window
-        }
-        self._merge_anchors[key] = t
-        if len(self._merge_anchors) > _MERGE_MAX_KEYS:  # degenerate clock backstop, newest wins
-            newest = sorted(self._merge_anchors.items(), key=lambda kv: kv[1], reverse=True)
-            self._merge_anchors = dict(newest[:_MERGE_MAX_KEYS])
+        # stamp in the FUTURE of ``t`` is kept, since it is another key's clock running ahead. That
+        # exemption is why this is a full scan and not the map's front-anchored ``expire`` — a
+        # future-dated stamp can sit in FRONT of a stale one, so there is no first survivor to stop
+        # at. It is also not an eviction: a stamp past the window has no suppressing power left, so
+        # dropping it costs nothing and is deliberately not traced.
+        for stale in [k for k, v in self._merge_anchors.items() if t - v >= window]:
+            self._merge_anchors.pop(stale, None)
+        # The degenerate-clock backstop. ``note`` moves this key to the BACK and evicts from the
+        # FRONT, so the stamp just taken is the LAST thing that can be dropped rather than — as the
+        # stable timestamp sort it replaced did under a frozen clock — the first.
+        self._merge_anchors.note(key, t)
 
     def _fire_when(self, expr: str) -> Callable[[dict], bool]:
         pred = self._fire_when_cache.get(expr)
@@ -2124,6 +2182,58 @@ def coerce_authored_sense(raw) -> dict:
     return {"sense": spec} if spec else {}
 
 
+#: The closed ``gate_on`` vocabulary — which upstream signal ARMS a goal. This is now the ONLY copy:
+#: ``percept.harness.tier0._GATE_ON_VOCAB`` is this set object, imported. Mirrored by the ``GateOn``
+#: literal in ``percept.contracts`` and by ``GATE_ON`` in ``percept-edge/src/contract.js``.
+#:
+#: ``fused`` is the noisy-OR over the cheap channels (``percept.harness.detectors.wake_score``). It is
+#: a channel a goal OPTS IN to, not a mode that overrides the others: a configured ``wake_policy``
+#: used to replace the ``structural``/``semantic``/``motion`` branch for every goal and then report
+#: the admission as the goal's own ``gate_on``, so a receipt could name a channel whose measured value
+#: was 0.0.
+_VALID_GATE_ON = {"motion", "structural", "semantic", "fixed", "fused"}
+
+
+def coerce_authored_cadence(raw) -> tuple[float | None, str]:
+    """Goal-state cadence hint -> ``(cadence_s, gate_on)``; the firewall for the TEMPORAL cadence —
+    how OFTEN to look, and which signal arms the look (distinct from :func:`coerce_authored_sense`,
+    which is how DENSELY the fovea processes what it already has).
+
+    Accepts ``{"min_judge_interval": float, "gate_on":
+    "motion"|"structural"|"semantic"|"fixed"|"fused"}``. Unknown shape / out-of-vocab -> ``(None,
+    "motion")`` (the default, no cadence cap). A non-positive interval is dropped;
+    ``gate_on="fixed"`` without an interval falls back to ``"motion"`` (a fixed cadence with no period
+    is meaningless), so a malformed hint can never silently break a watch.
+
+    **Shape note** — unlike its ``coerce_authored_*`` siblings this returns the coerced PAIR, not a
+    ``{"cadence": ...}`` sub-dict: both readers (the tier-0 WatchSpec compile and
+    :func:`~percept.sensorplan.sensor_plan_for`) want the two decided values, not a state block to
+    merge. It is therefore NOT a member of ``watchplan_apply._WRAPPED_COERCERS``.
+
+    **The single copy.** ``percept.harness.tier0`` used to carry a byte-identical duplicate of this
+    function beside a duplicate of :data:`_VALID_GATE_ON`, held equal only by
+    ``tests/test_sensorplan.py::CadenceFirewallDriftTests``. It now imports both from here (the
+    harness sits above ``behavior``, so the import runs the right way down the layering, and
+    ``sensorplan`` stays harness-free). The drift test survives as the guard that the tier-0 names
+    ARE these names rather than fresh copies of them.
+
+    Quirks kept deliberately, and now pinned literally rather than against a twin: ``bool`` is an
+    ``int``, so ``min_judge_interval=True`` reads as 1.0 s; a numeric STRING is not numeric and is
+    dropped; ``nan > 0`` is False so NaN is dropped, while ``inf`` is admitted as an interval that
+    never elapses.
+    """
+    if not isinstance(raw, dict):
+        return None, "motion"
+    interval = raw.get("min_judge_interval")
+    cadence_s = float(interval) if isinstance(interval, (int, float)) and interval > 0 else None
+    gate_on = raw.get("gate_on", "motion")
+    if gate_on not in _VALID_GATE_ON:
+        gate_on = "motion"
+    if gate_on == "fixed" and cadence_s is None:
+        gate_on = "motion"
+    return cadence_s, gate_on
+
+
 def perception_for_concern(concern) -> dict:
     """Map a :class:`~percept.contracts.Concern`'s clip declaration to a ``goal.state['perception']``
     sub-dict (the same shape :func:`coerce_authored_perception` emits). A concern declaring a positive
@@ -2202,6 +2312,7 @@ __all__ = [
     "INCIDENT_MERGE_WINDOW_S",
     "program_of",
     "coerce_authored_behavior",
+    "coerce_authored_cadence",
     "coerce_authored_episode",
     "coerce_authored_perception",
     "coerce_authored_rhythm",

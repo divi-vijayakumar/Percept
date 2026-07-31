@@ -909,9 +909,10 @@ def run_doctor(
         if g.ego_compensate:
             findings.append(Finding(
                 EGO_COMPENSATED_GATE, "info",
-                f"{g.goal_id}: ego-compensation is ON, so the gate escalates on the whole-frame "
-                "ego RESIDUAL, not on the block statistics printed above. The admitted counts are "
-                "still the real gate's; the value columns describe the uncompensated frames",
+                f"{g.goal_id}: ego-compensation is ON, so the gate escalates on the ego RESIDUAL "
+                "(masked to the goal's region_hint when it has one), not on the block statistics "
+                "printed above. The admitted counts are still the real gate's; the value columns "
+                "describe the uncompensated frames",
             ))
         if g.suppressions.get("unexplained"):
             findings.append(Finding(

@@ -19,6 +19,10 @@ import {
   CATEGORY_AUDIO_EVENT,
   CATEGORY_CHANGE,
   CATEGORY_SEMANTIC_RELEVANCE,
+  ACOUSTIC_ONSET_HIGH,
+  ACOUSTIC_ONSET_LOW,
+  WakePolicyError,
+  cheapSignals,
 } from "../src/skills.js";
 
 // A clean oscillation: each rep climbs to 1.0 then drops to 0.0. Peaks emitted on the descent.
@@ -57,9 +61,35 @@ describe("AcousticOnset — energy onsets with hysteresis", () => {
   });
 
   it("does NOT re-fire while energy stays above low (hysteresis holds it disarmed)", () => {
-    // after the first onset, 0.2 is between low(0.15) and high(0.3) -> stays disarmed -> no second fire
+    // after the first onset, 0.2 stays above the re-arm bar -> stays disarmed -> no second fire
     const onsets = run(new AcousticOnset(), [0.0, 0.5, 0.2, 0.5, 0.2]);
     expect(onsets).toHaveLength(1);
+  });
+
+  it("ships the Python bars, not the retired 0.09/0.0225 pair", () => {
+    // BUG-A-02-05's twin. The old JS defaults were an RMS amplitude of 0.3 in ENERGY terms; measured
+    // against 987 s of annotated sound, the loudest chunk in the whole corpus reached 0.0277, so that
+    // gate woke 0 times on 204 annotated events. The two runtimes must agree on the shipped bar or the
+    // same stream is heard by one edge and not the other.
+    expect(ACOUSTIC_ONSET_HIGH).toBe(0.001);
+    expect(ACOUSTIC_ONSET_LOW).toBe(0.00025);
+    const det = new AcousticOnset();
+    expect(det.high).toBe(ACOUSTIC_ONSET_HIGH);
+    expect(det.low).toBe(ACOUSTIC_ONSET_LOW);
+    // the shipped bar hears the corpus's loudest chunk; the retired one is deaf to it
+    expect(run(new AcousticOnset(), [0.0, 0.0277])).toHaveLength(1);
+    expect(run(new AcousticOnset({ high: 0.09, low: 0.0225 }), [0.0, 0.0277])).toHaveLength(0);
+  });
+
+  it("refuses an inverted band at construction rather than minting phantom onsets", () => {
+    // BUG-A-02-05. Every sample in [high, low) both fires (v >= high) and re-arms (v < low), so a
+    // dead-steady tone oscillates the state machine and emits an onset every other sample. An onset is
+    // "a sound STARTING", and a constant level contains exactly one start whatever the bars are.
+    expect(() => new AcousticOnset({ high: 0.1, low: 0.5 })).toThrow(/low <= high/);
+    // ...and low === high stays PERMITTED: no sample is both >= high and < low, so the oscillation is
+    // unreachable at a zero-width band.
+    const flat = new AcousticOnset({ high: 0.2, low: 0.2 });
+    expect(run(flat, [0.2, 0.2, 0.2, 0.2, 0.2])).toHaveLength(1);
   });
 });
 
@@ -114,15 +144,107 @@ describe("wakeScore / shouldWake — cheap evidence fusion before VLM", () => {
   });
 
   it("combines weak weighted cues with noisy-OR", () => {
-    const policy = { threshold: 0.45, weights: { presence: 0.7, audio_event: 0.7 } };
-    expect(wakeScore({ presence: 0.5, audio_event: 0.5 }, policy)).toBeGreaterThan(0.45);
-    const decision = shouldWake({ presence: 0.5, audio_event: 0.5 }, policy);
+    const policy = { threshold: 0.45, weights: { presence: 0.7, audio: 0.7 } };
+    expect(wakeScore({ presence: 0.5, audio: 0.5 }, policy)).toBeGreaterThan(0.45);
+    const decision = shouldWake({ presence: 0.5, audio: 0.5 }, policy);
     expect(decision.wake).toBe(true);
     expect(decision.top_channel).toBe("presence");
   });
 
   it("clamps out-of-range inputs", () => {
-    expect(wakeScore({ semantic_relevance: 9 }, { threshold: 0.9, weights: { semantic_relevance: 2 } })).toBe(1);
+    expect(wakeScore({ semantic: 9 }, { threshold: 0.9, weights: { semantic: 2 } })).toBe(1);
+  });
+
+  it("fuses over the MEASURED channels, so a weight can never score below the max it replaced", () => {
+    // BUG-A-02-04's twin. The loop iterated the WEIGHT table, so any measured channel with no
+    // explicit weight was deleted from the fusion and a typo'd channel name was total deafness.
+    const signals = { presence: 0.9, motion: 0.8 };
+    expect(wakeScore(signals)).toBeCloseTo(0.9, 12);
+    // weights are per-channel PRIORS defaulting to 1.0 -> a strict generalization of the max
+    expect(wakeScore(signals, { weights: { motion: 1.0 } })).toBeCloseTo(0.98, 12);
+    expect(wakeScore(signals, { weights: { motion: 1.0 } })).toBeGreaterThanOrEqual(wakeScore(signals));
+    // ...and a typo in a CHANNEL name now costs that channel's prior, not every signal present
+    expect(wakeScore(signals, { weights: { presenc: 1.0 } })).toBeCloseTo(0.98, 12);
+  });
+
+  it("reads a channel named in weights but absent from signals as no vote, not as a zero", () => {
+    const policy = { weights: { presence: 1.0, motion: 1.0 } };
+    expect(wakeScore({ motion: 0.5 }, policy)).toBeCloseTo(0.5, 12);
+    expect(wakeScore({ motion: 0.5, presence: 0.0 }, policy)).toBeCloseTo(0.5, 12);
+    expect(wakeScore({}, policy)).toBe(0);
+  });
+
+  it("names a top_channel that actually contributed, and none when nothing did", () => {
+    // BUG-A-02-03's twin: top_channel was the argmax of the RAW signals, computed with no reference to
+    // the weights, beside a score computed FROM them.
+    const d = shouldWake({ presence: 0.9, motion: 0.4 }, { weights: { presence: 0.0, motion: 1.0 } });
+    expect(d.score).toBeCloseTo(0.4, 12);
+    expect(d.top_channel).toBe("motion");
+    // every contribution zero -> no channel to name, even though signals were present
+    const silent = shouldWake({ presence: 0.9 }, { weights: { presence: 0.0 } });
+    expect(silent.score).toBe(0);
+    expect(silent.top_channel).toBeNull();
+    // ...and a floor lifts the score without inventing a channel that produced it
+    const floored = shouldWake({}, { threshold: 0.5, floor: 1.0 });
+    expect(floored.wake).toBe(true);
+    expect(floored.top_channel).toBeNull();
+  });
+
+  it("keeps ties on the first channel", () => {
+    expect(shouldWake({ motion: 0.5, presence: 0.5 }).top_channel).toBe("motion");
+    expect(shouldWake({ motion: 0.4, presence: 0.5 }).top_channel).toBe("presence");
+    expect(shouldWake({}).top_channel).toBeNull();
+  });
+
+  it("refuses a malformed policy by name instead of degrading to the legacy max", () => {
+    // BUG-A-02-08's twin. `weigths` used to read as an absent `weights`, so the calibrated OR
+    // silently became max() while keeping the authored threshold — nothing distinguished "calibrated"
+    // from "running the legacy default".
+    expect(() => wakeScore({ presence: 0.5 }, { threshold: 0.9, weigths: { presence: 1.0 } })).toThrow(
+      WakePolicyError,
+    );
+    expect(() => wakeScore({}, { weights: { presence: "0.7" } })).toThrow(/stringified number/);
+    expect(() => wakeScore({}, { weights: { pose: true } })).toThrow(/bool is not a number/);
+    expect(() => wakeScore({}, { threshold: Infinity })).toThrow(/must be finite/);
+    expect(() => wakeScore({}, { weights: [1, 2] })).toThrow(WakePolicyError);
+    expect(() => wakeScore({}, ["motion"])).toThrow(WakePolicyError);
+    // a well-formed policy still passes through untouched
+    expect(wakeScore({ presence: 0.5 }, { threshold: 0.9, weights: { presence: 1.0 } })).toBeCloseTo(0.5, 12);
+  });
+});
+
+describe("cheapSignals — one measurement populates exactly one channel", () => {
+  it("emits four channels from four measurements, with no aliases", () => {
+    // BUG-A-01-05's twin: `change` aliased `motion`, `semantic_relevance` aliased `semantic`, and
+    // `audio_event` aliased `audio`, so the noisy-OR fused one reading with itself.
+    expect(cheapSignals({ motion: 0.6, structural: 0.1, semantic: 0.2, energy: 0.3 })).toEqual({
+      motion: 0.6,
+      structural: 0.1,
+      semantic: 0.2,
+      audio: 0.3,
+    });
+    // the aliased reading was worth more than the measurement
+    expect(wakeScore({ motion: 0.6, change: 0.6 }, { weights: { motion: 0.5, change: 0.5 } })).toBeCloseTo(
+      0.51,
+      12,
+    );
+    expect(wakeScore({ motion: 0.6 }, { weights: { motion: 0.5 } })).toBeCloseTo(0.3, 12);
+  });
+
+  it("omits audio when no microphone is open rather than reporting silence", () => {
+    expect(cheapSignals({ motion: 0.1, structural: 0, semantic: 0 })).not.toHaveProperty("audio");
+    expect(cheapSignals({ motion: 0.1, structural: 0, semantic: 0, energy: 0 }).audio).toBe(0);
+  });
+
+  it("applies the caller's overlay last", () => {
+    const out = cheapSignals({
+      motion: 0.1,
+      structural: 0,
+      semantic: 0,
+      extra: { presence: 0.7, motion: 0.9 },
+    });
+    expect(out.presence).toBe(0.7);
+    expect(out.motion).toBe(0.9);
   });
 });
 
@@ -154,6 +276,23 @@ describe("SkillBank — routes the cheap channels to each skill", () => {
     const out = [];
     OSC.forEach((v, t) => out.push(...bank.push(t, { motion: v })));
     expect(out).toHaveLength(5); // counts fresh, not 10
+  });
+
+  it("feeds an unrecognised channel nothing instead of falling back to motion", () => {
+    // BUG-A-02-02's twin: `const sig = signal === "energy" ? energy : motion` made every name that
+    // was not exactly "energy" or "frame" read frame-diff motion, so a skill declaring `"thermal"` —
+    // or a typo like `"enrgy"` — emitted boundaries the brain counted as its declared sense.
+    // `registerSkill` is the first gate; this is the bank's own, reached by tampering with the
+    // resolved channel the way a hand-built bank entry could.
+    expect(SkillBank.CHANNELS).toEqual(["motion", "energy", "frame"]);
+    expect(() => registerSkill({ name: "thermal-skill", signal: "thermal", factory: () => ({}) })).toThrow(
+      /signal must be/,
+    );
+    const bank = new SkillBank(["motion-periodicity"]);
+    bank._dets[0].signal = "enrgy";
+    const out = [];
+    OSC.forEach((v, t) => out.push(...bank.push(t, { motion: v })));
+    expect(out).toEqual([]);
   });
 });
 

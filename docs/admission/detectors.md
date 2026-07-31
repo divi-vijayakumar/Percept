@@ -98,6 +98,15 @@ spec = compile_watchspec(goals, threshold=0.5, edge_capabilities={"motion-period
 # each WatchCondition.detectors holds the goal's selected, validated, capability-filtered skills
 ```
 
+Omitting `edge_capabilities` (or passing `None`) means "the in-process edge runs the whole registry" and
+sends the full selection. Passing a list means "only these" — and passing an **empty** list drops every
+skill the goal selected, which is the opposite instruction, not a milder one. A drop is always reported:
+`compile_watchspec` raises an `UnsupportedEdgeCapabilityWarning` naming the goal and the skills, logs the
+same line, and hands the full `[(goal_id, dropped)]` list to an optional `on_unsupported=` callback. The
+Watch still admits frames and still spends judge calls — it simply can never emit a boundary from the
+dropped skills. Ask before you arm anything with `watchspec_unsupported(goals, capabilities)`, which
+answers the same question quietly, or read `GatedWatchLoop.unsupported_detectors` afterwards.
+
 `DetectorBank` constructs one instance per selected name and runs the goal's detectors over the stream,
 routing each its signal channel. The default selection is **empty** — an un-annotated goal selects no
 detectors, so existing behavior is byte-for-byte unchanged.

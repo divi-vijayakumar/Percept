@@ -19,11 +19,15 @@ from __future__ import annotations
 import re
 import unittest
 from pathlib import Path
+from typing import get_args
 
 from percept.episodes import (
     CLOSED,
     OPEN,
     Coverage,
+    CoverageGap,
+    CoverageKind,
+    CoverageSpan,
     EpisodeLog,
     EpisodePolicy,
     Observation,
@@ -154,6 +158,162 @@ class IntervalBuilderUnitTests(unittest.TestCase):
              Observation(t=2.0, observed=True, satisfied=True)]
         )
         self.assertEqual([g.reason for g in silent.gaps], ["unobserved"])
+
+
+class TestTheValidityHorizonBoundary(unittest.TestCase):
+    """§2.5 — an observation landing EXACTLY ``observation_valid_for_s`` after the previous positive.
+
+    The merge test is ``within(dt, observation_valid_for_s)``, so the boundary is INCLUSIVE:
+    exactly-on-the-horizon continues the span. That is the documented side (the module header says
+    an observation is valid *through* ``t + observation_valid_for_s``), and it is pinned here from
+    both directions so a later ``<`` cannot silently halve every span at the boundary — and, since
+    BUG-B-04-01, inclusive IN FACT rather than only when the arithmetic happens to be exact.
+    """
+
+    T_A, T_B = 0.0, 5.0  # dt is exactly 5.0, and 5.0 is exactly representable in binary float
+
+    def _cov(self, horizon: "float | None", *, explicit: bool = True) -> Coverage:
+        obs = [
+            Observation(t=self.T_A, observed=True, satisfied=True),
+            Observation(t=self.T_B, observed=True, satisfied=True),
+        ]
+        if not explicit:
+            return interval_coverage(obs)
+        return interval_coverage(obs, observation_valid_for_s=horizon)
+
+    def test_exactly_on_the_horizon_continues_the_span(self):
+        """dt == horizon merges: one span, no gap, and the whole 5s counts as accounted for."""
+        cov = self._cov(5.0)
+        self.assertEqual(cov.spans, (CoverageSpan(start=0.0, end=5.0, kind="observed"),))
+        self.assertEqual(cov.gaps, ())
+        self.assertEqual(cov.observed_total_s, 5.0)
+
+    def test_one_millisecond_past_the_horizon_breaks_the_span(self):
+        """The exclusive side. Both positives survive as ZERO-LENGTH spans — current behaviour, and
+        the reason ``observed_total_s`` collapses to 0.0 rather than to the two instants' 5s apart."""
+        cov = self._cov(4.999)
+        self.assertEqual(
+            cov.spans,
+            (
+                CoverageSpan(start=0.0, end=0.0, kind="observed"),
+                CoverageSpan(start=5.0, end=5.0, kind="observed"),
+            ),
+        )
+        self.assertEqual(cov.gaps, (CoverageGap(start=0.0, end=5.0, reason="unobserved"),))
+        self.assertEqual(cov.observed_total_s, 0.0)
+
+    def test_no_horizon_is_the_exclusive_side_at_every_separation(self):
+        """``None`` (the shipped default) never merges, so it lands on exactly the exclusive ANSWER
+        — the boundary knob is the ONLY thing that can move spans, gaps or the total.
+
+        ``horizon_granted_s`` is deliberately excluded from the comparison: it is provenance, not
+        an answer, and "the same coverage was reached under a different horizon" is precisely what
+        it exists to tell a client."""
+        def answer(cov):
+            return (cov.spans, cov.gaps, cov.observed_total_s)
+
+        exclusive = self._cov(4.999)
+        self.assertEqual(answer(self._cov(None)), answer(exclusive))
+        self.assertEqual(answer(self._cov(None, explicit=False)), answer(exclusive))
+        self.assertEqual(self._cov(None), self._cov(None, explicit=False))  # default == explicit None
+        self.assertNotEqual(self._cov(None), exclusive)  # ...and the provenance still differs
+
+    def test_the_flip_happens_at_the_horizon_and_nowhere_else(self):
+        """Sweep across dt=5.0: merged IFF horizon >= dt. Pins the inclusive side as a boundary, not
+        as a lucky value — a ``<`` in the impl fails only the horizon==5.0 row."""
+        for horizon, merged in [
+            (0.0, False),
+            (4.9, False),
+            (4.999999, False),
+            (5.0, True),  # the boundary itself
+            (5.000001, True),
+            (500.0, True),
+        ]:
+            with self.subTest(horizon=horizon):
+                cov = self._cov(horizon)
+                self.assertEqual(len(cov.spans), 1 if merged else 2)
+                self.assertEqual(cov.gaps, () if merged else
+                                 (CoverageGap(start=0.0, end=5.0, reason="unobserved"),))
+                self.assertEqual(cov.observed_total_s, 5.0 if merged else 0.0)
+
+    def test_a_degraded_tick_inside_the_merged_stretch_does_not_break_it(self):
+        """The boundary is decided by the POSITIVES only: a degraded tick between them cannot force a
+        gap, it can only name one that the horizon already refused to cover."""
+        obs = [
+            Observation(t=0.0, observed=True, satisfied=True),
+            Observation(t=2.5, observed=False, degraded=True),
+            Observation(t=5.0, observed=True, satisfied=True),
+        ]
+        merged = interval_coverage(obs, observation_valid_for_s=5.0)
+        self.assertEqual(merged.gaps, ())
+        self.assertEqual(merged.observed_total_s, 5.0)  # silence inside a valid horizon stays covered
+        broken = interval_coverage(obs, observation_valid_for_s=4.999)
+        self.assertEqual([g.reason for g in broken.gaps], ["judge_degraded"])
+
+    def test_there_is_exactly_one_coverage_kind(self):
+        """BUG-B-04-02, decided as retirement. ``CoverageKind`` declared a second literal,
+        ``validity_horizon``, that NO code path in ``percept/`` ever produced — both ``CoverageSpan``
+        construction sites hard-code ``observed`` — so every consumer branching on it was branching
+        on a value it could not receive, and the synthetic schema validated a value that would then
+        fail every comparison against real coverage.
+
+        Emitting it for real was rejected: splitting a merged span would change span CARDINALITY and
+        the meaning of ``observed_total_s`` for every merged run, a breaking read for any client
+        summing spans. The literal is retired here and in ``harness/synthetic/schema.py``; the client
+        question it was reaching for is answered additively by ``horizon_granted_s`` below.
+
+        REWRITTEN from ``test_horizon_inferred_time_is_still_labelled_observed``, which asserted the
+        unreachable literal was present in the type.
+        """
+        self.assertEqual(get_args(CoverageKind), ("observed",))
+        cov = self._cov(5.0)
+        self.assertEqual([s.kind for s in cov.spans], ["observed"])
+
+    def test_coverage_reports_the_horizon_its_time_was_granted_under(self):
+        """The additive answer. An observation is an INSTANT, so every second strictly inside a span
+        was granted by the validity horizon rather than directly sampled — and a client deciding
+        whether to quote ``observed_total_s`` as a duration needs to see how generous that grant
+        was. 5s of coverage under a 5s horizon is one sample's benefit of the doubt."""
+        self.assertEqual(self._cov(5.0).horizon_granted_s, 5.0)
+        # No horizon => no grant, and necessarily no coverage: spans cannot exceed an instant.
+        for cov in (self._cov(None), self._cov(None, explicit=False)):
+            self.assertEqual(cov.horizon_granted_s, 0.0)
+            self.assertEqual(cov.observed_total_s, 0.0)
+        # It is provenance, not a measurement — reported even when nothing positive was observed.
+        empty = interval_coverage(
+            [Observation(t=3.0, observed=False, degraded=True)], observation_valid_for_s=2.0
+        )
+        self.assertEqual(empty.horizon_granted_s, 2.0)
+        self.assertEqual(empty.observed_total_s, 0.0)
+
+    def test_exact_horizon_holds_at_a_ten_hertz_cadence(self):
+        """The same boundary, at a cadence whose step is NOT exactly representable (BUG-B-04-01).
+
+        Every tick is a positive and the horizon is exactly the cadence, so the documented inclusive
+        side says: one span, no gaps, 1.0s accounted for. A bare ``dt <= horizon`` fails this —
+        ``0.4 - 0.3 == 0.10000000000000003 > 0.1`` while ``0.3 - 0.2 == 0.09999999999999998 < 0.1``,
+        so coverage fragments on SOME steps and not others and the total lands on
+        ``0.7999999999999998``. ``percept._time_compare.within`` closes the boundary."""
+        ts = [round(i * 0.1, 10) for i in range(11)]  # 0.0 .. 1.0 at 10 Hz
+        cov = interval_coverage(
+            [Observation(t=t, observed=True, satisfied=True) for t in ts],
+            observation_valid_for_s=0.1,
+        )
+        self.assertEqual(cov.gaps, ())
+        self.assertEqual(cov.spans, (CoverageSpan(start=0.0, end=1.0, kind="observed"),))
+        self.assertEqual(cov.observed_total_s, 1.0)
+
+    def test_the_tolerance_is_a_boundary_nudge_not_a_slack_horizon(self):
+        """The guard on the fix: ``within`` closes the boundary at nanosecond scale and nothing
+        wider. A horizon a MILLISECOND short of the step still refuses to merge — the tolerance
+        cannot be used to smuggle in coverage the client did not author."""
+        cov = interval_coverage(
+            [Observation(t=0.0, observed=True, satisfied=True),
+             Observation(t=0.1, observed=True, satisfied=True)],
+            observation_valid_for_s=0.099,
+        )
+        self.assertEqual(cov.observed_total_s, 0.0)
+        self.assertEqual([g.reason for g in cov.gaps], ["unobserved"])
 
 
 class StateConsistencyTests(unittest.TestCase):

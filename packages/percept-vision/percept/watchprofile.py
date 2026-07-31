@@ -38,6 +38,7 @@ from typing import Iterator
 
 from .behavior import _VALID_TEMPORAL  # concern-authored PerceptionSpec.temporal vocabulary (superset of PLAN_MODES below)
 from .contracts import SalienceStat  # Literal["mean", "block_max", "p95"]
+from .sampling import validate_cadence  # the ONE cadence authority; CadenceProfile does not re-derive it
 
 # ``plan_mode`` / ``salience_stat`` vocabularies, exposed as plain tuples for validation + introspection
 # (error messages, tests) without re-exporting behavior's private Literal alias.
@@ -69,6 +70,12 @@ class CadenceProfile:
     ``escalate_threshold`` the cheap-motion level that triggers a saccade toward ``max_fps``; ``hold_s``
     keeps the escalation alive briefly after a spike — SensePolicy's fourth knob, included so a profile
     round-trips to a real ``SensePolicy`` (:meth:`to_sense_policy`) without guessing a default.
+
+    The envelope rules live in :func:`percept.sampling.validate_cadence` — the ONE cadence authority,
+    which the ``SensePolicy`` this profile round-trips to enforces too. This class keeps its own error
+    TYPE (``WatchProfileError``) and messages by passing them in; it does not keep its own copy of the
+    rules, because a profile that validated more strictly than the policy every consumer runs on is not
+    a guarantee, only a second opinion.
     """
 
     base_fps: float = 4.0
@@ -77,20 +84,10 @@ class CadenceProfile:
     hold_s: float = 0.5
 
     def __post_init__(self) -> None:
-        if self.base_fps <= 0 or self.max_fps <= 0:
-            raise WatchProfileError(
-                f"cadence fps must be > 0 (base_fps={self.base_fps}, max_fps={self.max_fps})"
-            )
-        if self.base_fps > self.max_fps:
-            raise WatchProfileError(
-                f"cadence.base_fps ({self.base_fps}) must be <= cadence.max_fps ({self.max_fps})"
-            )
-        if not (0.0 <= self.escalate_threshold <= 1.0):
-            raise WatchProfileError(
-                f"cadence.escalate_threshold must be in 0..1, got {self.escalate_threshold}"
-            )
-        if self.hold_s < 0:
-            raise WatchProfileError(f"cadence.hold_s must be >= 0, got {self.hold_s}")
+        validate_cadence(
+            self.base_fps, self.max_fps, self.escalate_threshold, self.hold_s,
+            error=WatchProfileError,
+        )
 
     def to_sense_policy(self):
         """Build the real :class:`percept.sampling.SensePolicy` this cadence describes."""

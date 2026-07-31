@@ -71,7 +71,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Iterable
 
-from .contracts import CONTRACT_VERSION, Box, Goal, Observation, Verdict, Vision
+from .contracts import CONTRACT_VERSION, Box, Goal, Observation, Verdict, Vision, verdict_defect
 
 #: Semver of the CONFORMANCE SUITE itself — the set of checks and their severities — distinct from
 #: ``percept.contracts.CONTRACT_VERSION`` (the DTO shapes) and ``percept.watch.WATCH_VERSION`` (the
@@ -361,33 +361,73 @@ def _skip_call_checks(rec: "_Recorder", detail: str) -> None:
 # --- Verdict / Observation invariants -------------------------------------------------------------
 
 
-def assert_verdict(value: Any, *, where: str) -> Verdict:
-    """The gate's contract on a judge return. Raises ``AssertionError`` naming what is wrong."""
-    if not isinstance(value, Verdict):
-        raise AssertionError(
+def _verdict_defect_message(value: Any, defect: str, *, where: str) -> str:
+    """The long, human, adapter-author-facing message for one :data:`VERDICT_DEFECTS` token.
+
+    The messages are the point of this module — a conformance run is read by someone writing a
+    backend at 2am, and "confidence_out_of_range" alone does not tell them their model emits 0-100.
+    The RULE, though, is not restated here: :func:`percept.contracts.verdict_defect` decides what is
+    conformant, this maps its answer to prose. That split is what keeps the strictest checker in the
+    package from drifting away from the two boundaries that actually guard the gate (ADR-001 §7).
+    """
+    messages = {
+        "not_a_verdict": (
             f"{where} returned {type(value).__name__}, expected percept.contracts.Verdict "
             "(import it — do not duck-type a look-alike; the gate reads the dataclass)"
-        )
-    if not isinstance(value.satisfied, bool):
-        raise AssertionError(
-            f"{where}: Verdict.satisfied is {type(value.satisfied).__name__}, must be a bool "
-            "(the gate branches on it; a truthy string or 0/1 int is not conformant)"
-        )
-    if not isinstance(value.confidence, (int, float)) or isinstance(value.confidence, bool):
-        raise AssertionError(
-            f"{where}: Verdict.confidence is {type(value.confidence).__name__}, must be a float"
-        )
-    if not (0.0 <= float(value.confidence) <= 1.0):
-        raise AssertionError(
-            f"{where}: Verdict.confidence={value.confidence} is outside [0.0, 1.0] — the gate "
-            "compares it against a probability threshold, so an unnormalised score breaks firing"
-        )
-    if not isinstance(value.evidence, str):
-        raise AssertionError(f"{where}: Verdict.evidence must be a str (got {type(value.evidence).__name__})")
-    if not isinstance(value.usage, dict):
-        raise AssertionError(f"{where}: Verdict.usage must be a dict (got {type(value.usage).__name__})")
-    if not isinstance(value.events, list):
-        raise AssertionError(f"{where}: Verdict.events must be a list (got {type(value.events).__name__})")
+        ),
+        "satisfied_not_bool": (
+            f"{where}: Verdict.satisfied is {type(getattr(value, 'satisfied', None)).__name__}, "
+            "must be a bool (the gate branches on it; a truthy string or 0/1 int is not conformant)"
+        ),
+        "confidence_is_bool": (
+            f"{where}: Verdict.confidence is {type(getattr(value, 'confidence', None)).__name__}, "
+            "must be a float (isinstance(True, int) is True in Python, so a bool would otherwise "
+            "sail through a numeric check and be read as the confidence 1.0)"
+        ),
+        "confidence_not_numeric": (
+            f"{where}: Verdict.confidence is {type(getattr(value, 'confidence', None)).__name__}, "
+            "must be a float"
+        ),
+        "confidence_not_finite": (
+            f"{where}: Verdict.confidence={getattr(value, 'confidence', None)!r} is not finite — "
+            "every comparison against NaN is False, so the gate's `confidence < threshold` refusal "
+            "silently passes and a garbled number becomes a confident fire"
+        ),
+        "confidence_out_of_range": (
+            f"{where}: Verdict.confidence={getattr(value, 'confidence', None)} is outside "
+            "[0.0, 1.0] — the gate compares it against a probability threshold, so an unnormalised "
+            "score (a 0-100 scale, a logit) breaks firing"
+        ),
+        "evidence_not_str": (
+            f"{where}: Verdict.evidence must be a str "
+            f"(got {type(getattr(value, 'evidence', None)).__name__})"
+        ),
+        "usage_not_dict": (
+            f"{where}: Verdict.usage must be a dict "
+            f"(got {type(getattr(value, 'usage', None)).__name__})"
+        ),
+        "events_not_list": (
+            f"{where}: Verdict.events must be a list "
+            f"(got {type(getattr(value, 'events', None)).__name__})"
+        ),
+    }
+    return messages.get(defect, f"{where}: Verdict is not conformant ({defect})")
+
+
+def assert_verdict(value: Any, *, where: str) -> Verdict:
+    """The gate's contract on a judge return. Raises ``AssertionError`` naming what is wrong.
+
+    The RULE is :func:`percept.contracts.verdict_defect` — the one authority the agent's fail-closed
+    boundary and the judge pool's route classifier also call (ADR-001 §7: "normalized at a single
+    boundary"). This function is the strictest CALLER of it (``require_exact_type=True``: an adapter
+    must return the dataclass, not a look-alike) plus the long human messages a conformance report
+    is for. It used to carry its own copy of the terms and was, by accident, the only complete one
+    in the package — which is exactly the drift that let the agent-side twin accept a ``nan``
+    confidence the gate then read as a confident yes.
+    """
+    defect = verdict_defect(value, require_exact_type=True)
+    if defect is not None:
+        raise AssertionError(_verdict_defect_message(value, defect, where=where))
     return value
 
 

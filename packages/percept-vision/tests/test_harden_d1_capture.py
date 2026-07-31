@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest import mock
 
 from percept import Goal, Percept
 from percept.adapters import Verdict
@@ -106,6 +107,69 @@ class D1UnmetGuaranteeTests(unittest.TestCase):
         asyncio.run(_drain(core, list(frames), on_health=on_health))
         self.assertNotIn("capture_plan_unmet", [e.kind for e in events],
                          "a met coverage guarantee must NOT false-report")
+
+
+class CapturePlanRefusesAnUnusableCadenceTests(unittest.TestCase):
+    """``_capture_plan`` is the ONE place a bad cadence is meant to be dropped, and it is now the only
+    place upstream of the fovea that can be: ``SensePolicy`` validates, so an unusable envelope raises
+    here instead of quietly misconfiguring the controller. A 24/7 worker must survive that — one bad
+    goal drops its own coverage floor, loudly, and every other goal still arms."""
+
+    def _plan(self, *goals, base_fps=4.0):
+        from percept.runtime.worker import _capture_plan
+
+        return _capture_plan(list(goals), base_fps)
+
+    def _sense_goal(self, gid, **sense):
+        # goal.state is read RAW by sensor_plan_for — coerce_authored_sense is the conductor's
+        # firewall, not a guarantee about what reaches the compiler.
+        return Goal(id=gid, condition="the cat appears", say="!", state={"sense": sense})
+
+    def test_an_unusable_cadence_drops_that_goal_without_raising(self):
+        for sense in ({"base_fps": float("nan")},                 # A-04-02: NaN is TRUTHY
+                      {"base_fps": float("inf")},
+                      {"base_fps": 0},                            # A-04-01: an authored zero floor
+                      {"base_fps": -1},
+                      {"base_fps": 20, "max_fps": 2},             # A-03-02: inverted envelope
+                      {"base_fps": 4, "escalate_threshold": 5.0}):
+            with self.subTest(sense=sense):
+                with self.assertLogs("percept.runtime.worker", level="WARNING") as logged:
+                    cap, coast, required = self._plan(self._sense_goal("bad", **sense))
+                self.assertEqual(cap, 4.0, "a refused cadence must not move the capture rate")
+                self.assertIsNone(coast, "a refused cadence must not arm a coast")
+                self.assertEqual(required, 0.0,
+                                 "a refused cadence must not promise coverage it cannot deliver")
+                # Dropped LOUDLY. Silence here is what let a misconfigured concern run a whole
+                # session looking like an ordinary quiet scene.
+                self.assertTrue(any("capture_plan_goal_dropped" in m for m in logged.output),
+                                f"the drop was silent; got {logged.output}")
+
+    def test_a_goal_that_simply_has_no_cadence_floor_is_dropped_in_silence(self):
+        # The other half of the contract: an ORDINARY goal compiles no floor and must not warn, or
+        # the diagnostic that matters is buried under one line per goal per regate.
+        from percept.runtime.worker import _log
+
+        with mock.patch.object(_log, "warning") as warn:
+            cap, coast, required = self._plan(Goal(id="plain", condition="someone walks in", say="!"))
+        self.assertEqual((cap, coast, required), (4.0, None, 0.0))
+        warn.assert_not_called()
+
+    def test_one_bad_goal_never_costs_a_good_goal_its_coverage(self):
+        cap, coast, required = self._plan(
+            self._sense_goal("bad", base_fps=float("nan")), _brief_goal("good")
+        )
+        self.assertIsNotNone(coast, "the healthy brief goal must still get its coast")
+        self.assertEqual(required, 4.0)  # 2 samples / 0.5 s window
+        self.assertGreater(cap, 4.0)
+
+    def test_a_worker_run_survives_a_goal_with_an_unusable_cadence(self):
+        # The end-to-end shape of the hardening: with validation added, a previously-silent bad policy
+        # now raises — it must be dropped, not take the run down.
+        core = _core()
+        core.add_goal(self._sense_goal("bad", base_fps=float("nan")))
+        core.add_goal(_brief_goal("good"))
+        frames = [(i / 8.0, STILL, "tok") for i in range(17)]
+        asyncio.run(_drain(core, list(frames)))  # must not raise
 
 
 if __name__ == "__main__":

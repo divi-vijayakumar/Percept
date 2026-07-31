@@ -757,7 +757,8 @@
             "motion",
             "structural",
             "semantic",
-            "fixed"
+            "fixed",
+            "fused"
           ]
         },
         "salience_stat": {

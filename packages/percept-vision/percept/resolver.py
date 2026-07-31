@@ -362,18 +362,56 @@ _MISS_COST_ORDER: dict[str, int] = {"trivial": 0, "mild": 1, "severe": 2}
 _SECONDS_PER_DAY = 86_400.0
 
 
-def _effective_miss_cost(plan: WatchPlan, effective: Mapping[str, Any]) -> str | None:
-    """The miss_cost this resolution actually settled on, preferring the MORE SPECIFIC
-    ``Goal.state.miss_cost`` explicit path (same precedent as
+def _effective_miss_cost(
+    plan: WatchPlan, effective: Mapping[str, Any]
+) -> tuple[str, str] | None:
+    """The miss_cost this resolution settled on, as ``(path, value)`` — or ``None`` if unauthored.
+
+    Prefers the MORE SPECIFIC ``Goal.state.miss_cost`` explicit path (same precedent as
     ``runtime_compiler._goal_state_from_resolved``'s own "explicit path only fills a gap" rule)
     over ``WatchPlan.consequence`` — the channel a :class:`~percept.domain_pack.GoalTemplate`
-    actually uses (see its ``render()``)."""
+    actually uses (see its ``render()``).
+
+    The PATH rides along with the value because both are needed by the caller's diagnostics: a
+    :class:`~percept.contracts.FieldDiagnostic`-shaped message must name the field the author
+    actually wrote, and these two channels are not interchangeable to whoever has to go fix it.
+    """
     explicit = effective.get("Goal.state.miss_cost")
     if explicit is not None:
-        return explicit
+        return ("Goal.state.miss_cost", explicit)
     if plan.consequence:
-        return plan.consequence.get("miss_cost")
+        value = plan.consequence.get("miss_cost")
+        if value is not None:
+            return ("consequence.miss_cost", value)
     return None
+
+
+def _check_authored_miss_cost(plan: WatchPlan, effective: Mapping[str, Any]) -> None:
+    """Refuse an authored ``miss_cost`` outside the closed three-value vocabulary.
+
+    Unconditional — not gated on a pack, and not gated on a pack declaring a
+    ``false_negative_cost_min``. It has to be, because the ranked comparison in
+    :func:`_check_policy_clamps` was until now the ONLY thing in the whole resolve path that ever
+    inspected an authored miss_cost: a pack declaring no floor, and a plan resolved with no pack at
+    all, never examined it, and the typo travelled on to a runtime where
+    ``percept.behavior._VALID_MISS`` silently ignores anything it does not recognize.
+
+    An unranked value is a TYPO, not a low cost. Ranking it below ``trivial`` (the lowest legal
+    rank, which nothing can sit under) made it violate every floor there is and produced a message
+    blaming the author for a value that was too low. :class:`~percept.domain_pack.DomainPack`'s own
+    authoring validator already gets this right for the symmetric FLOOR side; this is the same
+    check, in the same words, for the PLAN side.
+    """
+    authored = _effective_miss_cost(plan, effective)
+    if authored is None:
+        return
+    path, value = authored
+    if value not in _MISS_COST_ORDER:
+        raise ConfigError(
+            f"{path} value {value!r} is not a recognized miss_cost — must be one of "
+            f"{sorted(_MISS_COST_ORDER)}. An unrecognized cost is an authoring error, never "
+            "silently ignored and never treated as ranking below the lowest legal cost."
+        )
 
 
 def _check_policy_clamps(
@@ -383,21 +421,26 @@ def _check_policy_clamps(
     :class:`ConfigError`, raised before :class:`~percept.contracts.ResolvedWatch` is constructed,
     never a silent clamp/merge (ADR-008's own "enforced like the envelope" posture: a violation is
     refused outright, the same way :class:`percept.envelope.EnvelopeViolation` refuses at
-    construction). No-op when ``domain_pack`` is ``None`` or declares no clamps."""
+    construction). No-op when ``domain_pack`` is ``None`` or declares no clamps.
+
+    Runs AFTER :func:`_check_authored_miss_cost`, so the floor comparison below is guaranteed a
+    value that is in the vocabulary — which is what retires the ``.get(..., -1)`` sentinel."""
     if domain_pack is None:
         return
     clamps = domain_pack.policy_clamps
 
     floor = clamps.get("false_negative_cost_min")
     if floor is not None:
-        miss_cost = _effective_miss_cost(plan, effective)
-        if miss_cost is not None and _MISS_COST_ORDER.get(miss_cost, -1) < _MISS_COST_ORDER[floor]:
-            raise ConfigError(
-                f"DomainPack {domain_pack.qualified_name!r} clamp violation: "
-                f"path='consequence.miss_cost' value={miss_cost!r} is below the pack's "
-                f"false_negative_cost_min={floor!r} — a domain-declared policy floor is a "
-                "resolve-time error, never silently merged/raised for you (ADR-008)."
-            )
+        authored = _effective_miss_cost(plan, effective)
+        if authored is not None:
+            path, miss_cost = authored
+            if _MISS_COST_ORDER[miss_cost] < _MISS_COST_ORDER[floor]:
+                raise ConfigError(
+                    f"DomainPack {domain_pack.qualified_name!r} clamp violation: "
+                    f"path={path!r} value={miss_cost!r} is below the pack's "
+                    f"false_negative_cost_min={floor!r} — a domain-declared policy floor is a "
+                    "resolve-time error, never silently merged/raised for you (ADR-008)."
+                )
 
     max_days = clamps.get("retention_max_days")
     if max_days is not None:
@@ -784,6 +827,10 @@ class ConfigResolver:
                     ),
                 )
 
+        # An authored miss_cost is checked against the closed vocabulary FIRST, and unconditionally:
+        # the pack-gated clamp below is only reached when a pack declares a floor, so this is the
+        # only thing that catches a typo on a plan resolved with no pack (or a pack with no floor).
+        _check_authored_miss_cost(watch_plan, effective)
         # DomainPack policy clamps: a distinct enforcement dimension from ownership above — a
         # domain-declared floor/ceiling on the FINAL resolved value, checked once `effective` is
         # complete, raised BEFORE anything downstream (ResolvedWatch, RuntimeCompiler) is built.

@@ -21,9 +21,10 @@ only reader is :func:`sensor_plan_for` itself. (The legacy ``_TYPE_DETECTOR_PRES
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
-from .behavior import _num, program_of
+from .behavior import _num, coerce_authored_cadence, program_of
 
 
 @dataclass(frozen=True)
@@ -93,15 +94,28 @@ def _sensitive_cadence(brief_window_s, base: dict) -> dict:
     any cadence the goal already authored. Raises ``base_fps`` to at least the window's Nyquist
     (``_BRIEF_NYQUIST_SAMPLES / brief_window_s``) so a sub-second window gets >=2 judged frames, lifts the
     escalated ceiling to keep headroom, and lowers ``escalate_threshold`` to admit subtle in-window motion.
-    Authored values always win (``base.get(...) or ...``), so this only FILLS the unset knobs. Returns the
-    cadence dict unchanged when the prior is absent/non-positive — non-brief judge goals are untouched."""
+
+    A PURE FILL: every knob is tested with ``is None``, so an authored value always wins and only an
+    UNSET knob is derived. It deliberately validates nothing — an authored ``base_fps`` of 0 flows
+    through and is refused, loudly, by :func:`percept.sampling.validate_cadence`, the one place that
+    owns the question. (It used to fill with a falsy ``or``, which made an authored 0 indistinguishable
+    from an absent key while ``escalate_threshold`` three lines down already used ``is None``.)
+
+    Returns the cadence dict unchanged when the prior is absent, non-numeric, non-positive or NOT FINITE
+    — non-brief judge goals are untouched. NaN is named explicitly because ``nan <= 0`` is False: a NaN
+    prior otherwise derived a NaN Nyquist floor, which is truthy, so it walked past every downstream
+    ``if not base`` drop and blinded the concern after a single frame."""
     bw = _num(brief_window_s)
-    if bw is None or bw <= 0:
+    if bw is None or not math.isfinite(bw) or bw <= 0:
         return base
     nyquist_fps = _BRIEF_NYQUIST_SAMPLES / bw  # e.g. a 1.0s window -> >=2 fps; a 0.5s window -> >=4 fps
     out = dict(base)
-    out["base_fps"] = base.get("base_fps") or nyquist_fps
-    out["max_fps"] = base.get("max_fps") or out["base_fps"] * _BRIEF_MAX_HEADROOM
+    authored_base = base.get("base_fps")
+    out["base_fps"] = nyquist_fps if authored_base is None else authored_base
+    authored_max = base.get("max_fps")
+    out["max_fps"] = (
+        out["base_fps"] * _BRIEF_MAX_HEADROOM if authored_max is None else authored_max
+    )
     if base.get("escalate_threshold") is None:
         out["escalate_threshold"] = _BRIEF_ESCALATE_THRESHOLD
     out["brief_window_s"] = bw  # surfaced for explainability + so the adapter can read the prior back
@@ -132,7 +146,15 @@ class SensorPlan:
 def sensor_plan_for(goal) -> SensorPlan:
     """Compile a goal into its :class:`SensorPlan` deterministically. Reads :func:`program_of` (so it is
     byte-for-byte consistent with what the goal will actually run) and the registered primitive manifests,
-    and surfaces any authored individuation knobs (``smooth_s``, ``canonical_select``) in ``event_model``."""
+    and surfaces any authored individuation knobs (``smooth_s``, ``canonical_select``) in ``event_model``.
+
+    ``cadence['gate_on']`` runs the SAME firewall the tier-0 gate runs
+    (:func:`~percept.behavior.coerce_authored_cadence`), so the plan reports the gate the goal will
+    actually be armed by. The interval that firewall also decides (``min_judge_interval``) is
+    deliberately NOT surfaced here — ``SensorPlan.cadence`` describes the fovea's processing envelope
+    (fps / escalation), and adding the judge throttle would change the plan's pinned shape without a
+    reader. That is a known GAP, not a claim: the plan under-describes the throttle; it no longer
+    misdescribes the gate."""
     prog = program_of(goal)
     sense = prog.sense
     prim = PRIMITIVES[sense]
@@ -141,8 +163,15 @@ def sensor_plan_for(goal) -> SensorPlan:
     rhythm = state.get("rhythm") if isinstance(state.get("rhythm"), dict) else {}
     p = prog.perception
 
+    # ``gate_on`` is DERIVED, never a literal: it comes from the same firewall the tier-0 gate runs
+    # (``coerce_authored_cadence``, byte-identical to ``harness.tier0._coerce_cadence``), so a goal
+    # authoring ``cadence={'gate_on': 'fixed', 'min_judge_interval': 2.0}`` gets a plan that says
+    # "fixed" — and one authoring an out-of-vocab or period-less "fixed" gets the same "motion"
+    # fallback the gate will actually apply. It used to be the literal "motion", which made the
+    # module's byte-for-byte promise false for exactly this field (BUG-A-04-03).
+    _, gate_on = coerce_authored_cadence(state.get("cadence"))
     cadence = {
-        "gate_on": "motion",
+        "gate_on": gate_on,
         "base_fps": sense_cfg.get("base_fps"),
         "max_fps": sense_cfg.get("max_fps"),
         "escalate_threshold": sense_cfg.get("escalate_threshold"),

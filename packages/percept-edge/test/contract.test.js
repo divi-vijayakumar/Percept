@@ -18,6 +18,7 @@ import {
   makeBoundaryReport,
   parseBoundaryReport,
   makeBox,
+  parseBox,
   makeIncident,
   parseIncident,
   makeIncidentSnippet,
@@ -159,6 +160,29 @@ describe("factories produce frozen-contract shapes", () => {
       w: 0.3,
       h: 0.4,
     });
+    expect(makeBox()).toEqual({ x: 0, y: 0, w: 0, h: 0 }); // all four default to 0
+  });
+
+  it("makeBox validates exactly what parseBox validates — they were the one pair that disagreed", () => {
+    // A make/parse pair that disagrees fails a hop away from its cause: `makeWatchCondition` routes
+    // `region_hint` through `makeBox`, so a NaN box used to be accepted, stored on the condition,
+    // and serialized into a WatchSpec that Python cannot read back — and the JS gate then computed
+    // NaN bounds from it. Every other make/parse pair in this file already agreed.
+    for (const bad of [
+      { x: NaN, y: 0, w: 1, h: 1 },
+      { x: 0, y: Infinity, w: 1, h: 1 },
+      { x: 0, y: 0, w: "1", h: 1 },
+      { x: 0, y: 0, w: 1, h: null },
+    ]) {
+      expect(() => makeBox(bad), JSON.stringify(bad)).toThrow(ContractError);
+      expect(() => parseBox(bad), JSON.stringify(bad)).toThrow(ContractError);
+    }
+    expect(() => makeWatchCondition({ goal_id: "g", anchor_text: "x", region_hint: { x: NaN, y: 0, w: 1, h: 1 } }))
+      .toThrow(ContractError);
+    // NOT rejected, deliberately, by either half: an off-frame or zero-extent box. The Python `Box`
+    // dataclass constrains neither, so rejecting one here would fork the wire contract.
+    expect(makeBox({ x: 0, y: 0, w: 0, h: 1 })).toEqual({ x: 0, y: 0, w: 0, h: 1 });
+    expect(parseBox({ x: 2, y: -1, w: 5, h: 5 })).toEqual({ x: 2, y: -1, w: 5, h: 5 });
   });
 });
 

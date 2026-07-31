@@ -5,8 +5,10 @@ This module turns a scalar, timestamped interest signal into a small typed event
 It is deliberately below semantic judgment.  A tier-0 motion score can describe *where the
 admission signal was active*; it cannot claim that a Watch's plain-language condition was true.
 The optional :class:`Tier0MotionInterest` integration is confined to finite in-memory replay.
-:class:`LiveInterestTracker` separately records the exact typed, per-Watch admission outcomes already
-made by :func:`percept.run`; it does not reinterpret the replay adapter's scalar motion gauge.
+:class:`LiveInterestTracker` records the same typed, per-Watch admission outcomes as they are made by
+:func:`percept.run`.  Both recorders project a gate outcome through the one function
+:func:`interest_admission_from_outcome`, so an offline replay and a live run cannot describe the same
+admitted unit differently.
 
 The engine is stdlib-only, replay deterministic, and fail closed:
 
@@ -610,14 +612,44 @@ class InterestIntervalEngine:
 
 
 class Tier0MotionInterest:
-    """Replay adapter from a ``GateDecision``'s reported mean-motion gauge to intervals.
+    """Replay adapter from a ``GateDecision`` to intervals, scored by the statistic that admitted.
 
-    This adapter intentionally reads ``decision.signal.motion`` rather than ``decision.escalate``.
-    The latter may be driven by a localized, structural, semantic, audio or fused signal that is not
-    present in ``GateDecision`` with enough detail to reconstruct a truthful interval.  Confidence
-    remains ``None`` because frame-diff salience is not a calibrated confidence.  Each finite
-    :class:`~percept.harness.tier0.GatedWatchLoop.run` supplies an explicit ``stream_epoch`` and
-    independent ``observed_times``; this adapter owns no live capture or reconnect integration.
+    A decision built with ``include_outcomes=True`` carries one
+    :class:`~percept.harness.tier0.WatchAdmissionOutcome` per Watch, holding that Watch's own
+    ``score``, ``threshold``, ``admission_id`` and ``detector_id``.  This adapter projects those
+    outcomes through :func:`interest_admission_from_outcome` — the SAME function the live worker uses
+    to build its per-Watch record — so an offline replay and a live run cannot describe the same
+    admitted unit differently.
+
+    It used to score every interval from ``decision.signal.motion``, the reported whole-frame MEAN
+    gauge, on the belief that per-Watch detail was not present in ``GateDecision``.  It is: the mean
+    is simply not the statistic that admits a ``block_max`` / ``p95`` / ego-residual / structural /
+    semantic / fused Watch, so a localized-salience Watch could spend a judge call on a frame that
+    replayed as no interest at all.
+
+    ``decision.outcomes`` is empty on a decision built WITHOUT ``include_outcomes=True``, and on a
+    hand-constructed legacy one.  That is the documented fallback and the pre-existing behaviour: the
+    interval is scored from the mean gauge under this adapter's constructor
+    ``admission_id``/``detector_id``.  A caller who wants the admitting statistic must ask the gate
+    for outcomes.
+
+    **Cardinality — one interval timeline per admitting statistic, not per Watch.**  Outcomes are
+    grouped by ``(admission_id, detector_id)``; each group owns an :class:`InterestIntervalEngine`
+    created lazily inside the epoch, and Watches sharing one statistic are unioned by taking the
+    highest score among them.  Per-Watch engines were considered and rejected:
+    :class:`InterestIntervalEvent` carries no ``watch_id`` — its identity is exactly the engine's
+    ``(source, stream_epoch, admission_id, detector_id)`` — so per-Watch intervals would reach a
+    consumer with nothing to attribute them to, and two Watches sharing a statistic would derive the
+    *same* ``interval_id``, whose payload has no watch field either.  The per-Watch record already
+    exists and is the live one (:class:`LiveInterestTracker` / :class:`LiveInterestEvent`).  This
+    timeline therefore stays source-keyed and splits only where the emitted record can express the
+    difference: a ``block_max`` Watch and a ``mean`` Watch on one source now produce two correctly
+    labelled timelines instead of one mislabelled one.  Engine count is bounded by the number of
+    distinct statistics in the WatchSpec — never by the number of frames or of admissions.
+
+    Confidence remains ``None`` because frame-diff salience is not a calibrated confidence.  Each
+    finite :meth:`~percept.harness.tier0.GatedWatchLoop.run` supplies an explicit ``stream_epoch``
+    and independent ``observed_times``; this adapter owns no live capture or reconnect integration.
     """
 
     def __init__(
@@ -635,6 +667,10 @@ class Tier0MotionInterest:
             raise TypeError("config must be an InterestIntervalConfig")
         self.config = config
         self._engine: InterestIntervalEngine | None = None
+        self._stream_epoch: str | None = None
+        # (admission_id, detector_id) -> engine.  Insertion order is the WatchSpec's condition order,
+        # so the emitted event order is replay deterministic.
+        self._outcome_engines: dict[tuple[str, str], InterestIntervalEngine] = {}
 
     def begin_epoch(self, stream_epoch: str) -> None:
         """Begin one finite replay epoch; an unfinished prior epoch is a lifecycle error."""
@@ -647,10 +683,18 @@ class Tier0MotionInterest:
             detector_id=self.detector_id,
             config=self.config,
         )
+        self._stream_epoch = self._engine.stream_epoch
+        self._outcome_engines = {}
 
     @property
     def engine(self) -> InterestIntervalEngine | None:
+        """The mean-gauge fallback engine, which is also this adapter's epoch lifecycle handle."""
         return self._engine
+
+    @property
+    def statistic_engines(self) -> dict[tuple[str, str], InterestIntervalEngine]:
+        """A copy of the ``(admission_id, detector_id)`` -> engine map opened so far this epoch."""
+        return dict(self._outcome_engines)
 
     def observe(
         self,
@@ -668,8 +712,18 @@ class Tier0MotionInterest:
             raise RuntimeError("begin_epoch() must be called before observe()")
         source_at = _finite("decision.signal.ts", getattr(signal, "ts", None))
         observed = _finite("observed_at", observed_at)
-        motion = _unit("decision.signal.motion", getattr(signal, "motion", None))
         evidence = _identity("evidence_id", evidence_id)
+        outcomes = tuple(getattr(decision, "outcomes", ()) or ())
+        if outcomes:
+            return self._observe_outcomes(
+                outcomes,
+                source_at=source_at,
+                observed_at=observed,
+                evidence_id=evidence,
+                regions=regions,
+                track_ids=track_ids,
+            )
+        motion = _unit("decision.signal.motion", getattr(signal, "motion", None))
         return self._engine.observe(
             InterestSample(
                 source_at=source_at,
@@ -684,26 +738,114 @@ class Tier0MotionInterest:
             )
         )
 
+    def _observe_outcomes(
+        self,
+        outcomes: Sequence[Any],
+        *,
+        source_at: float,
+        observed_at: float,
+        evidence_id: str,
+        regions: Sequence[Box],
+        track_ids: Sequence[str],
+    ) -> list[InterestIntervalEvent]:
+        """One sample per admitting statistic, carrying the score the gate actually compared.
+
+        Every condition yields an outcome on every evaluated unit, admitted or not, so each
+        statistic's engine sees a continuous scalar and can still close an interval on
+        ``signal_lost`` — feeding it only the admitted units would leave intervals open until
+        end-of-stream.  A Watch denied by schedule or cadence reports ``0.0``, which is the same
+        thing the live recorder does with a policy non-admission: not looking is not interest.
+        Interval boundaries remain this adapter's ``config`` hysteresis, never the Watch's own
+        threshold; only the *score* moves to the admitting statistic.
+        """
+        best_by_statistic: dict[tuple[str, str], LiveInterestAdmission] = {}
+        for outcome in outcomes:
+            admitted = bool(getattr(outcome, "admitted", False))
+            admission = interest_admission_from_outcome(
+                outcome,
+                evidence_id=evidence_id,
+                cause=getattr(outcome, "cause", None) if admitted else None,
+            )
+            key = (admission.admission_id, admission.detector_id)
+            incumbent = best_by_statistic.get(key)
+            if incumbent is None or admission.score > incumbent.score:
+                best_by_statistic[key] = admission
+        events: list[InterestIntervalEvent] = []
+        for key, admission in best_by_statistic.items():
+            engine = self._outcome_engines.get(key)
+            if engine is None:
+                assert self._stream_epoch is not None  # begin_epoch() set it with the engine
+                engine = InterestIntervalEngine(
+                    source=self.source,
+                    stream_epoch=self._stream_epoch,
+                    admission_id=admission.admission_id,
+                    detector_id=admission.detector_id,
+                    config=self.config,
+                )
+                self._outcome_engines[key] = engine
+            events.extend(
+                engine.observe(
+                    interest_sample_from_admission(
+                        admission,
+                        source_at=source_at,
+                        observed_at=observed_at,
+                        regions=regions,
+                        track_ids=track_ids,
+                    )
+                )
+            )
+        return events
+
     def end_of_stream(self, *, observed_at: float | None = None) -> list[InterestIntervalEvent]:
         """Finish the current finite replay epoch and become ready for the next one."""
         if self._engine is None:
             return []
-        engine = self._engine
+        engines = [self._engine, *self._outcome_engines.values()]
         try:
-            return engine.end_of_stream(observed_at=observed_at)
+            events: list[InterestIntervalEvent] = []
+            for engine in engines:
+                events.extend(engine.end_of_stream(observed_at=observed_at))
+            return events
         finally:
             self._engine = None
+            self._stream_epoch = None
+            self._outcome_engines = {}
 
     def abort_epoch(self) -> None:
         """Discard an unreturned replay report after failure, emitting no orphan lifecycle event."""
         self._engine = None
+        self._stream_epoch = None
+        self._outcome_engines = {}
 
 
 # ---------------------------------------------------------------------------
 # Live per-Watch admission lifecycle
 # ---------------------------------------------------------------------------
 
-_LIVE_CAUSES = frozenset(("motion", "structural", "semantic", "fixed", "coast", "audio"))
+_LIVE_CAUSES = frozenset(
+    ("motion", "structural", "semantic", "fixed", "fused", "coast", "audio")
+)
+#: The two causes the *worker* owns rather than the gate: a coasted continuation and an external
+#: audio wake.  Neither is a tier-0 statistic, so an outcome routed through one of them cannot keep
+#: the gate's ``admission_id``/``detector_id`` — see :func:`interest_admission_from_outcome`.
+_WORKER_ROUTE_CAUSES = frozenset(("coast", "audio"))
+#: Everything else: a cause the gate itself decided, whose detector identity is already truthful.
+_GATE_ADMISSION_CAUSES = frozenset(_LIVE_CAUSES - _WORKER_ROUTE_CAUSES)
+#: The active-interval reason each admission cause names.  One table, read by both recorders — the
+#: live one through :func:`_live_active_reason`, the replay one through
+#: :func:`interest_sample_from_admission` — so a motion admission reads ``tier0_motion`` on either
+#: timeline and a fixed-cadence one reads ``fixed_cadence`` on either.
+_LIVE_ACTIVE_REASONS = {
+    "motion": "tier0_motion",
+    "structural": "tier0_structural",
+    "semantic": "tier0_semantic",
+    "fixed": "fixed_cadence",
+    # the noisy-OR over the cheap channels — a gate-owned cause like the three above it, but not a
+    # single tier-0 statistic, so it names the fusion rather than a `tier0_*` channel
+    "fused": "wake_fusion",
+    "coast": "coast",
+    "audio": "audio",
+}
 _LIVE_NON_ADMISSION_REASONS = frozenset(
     (
         "signal_below_threshold",
@@ -768,6 +910,105 @@ class LiveInterestAdmission:
                 raise ValueError("an admitted outcome needs one cause and no non-admission reason")
         elif self.cause is not None or self.non_admission_reason not in _LIVE_NON_ADMISSION_REASONS:
             raise ValueError("a non-admitted outcome needs one reason and no admission cause")
+
+
+def interest_admission_from_outcome(
+    outcome: Any,
+    *,
+    evidence_id: str,
+    cause: str | None = None,
+) -> LiveInterestAdmission:
+    """Project one gate ``WatchAdmissionOutcome`` onto the record BOTH interest recorders read.
+
+    ``outcome`` is a :class:`~percept.harness.tier0.WatchAdmissionOutcome` — the gate's complete
+    policy result for one Watch on one accepted unit, carrying the ``score`` it actually compared,
+    that Watch's ``threshold``, and the ``admission_id``/``detector_id`` naming the statistic that
+    did the comparing.  ``cause`` is the caller's FINAL admission cause after any caller-owned route
+    (the worker's coast/audio), or ``None`` when this Watch was not admitted on this unit — which is
+    how a Watch the gate admitted but the caller then dropped is recorded as ``not_admitted``.
+
+    This function exists because there are two recorders and only one truth.  The live worker builds
+    :class:`LiveInterestAdmission` for :class:`LiveInterestTracker`; :class:`Tier0MotionInterest`
+    builds a replay :class:`InterestSample` from the same record via
+    :func:`interest_sample_from_admission`.  They performed this projection independently once, and
+    drifted: replay scored every interval from the reported whole-frame mean gauge while the live
+    path used ``outcome.score``, so the two disagreed about the same admitted unit.  Neither call
+    site may re-derive these fields.
+    """
+    goal_id = _identity("outcome.goal_id", getattr(outcome, "goal_id", None))
+    score = _unit("outcome.score", getattr(outcome, "score", None))
+    threshold = _unit("outcome.threshold", getattr(outcome, "threshold", None))
+    gate_admission_id = _identity("outcome.admission_id", getattr(outcome, "admission_id", None))
+    gate_detector_id = _identity("outcome.detector_id", getattr(outcome, "detector_id", None))
+    evidence = _identity("evidence_id", evidence_id)
+    if cause is None:
+        return LiveInterestAdmission(
+            watch_id=goal_id,
+            admitted=False,
+            cause=None,
+            # A Watch the gate refused keeps the gate's own reason; a Watch the gate admitted and the
+            # caller then dropped has no gate reason to keep, so it is the catch-all.
+            non_admission_reason=(
+                getattr(outcome, "non_admission_reason", None)
+                if not getattr(outcome, "admitted", False)
+                else None
+            )
+            or "not_admitted",
+            score=score,
+            threshold=threshold,
+            evidence_id=evidence,
+            admission_id=gate_admission_id,
+            detector_id=gate_detector_id,
+        )
+    gate_owned = cause in _GATE_ADMISSION_CAUSES
+    return LiveInterestAdmission(
+        watch_id=goal_id,
+        admitted=True,
+        cause=cause,
+        non_admission_reason=None,
+        score=score,
+        threshold=threshold,
+        evidence_id=evidence,
+        # A caller-owned route did not run the gate's detector, so it must not borrow its name.
+        admission_id=gate_admission_id if gate_owned else f"runtime.admission.{cause}",
+        detector_id=gate_detector_id if gate_owned else f"runtime.{cause}",
+    )
+
+
+def interest_sample_from_admission(
+    admission: LiveInterestAdmission,
+    *,
+    source_at: float,
+    observed_at: float,
+    regions: Sequence[Box] = (),
+    track_ids: Sequence[str] = (),
+) -> InterestSample:
+    """The replay recorder's half of the projection: one admission record -> one interest sample.
+
+    The score is the admission's — the statistic the gate compared — never a separately reported
+    gauge.  ``confidence`` stays ``None`` (tier-0 salience is not calibrated) and ``coverage`` stays
+    ``1.0`` (the unit was observed whole; a partially-covered unit is a source-layer fact, not an
+    admission one).
+
+    The reason names the admission FAMILY, read out of the same :data:`_LIVE_ACTIVE_REASONS` table
+    the live recorder uses, so a motion admission reads ``tier0_motion`` on either timeline.  It is
+    taken from the admission id rather than from ``cause`` because a sample is produced for every
+    evaluated Watch, admitted or not, and a below-cutoff motion reading is still a motion reading.
+    """
+    if not isinstance(admission, LiveInterestAdmission):
+        raise TypeError("admission must be a LiveInterestAdmission")
+    family = admission.admission_id.rsplit(".", 1)[-1]
+    return InterestSample(
+        source_at=source_at,
+        observed_at=observed_at,
+        score=admission.score,
+        reason=_LIVE_ACTIVE_REASONS.get(family, f"tier0_{family}"),
+        evidence_id=admission.evidence_id,
+        confidence=None,
+        coverage=1.0,
+        regions=tuple(regions),
+        track_ids=tuple(track_ids),
+    )
 
 
 @dataclass(frozen=True)
@@ -1365,14 +1606,7 @@ def _live_non_admission_reason(reason: str | None) -> LiveInterestExitReason:
 
 
 def _live_active_reason(cause: str | None) -> str:
-    return {
-        "motion": "tier0_motion",
-        "structural": "tier0_structural",
-        "semantic": "tier0_semantic",
-        "fixed": "fixed_cadence",
-        "coast": "coast",
-        "audio": "audio",
-    }.get(cause, "not_admitted")
+    return _LIVE_ACTIVE_REASONS.get(cause, "not_admitted")
 
 
 def _discontinuity_reason(events: Sequence[str]) -> LiveInterestExitReason:
@@ -1402,6 +1636,8 @@ __all__ = [
     "LiveInterestExitReason",
     "LiveInterestAdmission",
     "LiveInterestEvent",
+    "interest_admission_from_outcome",
+    "interest_sample_from_admission",
     "InterestBackpressureError",
     "InterestCallbackUnsupportedError",
     "InterestRunError",

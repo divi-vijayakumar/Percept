@@ -289,8 +289,11 @@ def _validate_expect(name: str, cid: str, steps: list, expect: Mapping[str, Any]
         _req(expect["forward_fill_forbidden"] is True,
              f"{name}/{cid}: forward_fill_forbidden must be true — the design rejects filling a gap")
         for span in expect["intervals"]:
-            _req(span.get("kind") in ("observed", "validity_horizon"),
-                 f"{name}/{cid}: an interval must be 'observed' or 'validity_horizon'")
+            # ONE kind, matching percept.episodes.CoverageKind. The retired ``validity_horizon``
+            # value was accepted here but never produced by the builder, so a fixture authoring it
+            # would have validated and then failed every comparison against real coverage.
+            _req(span.get("kind") == "observed",
+                 f"{name}/{cid}: an interval's kind must be 'observed'")
             _req(float(span["end"]) >= float(span["start"]), f"{name}/{cid}: interval ends before it starts")
         for gap in expect["gaps"]:
             _req(isinstance(gap.get("reason"), str) and gap["reason"],

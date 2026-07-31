@@ -145,11 +145,12 @@
         "motion",
         "structural",
         "semantic",
-        "fixed"
+        "fixed",
+        "fused"
       ],
       "default": null,
       "env_var": null,
-      "note": "Per-Watch tier-0 admission mode; sustained worker Watches require fixed.",
+      "note": "Per-Watch tier-0 admission mode; sustained worker Watches require fixed, and fused requires a wake_policy.",
       "owner": "WatchPlan",
       "path": "Goal.state.cadence.gate_on",
       "requires_recompile": false,
@@ -2260,13 +2261,13 @@
     },
     {
       "bounds": [
-        0.0,
+        5e-324,
         Infinity
       ],
       "choices": null,
       "default": 4.0,
       "env_var": null,
-      "note": "fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings').",
+      "note": "fovea quiet floor; ExecutionPolicy row's own example ('cadence ceilings'). Finite and strictly > 0, and <= max_fps \u2014 enforced for every consumer by percept.sampling.validate_cadence, which SensePolicy and CadenceProfile both delegate to. 0 is not a slow cadence: it is a concern that is never perceived at all while the scene is quiet.",
       "owner": "ExecutionPolicy",
       "path": "WatchProfile.cadence.base_fps",
       "requires_recompile": false,
@@ -2314,13 +2315,13 @@
     },
     {
       "bounds": [
-        0.0,
+        5e-324,
         Infinity
       ],
       "choices": null,
       "default": 15.0,
       "env_var": null,
-      "note": "fovea cost ceiling; must be >= base_fps (CadenceProfile.__post_init__).",
+      "note": "fovea cost ceiling; finite, strictly > 0 and >= base_fps \u2014 enforced by percept.sampling.validate_cadence, which SensePolicy (the type every consumer runs on) and CadenceProfile both delegate to. An inverted envelope processes QUIET frames at base_fps, straight through this ceiling, and de-escalates on motion.",
       "owner": "ExecutionPolicy",
       "path": "WatchProfile.cadence.max_fps",
       "requires_recompile": false,

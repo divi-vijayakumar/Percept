@@ -71,6 +71,29 @@ PER_ENTITY_IDENTITY_POLICIES: frozenset[str] = frozenset(
 )
 
 
+def is_entity_scoped(subject_id: Hashable) -> bool:
+    """Is ``subject_id`` a real per-entity handle, or one of the non-entity scopes?
+
+    The ONE place the "this is not an entity" rule is stated, so every consumer of an entity-death
+    signal inherits the same answer. Two values are not entities:
+
+    * :data:`SCENE_IDENTITY` — the recognized no-subject scope. A ``(goal_id, "scene")`` key is a
+      PER-GOAL SINGLETON that entity churn cannot multiply, so entity death must never reach it.
+    * ``None`` — the non-entity reducer scope a concern that declares ``identity_policy="scene"``
+      reduces onto (:func:`watch_reducer_entity_id`). Same argument, same answer.
+
+    Why this matters, concretely: dropping a scene-scoped GATE key silently RE-ARMS a spent edge
+    (an absent key defaults to armed), so a still-held ``to`` state re-notifies the moment a
+    same-named entity happens to die. :meth:`percept.behavior.BehaviorExecutor.forget_entity`
+    already refused the sentinel; :meth:`percept.gate.Gate.reset_entity` did not, and the two halves
+    of one latch disagreeing about the same collision is what this predicate removes.
+
+    Deliberately NOT a check against the entity graph's live id set: the danger is a MINTED id that
+    COLLIDES with the sentinel, which such a check would happily confirm as a real entity.
+    """
+    return subject_id is not None and subject_id != SCENE_IDENTITY
+
+
 def folds_on_scene_scope(resolved_policy: str | None) -> bool:
     """Does a concern running under ``resolved_policy`` group its occurrences on the scene scope?
 
@@ -218,6 +241,7 @@ __all__ = [
     "STATE_KEY",
     "SCENE_IDENTITY",
     "PER_ENTITY_IDENTITY_POLICIES",
+    "is_entity_scoped",
     "folds_on_scene_scope",
     "transition_latch_key",
     "identity_policy_of",

@@ -15,7 +15,8 @@
 
 import { makeTier0Signal, makeEdgeCapabilities, parseWatchSpec } from "./contract.js";
 import { motionScore, egoResidualScore } from "./motion.js";
-import { SkillBank, registered, wakeScore } from "./skills.js";
+import { SkillBank, cheapSignals, registered, wakeScore } from "./skills.js";
+import { clamp01 } from "./numeric.js";
 
 export class Edge {
   /**
@@ -207,18 +208,18 @@ export class Edge {
       semantic = clamp01(this._semanticAdapter(frame, this._spec));
     }
 
-    const cheapSignals = {
-      motion,
-      change: motion,
-      structural,
-      semantic,
-      semantic_relevance: semantic,
-      ...(this._wakePolicy ? { audio: energy ?? 0, audio_event: energy ?? 0 } : {}),
-      ...(signals ?? {}),
-    };
-    const salience = wakeScore(cheapSignals, this._wakePolicy);
+    // One measurement, one channel — see `cheapSignals`. This used to build seven keys from four
+    // measurements (`change` aliasing `motion`, `semantic_relevance` aliasing `semantic`,
+    // `audio_event` aliasing `audio`), which fed the noisy-OR the same reading twice.
+    const channels = cheapSignals({ motion, structural, semantic, energy, extra: signals });
+    // `salience` is the specless fallback (no conditions -> no goal has asked for anything, so the
+    // edge gates on the best cheap channel, or on the fused score if a policy is the only instruction
+    // it has). `fused` is the per-goal channel, and it exists ONLY when a policy is wired — mirroring
+    // Python `MotionGate.evaluate`, where `fused is None` without one.
+    const salience = wakeScore(channels, this._wakePolicy);
+    const fused = this._wakePolicy ? salience : null;
 
-    if (!this._shouldEscalate({ ts, prevFrame, frame, motion, structural, semantic, salience })) {
+    if (!this._shouldEscalate({ ts, prevFrame, frame, motion, structural, semantic, salience, fused })) {
       return null; // gated: still scene -> no Tier0Signal, no cloud call
     }
 
@@ -229,18 +230,24 @@ export class Edge {
     return signal;
   }
 
-  _shouldEscalate({ ts, prevFrame, frame, motion, structural, semantic, salience }) {
+  _shouldEscalate({ ts, prevFrame, frame, motion, structural, semantic, salience, fused }) {
     const conds = this._spec?.conditions ?? [];
     if (conds.length === 0) return salience >= this.defaultThreshold;
     for (const c of conds) {
       if (c.cadence_s != null && ts - (this._lastEscalate.get(c.goal_id) ?? -Infinity) < c.cadence_s) {
         continue;
       }
+      // ONE branch per channel, each reached only by the goal that asked for it. The fused branch used
+      // to sit ABOVE structural/semantic and fire on `this._wakePolicy` being set at all, so a
+      // configured policy replaced every goal's own channel. A goal now opts in with
+      // `gate_on: "fused"`. Twin of Python `MotionGate.evaluate`.
       let fired = false;
       if (c.gate_on === "fixed") {
         fired = c.cadence_s != null;
-      } else if (this._wakePolicy) {
-        fired = salience >= c.threshold;
+      } else if (c.gate_on === "fused") {
+        // No wake policy wired -> a goal that asked to be fused has nothing to be fused from. It
+        // scores 0 rather than silently falling back to motion.
+        fired = (fused ?? 0) >= c.threshold;
       } else if (c.gate_on === "structural") {
         fired = structural >= c.threshold;
       } else if (c.gate_on === "semantic") {
@@ -268,19 +275,30 @@ export class Edge {
   }
 }
 
-function clamp01(v) {
-  if (typeof v !== "number" || !Number.isFinite(v)) return 0;
-  if (v < 0) return 0;
-  if (v > 1) return 1;
-  return v;
-}
-
 // The escalate-comparison motion for one condition, honoring its salience MODE. Twin of Python
 // `percept.harness.tier0._condition_motion`: default (mean, no region, no ego) returns the precomputed
-// full-frame `fullMotion`; ego compensation (whole-frame residual) takes precedence, else the localized
-// block statistic (optionally masked to region_hint). Ego + block compose is deferred.
+// full-frame `fullMotion`; ego compensation takes precedence, else the localized block statistic
+// (optionally masked to region_hint).
+//
+// EGO COMPOSES WITH THE ZONE, not with the block statistic. The ego branch passes `region_hint`
+// through, because a watch-out zone is a promise that movement elsewhere is ignored, and turning on
+// ego compensation must not quietly convert the goal back into a whole-frame watch (it used to: the
+// residual was always whole-frame while the condition still carried and reported its zone). Ego +
+// block_max/p95 composition stays deferred — an ego goal gets the region-masked residual, not the
+// localized block statistic.
+//
+// The result is clamped like every OTHER channel. The structural and semantic adapters are clamped
+// where they are read (processFrame), but this one was compared `>= c.threshold` raw — so the one
+// channel that is always live, and the only one that can be driven from a WatchSpec field, was also
+// the one channel with no floor under it.
 function conditionMotion(prevFrame, frame, c, fullMotion) {
-  if (c.ego_compensate) return egoResidualScore(prevFrame, frame);
+  return clamp01(rawConditionMotion(prevFrame, frame, c, fullMotion));
+}
+
+function rawConditionMotion(prevFrame, frame, c, fullMotion) {
+  if (c.ego_compensate) {
+    return egoResidualScore(prevFrame, frame, { region: c.region_hint ?? null });
+  }
   const stat = c.salience_stat ?? "mean";
   if (stat !== "mean" || c.region_hint != null) {
     return motionScore(prevFrame, frame, { region: c.region_hint ?? null, stat });

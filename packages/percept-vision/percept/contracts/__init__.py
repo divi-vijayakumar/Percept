@@ -1260,11 +1260,14 @@ def minute_of_day(hour: int, minute: int = 0) -> int:
     return hour * 60 + minute
 
 
-GateOn = Literal["motion", "structural", "semantic", "fixed"]
+GateOn = Literal["motion", "structural", "semantic", "fixed", "fused"]
 """Which signal arms a goal's escalation. ``motion`` (default) = pixel-motion gate — right for physical
 events (a person, a package). ``structural``/``semantic`` = the richer Tier0 channels (CLIP/pose), for
 content/relational events. ``fixed`` = escalate on a fixed cadence regardless of motion — for low-pixel-
-motion content (a screenshare, a dashboard) the motion gate would silently under-sample."""
+motion content (a screenshare, a dashboard) the motion gate would silently under-sample. ``fused`` =
+the ``wake_policy`` noisy-OR over the cheap channels, for an event no single channel sees strongly
+(person present + a sound + a little motion); a goal must ASK for it, since a configured wake policy
+no longer overrides the other four."""
 
 
 SalienceStat = Literal["mean", "block_max", "p95"]
@@ -1729,6 +1732,21 @@ from .watchplan import (  # noqa: E402 — re-export after the DTOs those bump c
 )
 
 # ---------------------------------------------------------------------------
+# The ONE verdict-validation authority (ADR-001 §7, §10 invariant 4). Defined in the sibling
+# .verdict_validation module and re-exported here, because this package is the only home the
+# validator can have: ``percept.agent`` and ``percept.backends.judge_pool`` both need it and import
+# each other, and ``percept.contracts`` sits under both with no cycle — and it is the only one the
+# zero-dependency consumers this package exists for can reach. It adds NO DTO and changes NO wire
+# shape (it validates the already-frozen :class:`Verdict`), so CONTRACT_VERSION does not move.
+# ---------------------------------------------------------------------------
+
+from .verdict_validation import (  # noqa: E402 — re-export after the Verdict it validates
+    VERDICT_DEFECTS,
+    is_valid_verdict,
+    verdict_defect,
+)
+
+# ---------------------------------------------------------------------------
 # Protocols (implement to swap a backend; resolved by name via the registry)
 # ---------------------------------------------------------------------------
 
@@ -2015,6 +2033,10 @@ __all__ = [
     "Operation",
     "OPERATIONS",
     "MUTATING_OPERATIONS",
+    # The ONE verdict-validation authority (ADR-001 §7 / §10.4) — see .verdict_validation
+    "VERDICT_DEFECTS",
+    "verdict_defect",
+    "is_valid_verdict",
     "Provenance",
     "Attribute",
     "Goal",

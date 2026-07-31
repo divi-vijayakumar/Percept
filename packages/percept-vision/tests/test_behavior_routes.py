@@ -9,7 +9,12 @@ from dataclasses import replace
 
 from percept import Goal, GoalOp, Percept
 from percept.adapters import Box, Observation, Verdict
-from percept.behavior import coerce_authored_behavior
+from percept.behavior import (
+    BehaviorExecutor,
+    EpisodeFoldResult,
+    coerce_authored_behavior,
+    program_of,
+)
 from percept.behavior_routes import (
     BehaviorRoute,
     UndrivenBehaviorRouteWarning,
@@ -29,6 +34,7 @@ from percept.edge.tier0 import (
     run_gated_watch,
     watchspec_unsupported,
 )
+from percept.gate import Gate
 from percept.incidents import make_incident
 from percept.observability import funnel_key
 from percept.packs_default import FACILITY_OBSERVATION_V1
@@ -1223,6 +1229,172 @@ class ArmTimeRouteGateTests(unittest.TestCase):
                 self.assertEqual(receipt.status, "rejected")
                 self.assertIn(api, receipt.dropped_fields[0].message)
                 self.assertEqual(list(core.goals.active()), [])
+
+
+class _RearmSpyGate(Gate):
+    """The gate stays mechanically unchanged — an episode fold reaches it only as ``rearm()``.
+
+    Recording those calls is how "the fold re-armed the key" is told apart from "a confident-false
+    armed the key", which the gate does internally by assigning ``_armed[key] = True`` and never
+    through this method.
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.rearms: list = []
+
+    def rearm(self, key):
+        self.rearms.append(key)
+        super().rearm(key)
+
+
+class StartAnchorSurvivesEpisodeFoldTests(unittest.TestCase):
+    """``behavior.py:1373`` — ``if fold.should_rearm and not self.gate.require_false_first``.
+
+    ``RearmRouteTests::test_require_false_first_suppresses_join_then_rearms_after_observed_false``
+    above drives the same flag through the worker via ``Settings(gate=GateSettings(...))``. This
+    class sits at the executor seam instead, because the collision only exists there: an episode
+    fold that WANTS to re-arm arrives on a key the gate has never seen, which is exactly the key a
+    first episode arrives on. Forcing that key armed would delete the start anchor and report a
+    condition that was already true when the watch started — the one thing the flag exists to refuse.
+    """
+
+    YES = Verdict(satisfied=True, confidence=0.95, evidence="the kettle is already boiling")
+    NO = Verdict(satisfied=False, confidence=0.95, evidence="the kettle is not boiling")
+
+    @staticmethod
+    def _goal():
+        return Goal(
+            id="kettle",
+            condition="the kettle is boiling",
+            say="The kettle boiled",
+            state={"type": "watch"},
+        )
+
+    @staticmethod
+    def _new_episode_fold() -> EpisodeFoldResult:
+        """A genuinely new episode: it asks for a re-armed edge and to be gate-evaluated."""
+        return EpisodeFoldResult(
+            episode_id="ep1",
+            match="new",
+            mutation="none",
+            should_rearm=True,
+            should_evaluate_gate=True,
+        )
+
+    def test_new_episode_fold_does_not_delete_the_start_anchor(self):
+        gate = _RearmSpyGate(require_false_first=True)
+        ex = BehaviorExecutor(gate)
+        goal = self._goal()
+        key = (goal.id, "e1")  # a key the gate has never seen
+        outcomes = []
+        fired = ex.fire_judged(
+            goal,
+            self.YES,
+            key,
+            program_of(goal),
+            t=0.0,
+            fold=self._new_episode_fold(),
+            outcome_sink=outcomes.append,
+        )
+        self.assertIsNone(fired)
+        # gate.py:574-586 — seen-but-disarmed, not a rising edge this deployment watched happen.
+        self.assertEqual([o.reason for o in outcomes], ["start_anchored"])
+        self.assertIn(key, gate._armed)
+        self.assertFalse(gate._armed[key])
+        self.assertEqual(gate.rearms, [])  # the fold did NOT get to arm the anchored key
+
+    def test_only_an_observed_false_rearms_and_the_next_true_fires_exactly_once(self):
+        # Over-suppression would be its own defect: the anchor must survive, then get out of the way.
+        gate = _RearmSpyGate(require_false_first=True)
+        ex = BehaviorExecutor(gate)
+        goal = self._goal()
+        prog = program_of(goal)
+        key = (goal.id, "e1")
+        outcomes = []
+        actions = []
+        for t, verdict in ((0.0, self.YES), (1.0, self.NO), (2.0, self.YES), (3.0, self.YES)):
+            fired = ex.fire_judged(
+                goal,
+                verdict,
+                key,
+                prog,
+                t=t,
+                # The fold keeps asking to re-arm on every tick; the guard keeps refusing.
+                fold=self._new_episode_fold(),
+                outcome_sink=outcomes.append,
+            )
+            actions.append("silent" if fired is None else fired.action)
+        self.assertEqual(actions, ["silent", "silent", "fire", "silent"])
+        self.assertEqual(
+            [o.reason for o in outcomes],
+            ["start_anchored", "not_satisfied", "rising_edge", "already_fired"],
+        )
+        # The observed false armed the key from inside the gate; the fold never armed anything.
+        self.assertEqual(gate.rearms, [])
+
+    def test_flag_on_the_fold_cannot_rearm_a_key_a_prior_fire_disarmed(self):
+        # The documented cost of the guard, pinned so a later change has to state it deliberately:
+        # with the flag ON, arming is the gate's business alone, so a genuinely new episode landing
+        # on a shared key another subject already fired is silent until an observed false.
+        gate = _RearmSpyGate(require_false_first=True)
+        ex = BehaviorExecutor(gate)
+        goal = self._goal()
+        prog = program_of(goal)
+        key = (goal.id, "shared")
+        ex.fire_judged(goal, self.NO, key, prog, t=0.0)  # observed false -> armed
+        self.assertIsNotNone(ex.fire_judged(goal, self.YES, key, prog, t=1.0))  # subject A fires
+        outcomes = []
+        second = ex.fire_judged(
+            goal,
+            self.YES,
+            key,
+            prog,
+            t=5.0,
+            fold=self._new_episode_fold(),
+            outcome_sink=outcomes.append,
+        )
+        self.assertIsNone(second)
+        self.assertEqual([o.reason for o in outcomes], ["already_fired"])
+        self.assertEqual(gate.rearms, [])
+
+    def test_flag_off_the_same_fold_rearms_a_key_another_subject_disarmed(self):
+        # The control: the guard is conditional on the flag, NOT a blanket refusal to honour a fold.
+        # behavior.py:1382-1383 — with the flag off a fresh key is already armed, so this re-arm only
+        # ever undoes a disarm.
+        gate = _RearmSpyGate()  # require_false_first defaults off
+        ex = BehaviorExecutor(gate)
+        goal = self._goal()
+        prog = program_of(goal)
+        key = (goal.id, "shared")
+        self.assertIsNotNone(ex.fire_judged(goal, self.YES, key, prog, t=0.0))  # subject A fires
+        self.assertFalse(gate._armed[key])  # ...and leaves the shared key disarmed
+        outcomes = []
+        fired = ex.fire_judged(
+            goal,
+            self.YES,
+            key,
+            prog,
+            t=5.0,  # clear of INCIDENT_MERGE_WINDOW_S so the delivery merge is not what is measured
+            fold=self._new_episode_fold(),
+            outcome_sink=outcomes.append,
+        )
+        self.assertIsNotNone(fired)
+        self.assertEqual(fired.action, "fire")
+        self.assertEqual([o.reason for o in outcomes], ["rising_edge"])
+        self.assertEqual(gate.rearms, [key])
+
+    def test_flag_off_without_a_fold_the_disarmed_key_stays_silent(self):
+        # The counter-proof for the control above: the second fire came from the fold's re-arm and
+        # from nothing else — same gate, same times, no fold, no fire.
+        gate = _RearmSpyGate()
+        ex = BehaviorExecutor(gate)
+        goal = self._goal()
+        prog = program_of(goal)
+        key = (goal.id, "shared")
+        self.assertIsNotNone(ex.fire_judged(goal, self.YES, key, prog, t=0.0))
+        self.assertIsNone(ex.fire_judged(goal, self.YES, key, prog, t=5.0))
+        self.assertEqual(gate.rearms, [])
 
 
 if __name__ == "__main__":

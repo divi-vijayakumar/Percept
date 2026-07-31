@@ -22,12 +22,14 @@ import pytest
 from percept.agent import Percept
 from percept.contracts import Goal, Verdict
 from percept.direct_judge import (
+    DEFAULT_VERIFY_CADENCE,
     DirectJudge,
     DirectResult,
     DirectRouting,
 )
 from percept.extraction import CONTEXT_KEY
 from percept.harness.scripted import ScriptedJudge
+from percept.harness.tier0 import gray_frame
 
 
 class _RaisingVision:
@@ -66,6 +68,26 @@ class _RaisingRule:
 
     def evaluate(self, condition, frame, roi, facts):
         raise RuntimeError("boom")
+
+
+class _NamedRule:
+    """A confident rule that signs its verdict, so an assertion can NAME which rule answered.
+
+    ``_ConfidentRule`` above always says ``evidence="direct"``; two of those are
+    indistinguishable, which is exactly what an ordering test must be able to tell apart.
+    """
+
+    def __init__(self, name: str, applies_to: DirectRouting) -> None:
+        self.name = name
+        self.applies_to = applies_to
+        self.calls = 0
+
+    def evaluate(self, condition, frame, roi, facts):
+        self.calls += 1
+        return DirectResult(
+            outcome="confident",
+            verdict={"satisfied": True, "confidence": 0.9, "evidence": f"answered by {self.name}"},
+        )
 
 
 def _drive(agent: Percept, source: str, n: int) -> list:
@@ -232,6 +254,240 @@ class StakesVerifyCadenceTests(unittest.TestCase):
         _drive(core, "frame1", 10)
 
         self.assertEqual(len(judge.calls), 0)
+
+
+class UnregisteredStakesStringTests(unittest.TestCase):
+    """``stakes`` is a free string, and an unregistered one turns the verify cadence OFF.
+
+    ``route`` resolves the cadence with ``self.verify_cadence.get(stakes, 0)``
+    (``direct_judge.py:193``) against a map that ships exactly three keys
+    (``DEFAULT_VERIFY_CADENCE``, ``:67``). Any other label — a new severity name, a typo, a
+    different casing — misses the map and gets ``0``, which ``:196`` reads as "never force".
+    There is no error, no warning and no attribute on the result that says so: the caller asked
+    for the TIGHTEST supervision they could name and silently received none at all.
+    """
+
+    CONDITION = "screen.ocr.total_exceeds"
+
+    def _drive_confident(self, dj: DirectJudge, stakes: str, n: int) -> list:
+        frame = gray_frame(48, 36)
+        return [dj.route(self.CONDITION, frame, stakes=stakes) for _ in range(n)]
+
+    def test_the_shipped_cadence_map_has_exactly_three_keys(self):
+        # The premise every assertion below rests on. If someone adds a key, these tests must be
+        # re-read rather than silently keep passing for a different reason.
+        self.assertEqual(dict(DEFAULT_VERIFY_CADENCE), {"low": 0, "medium": 20, "high": 5})
+
+    def test_an_unregistered_stakes_string_never_forces_a_verify(self):
+        dj = DirectJudge([_ConfidentRule()])
+        self.assertNotIn("critical", DEFAULT_VERIFY_CADENCE, "premise: nobody registered this label")
+
+        # 25 > 20 (medium) > 5 (high): this run passes EVERY cadence the map ships, twice over for
+        # the tightest one. Under any registered label at least one of these would be downgraded.
+        results = self._drive_confident(dj, "critical", 25)
+
+        self.assertEqual(
+            [r.outcome for r in results], ["confident"] * 25,
+            "an unregistered stakes label resolves to cadence 0, so no confident answer is ever "
+            "downgraded — the rule governs indefinitely, unverified",
+        )
+        self.assertEqual(dj.verify_cadence.get("critical", 0), 0, "the mechanism: .get's default")
+        self.assertGreater(25, max(DEFAULT_VERIFY_CADENCE.values()), "the run outlasted every shipped cadence")
+
+    def test_a_casing_typo_on_a_real_label_silently_disables_it_too(self):
+        # The realistic version of the same defect: the caller MEANT the tightest supervision.
+        dj = DirectJudge([_ConfidentRule()])
+        results = self._drive_confident(dj, "HIGH", 25)
+        self.assertEqual(
+            [r.outcome for r in results], ["confident"] * 25,
+            "lookup is exact-match, so 'HIGH' is as unregistered as any invented label",
+        )
+
+    def test_the_same_drive_under_registered_high_does_force_a_verify(self):
+        # The contrast that proves the 25-confident run above is the stakes string's doing and not
+        # a dead cadence mechanism.
+        dj = DirectJudge([_ConfidentRule()])
+        results = self._drive_confident(dj, "high", 5)
+
+        self.assertEqual([r.outcome for r in results[:4]], ["confident"] * 4)
+        self.assertEqual(results[4].outcome, "uncertain", "the 5th confident answer is downgraded")
+        self.assertIn("verify cadence reached", results[4].reason)
+        self.assertIn("stakes='high'", results[4].reason)
+        self.assertIsNone(results[4].verdict, "the rule's verdict is discarded on the forced call")
+
+    def test_unregistered_and_registered_low_are_indistinguishable(self):
+        # ``low`` is registered AS 0. So the caller cannot tell "I asked for no supervision" from
+        # "I asked for supervision and the label did not exist" by observing route's output.
+        frame = gray_frame(48, 36)
+        typo = [DirectJudge([_ConfidentRule()]).route("screen.ocr.a", frame, stakes="critical")]
+        low = [DirectJudge([_ConfidentRule()]).route("screen.ocr.a", frame, stakes="low")]
+        self.assertEqual(typo[0].outcome, low[0].outcome)
+        self.assertEqual(typo[0].reason, low[0].reason)
+
+
+class _ScriptedOutcomeRule:
+    """Returns a caller-supplied outcome sequence, so a test can interleave non-confident answers."""
+
+    applies_to = DirectRouting(condition_namespace="screen.ocr.")
+
+    def __init__(self, outcomes) -> None:
+        self._outcomes = list(outcomes)
+        self._i = 0
+
+    def evaluate(self, condition, frame, roi, facts):
+        outcome = self._outcomes[self._i]
+        self._i += 1
+        if outcome == "confident":
+            return DirectResult(outcome="confident", verdict={"satisfied": True, "confidence": 0.9})
+        return DirectResult(outcome=outcome, facts={"partial": "reading"})
+
+
+class CadenceStreakIsCumulativeNotConsecutiveTests(unittest.TestCase):
+    """The counter is never reset, so "every Nth confident answer EVER" — not "N in a row".
+
+    ``route`` increments ``_streak`` only on the confident branch and returns a non-confident
+    result before ever touching it (``direct_judge.py:190-195``); nothing zeroes it except the
+    explicit :meth:`DirectJudge.reset`. The in-code comment at ``:204-206`` states this outright.
+    Prose that calls it a "consecutive" streak describes a mechanism that does not exist here.
+    """
+
+    def test_an_intervening_uncertain_does_not_reset_the_streak(self):
+        rule = _ScriptedOutcomeRule(["confident", "uncertain", "confident", "confident"])
+        dj = DirectJudge([rule], verify_cadence={"medium": 3})
+        frame = gray_frame(48, 36)
+
+        results = [dj.route("screen.ocr.total_exceeds", frame) for _ in range(4)]
+
+        # Under "3 CONSECUTIVE confident" this sequence would never reach a forced verify: the
+        # longest run is 2. It fires on the 3rd confident answer overall, at call 4.
+        self.assertEqual([r.outcome for r in results], ["confident", "uncertain", "confident", "uncertain"])
+        self.assertIn("verify cadence reached", results[3].reason)
+        self.assertNotIn("verify cadence", results[1].reason, "call 2 is the rule's own uncertain")
+
+    def test_reset_is_the_only_thing_that_clears_the_counter(self):
+        rule = _ScriptedOutcomeRule(["confident"] * 6)
+        dj = DirectJudge([rule], verify_cadence={"medium": 3})
+        frame = gray_frame(48, 36)
+
+        first = [dj.route("screen.ocr.total_exceeds", frame).outcome for _ in range(2)]
+        dj.reset()
+        after = [dj.route("screen.ocr.total_exceeds", frame).outcome for _ in range(3)]
+
+        self.assertEqual(first, ["confident", "confident"])
+        self.assertEqual(
+            after, ["confident", "confident", "uncertain"],
+            "reset() zeroed the streak, so the forced verify moved out to the 3rd post-reset answer",
+        )
+
+
+class RegistrationOrderIsPriorityTests(unittest.TestCase):
+    """First match wins, so registration order is priority — NOT specificity.
+
+    ``_rule_for`` (``direct_judge.py:161-165``) returns the first rule whose ``applies_to``
+    matches and stops. A ``DirectRouting()`` with neither axis set matches every call
+    unconditionally (``:89-94``), so registering one before a narrower rule shadows the narrower
+    rule permanently. Nothing raises, nothing warns, and the narrow rule simply never runs.
+    """
+
+    CONDITION = "screen.ocr.total_exceeds"
+
+    def _catch_all(self) -> _NamedRule:
+        return _NamedRule("catch-all", DirectRouting())
+
+    def _narrow(self) -> _NamedRule:
+        return _NamedRule("narrow", DirectRouting(condition_namespace="screen.ocr."))
+
+    def test_both_rules_really_do_match_the_condition(self):
+        # Without this the ordering assertions below would be satisfied by the narrow rule simply
+        # not matching, which proves nothing about priority.
+        catch_all, narrow = self._catch_all(), self._narrow()
+        self.assertTrue(catch_all.applies_to.matches(condition=self.CONDITION))
+        self.assertTrue(narrow.applies_to.matches(condition=self.CONDITION))
+
+    def test_a_catch_all_registered_first_shadows_the_narrower_rule(self):
+        catch_all, narrow = self._catch_all(), self._narrow()
+        dj = DirectJudge([catch_all, narrow])
+
+        result = dj.route(self.CONDITION, gray_frame(48, 36))
+
+        self.assertEqual(result.verdict.evidence, "answered by catch-all")
+        self.assertEqual(narrow.calls, 0, "the narrower rule never ran — it is unreachable")
+
+    def test_the_reverse_order_routes_the_same_condition_to_the_narrow_rule(self):
+        # Same two rules, same condition, only the order differs. If matching were resolved by
+        # specificity the narrow rule would win in BOTH orders; it wins in exactly one.
+        catch_all, narrow = self._catch_all(), self._narrow()
+        dj = DirectJudge([narrow, catch_all])
+
+        result = dj.route(self.CONDITION, gray_frame(48, 36))
+
+        self.assertEqual(result.verdict.evidence, "answered by narrow")
+        self.assertEqual(catch_all.calls, 0)
+
+    def test_order_decides_even_when_the_narrow_rule_is_strictly_more_specific(self):
+        # A rule narrowed on BOTH axes still loses to an earlier catch-all.
+        catch_all = self._catch_all()
+        narrowest = _NamedRule("narrowest", DirectRouting(condition_namespace="screen.ocr.", role="detector"))
+        dj = DirectJudge([catch_all, narrowest])
+
+        result = dj.route(self.CONDITION, gray_frame(48, 36), role="detector")
+
+        self.assertTrue(narrowest.applies_to.matches(condition=self.CONDITION, role="detector"))
+        self.assertEqual(result.verdict.evidence, "answered by catch-all")
+
+    def test_a_catch_all_also_swallows_conditions_no_other_rule_claims(self):
+        # Why the class docstring says at most one catch-all should be registered: it is not a
+        # fallback, it is a front-of-queue rule for every condition in the process.
+        catch_all, narrow = self._catch_all(), self._narrow()
+        dj = DirectJudge([catch_all, narrow])
+
+        result = dj.route("camera.motion.crossed_line", gray_frame(48, 36))
+
+        self.assertEqual(result.verdict.evidence, "answered by catch-all")
+        self.assertNotEqual(
+            result.outcome, "degraded",
+            "with a catch-all present nothing ever reaches the normal judge path via 'no rule matched'",
+        )
+
+    def test_register_appends_so_it_loses_to_a_constructor_rule(self):
+        catch_all, narrow = self._catch_all(), self._narrow()
+        dj = DirectJudge([catch_all])
+        dj.register(narrow)
+
+        result = dj.route(self.CONDITION, gray_frame(48, 36))
+
+        self.assertEqual(result.verdict.evidence, "answered by catch-all")
+        self.assertEqual(narrow.calls, 0)
+
+    def test_a_constructor_rule_registered_first_still_wins_when_the_catch_all_is_appended(self):
+        catch_all, narrow = self._catch_all(), self._narrow()
+        dj = DirectJudge([narrow])
+        dj.register(catch_all)
+
+        result = dj.route(self.CONDITION, gray_frame(48, 36))
+
+        self.assertEqual(result.verdict.evidence, "answered by narrow")
+
+    def test_all_register_agrees_with_the_equivalent_constructor_list(self):
+        # The two ways to get rules in must not disagree, or "registration order" would mean two
+        # different things depending on which seam the caller used.
+        for order in (("catch-all", "narrow"), ("narrow", "catch-all")):
+            with self.subTest(order=order):
+                built = {"catch-all": self._catch_all, "narrow": self._narrow}
+                via_ctor = DirectJudge([built[order[0]](), built[order[1]]()])
+                via_register = DirectJudge()
+                via_register.register(built[order[0]]())
+                via_register.register(built[order[1]]())
+
+                frame = gray_frame(48, 36)
+                self.assertEqual(
+                    via_ctor.route(self.CONDITION, frame).verdict.evidence,
+                    via_register.route(self.CONDITION, frame).verdict.evidence,
+                )
+                self.assertEqual(
+                    via_ctor.route(self.CONDITION, frame).verdict.evidence,
+                    f"answered by {order[0]}",
+                )
 
 
 if __name__ == "__main__":

@@ -6,9 +6,20 @@ is reproducible from the environment and nothing is hard-coded in the cognition 
 
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import dataclass, fields, is_dataclass
+import warnings
+from contextvars import ContextVar
+from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Any
+
+from .envelope import ACTUATION_CLASSES  # ("none", "screen", "physical") — PERCEPT_ACTUATION
+from .watchprofile import SALIENCE_STATS  # ("mean", "block_max", "p95") — PERCEPT_SALIENCE_STAT
+
+#: The one diagnostic channel this module owns. Paired with :mod:`warnings` on every rejection:
+#: a library that only warns is silent under ``-W ignore``, and one that only logs is silent until
+#: someone configures logging. Both, or the operator learns nothing.
+_LOG = logging.getLogger("percept.config")
 
 
 class ModeError(RuntimeError):
@@ -62,14 +73,112 @@ def missing_credential(name: Any) -> tuple[str, ...] | None:
     return keys
 
 
-def _env(name: str, default: Any, cast) -> Any:
+@dataclass(frozen=True)
+class _EnvRejection:
+    """One ``PERCEPT_*`` override the loader refused, and the value it stood down to.
+
+    ``reason`` is one of the four :data:`_REJECTION_DETAIL` keys, in the order :func:`_env` tests
+    them: ``"empty"``, ``"uncast"``, ``"not_in_choices"``, ``"out_of_bounds"``.
+    """
+
+    var: str
+    raw: str
+    reason: str
+    substituted: Any
+
+
+#: The operator-facing half of each rejection reason. Keys are the closed ``reason`` vocabulary.
+_REJECTION_DETAIL: dict[str, str] = {
+    "empty": "is set but empty",
+    "uncast": "is not readable as this field's type",
+    "not_in_choices": "is outside this field's declared vocabulary",
+    "out_of_bounds": "is outside this field's declared bounds",
+}
+
+#: The three bound shapes the tunables registry declares for ``Settings.*`` fields, named once so a
+#: call site reads as the constraint rather than as two numbers. ``docs/configuration/tunables.md``
+#: is generated FROM that registry, so these are a published promise, not a private preference:
+#: ``PERCEPT_GATE_THRESHOLD=5.0`` used to load verbatim and leave a gate that classifies every
+#: verdict "unknown" — a watch that can never fire, silently.
+_UNIT_INTERVAL: tuple[float, float] = (0.0, 1.0)
+_NON_NEGATIVE: tuple[float, float] = (0.0, float("inf"))
+_AT_LEAST_ONE: tuple[float, float] = (1.0, float("inf"))
+
+#: The ledger :func:`load_settings` installs for the duration of one load, so the rejections can be
+#: attached to the returned :class:`Settings` (``env_rejections``) rather than only logged. A log
+#: line that scrolled past is not an observability contract. ``None`` outside a load — a direct
+#: ``_env`` call still emits on both channels, it simply has no tree to hang the record on.
+#:
+#: A :class:`~contextvars.ContextVar`, not a plain global: a ``ContextVar`` value does not propagate
+#: into a newly started thread, so two runtimes loading settings concurrently cannot land entries in
+#: each other's ledger or clobber each other's restore.
+_ACTIVE_REJECTIONS: ContextVar[list[_EnvRejection] | None] = ContextVar(
+    "percept_config_env_rejections", default=None
+)
+
+
+def _reject(name: str, raw: str, reason: str, default: Any, sink) -> Any:
+    """Record, announce, and substitute the declared default. Never raises.
+
+    A typo in a shell profile must not be fatal to a 24/7 process, so this is loud, not lethal:
+    the ledger for machines, ``warnings`` for a developer, ``logging`` for a deployment.
+    """
+    record = _EnvRejection(var=name, raw=raw, reason=reason, substituted=default)
+    ledger = _ACTIVE_REJECTIONS.get()
+    if ledger is not None:
+        ledger.append(record)
+    if sink is not None:
+        sink(record)
+    message = (
+        f"{name}={raw!r} {_REJECTION_DETAIL[reason]}; the override was discarded and "
+        f"{name} fell back to its declared default {default!r}"
+    )
+    warnings.warn(message, RuntimeWarning, stacklevel=3)
+    _LOG.warning(message)
+    return default
+
+
+def _env(
+    name: str,
+    default: Any,
+    cast,
+    *,
+    choices: tuple[str, ...] | None = None,
+    bounds: tuple[float, float] | None = None,
+    sink=None,
+) -> Any:
+    """Read one ``PERCEPT_*`` override, or report why it was not adopted.
+
+    The order of the five terms is the contract, not an implementation detail:
+
+    1. unset -> the declared default, silently (nothing was asked for);
+    2. **empty** -> rejected BEFORE the cast, because ``str`` and ``_as_bool`` cannot raise and
+       would otherwise read ``PERCEPT_X=`` as a successful instruction (``""`` / ``False`` /
+       ``frozenset()``) rather than as the absent value it is;
+    3. uncastable -> rejected;
+    4. outside ``choices`` -> rejected (the closed vocabularies the tunables registry declares);
+    5. outside ``bounds`` -> rejected (ditto for the declared ranges).
+
+    ``choices``/``bounds`` are duplicated at the call sites rather than imported from
+    :mod:`percept.tunables` — that module imports ``behavior_routes`` and this one is imported by
+    ``percept/__init__.py``, so the import would be a cycle. ``tests/test_config_tunables_drift.py``
+    is what keeps the two copies honest, the same "duplicated, checked to agree by a test" pattern
+    ``percept.resolver._MISS_COST_ORDER`` already uses.
+    """
     raw = os.environ.get(name)
     if raw is None:
         return default
+    if raw.strip() == "":
+        return _reject(name, raw, "empty", default, sink)
     try:
-        return cast(raw)
+        value = cast(raw)
     except (TypeError, ValueError):
-        return default
+        return _reject(name, raw, "uncast", default, sink)
+    if choices is not None and value not in choices:
+        return _reject(name, raw, "not_in_choices", default, sink)
+    if bounds is not None and not bounds[0] <= value <= bounds[1]:
+        return _reject(name, raw, "out_of_bounds", default, sink)
+    return value
 
 
 def _as_bool(raw: str) -> bool:
@@ -234,30 +343,51 @@ class Settings:
     events: EventSettings = EventSettings()
     consent: ConsentSettings = ConsentSettings()
     edge: EdgeSettings = EdgeSettings()
+    # Every ``PERCEPT_*`` override this tree DECLINED to adopt, in load order (empty tuple when the
+    # environment was clean). Carried on the tree — not merely logged — so ``/health``, the receipt
+    # and any caller holding the settings can tell "the operator typo'd this" from "nobody ever
+    # configured it", which is otherwise indistinguishable once the default is substituted.
+    env_rejections: tuple[_EnvRejection, ...] = ()
 
 
 def load_settings() -> Settings:
-    """Build a Settings tree, overlaying ``PERCEPT_*`` env vars over the defaults."""
+    """Build a Settings tree, overlaying ``PERCEPT_*`` env vars over the defaults.
+
+    Any override that could not be adopted is substituted by its declared default and recorded on
+    :attr:`Settings.env_rejections` (as well as announced through ``warnings`` and ``logging``).
+    Loading never raises on a bad override: an always-on process must survive a typo'd shell profile.
+    """
+    ledger: list[_EnvRejection] = []
+    token = _ACTIVE_REJECTIONS.set(ledger)
+    try:
+        tree = _load_settings_tree()
+    finally:
+        _ACTIVE_REJECTIONS.reset(token)
+    return replace(tree, env_rejections=tuple(ledger))
+
+
+def _load_settings_tree() -> Settings:
+    """The env overlay itself — one ``_env`` call per field, no other reads of ``os.environ``."""
     return Settings(
         gate=GateSettings(
-            threshold=_env("PERCEPT_GATE_THRESHOLD", 0.7, float),
+            threshold=_env("PERCEPT_GATE_THRESHOLD", 0.7, float, bounds=_UNIT_INTERVAL),
             validity_window_s=_env("PERCEPT_GATE_VALIDITY_S", 90.0, float),
             key_ttl_s=_env("PERCEPT_GATE_KEY_TTL_S", 3600.0, float),
-            max_keys=_env("PERCEPT_GATE_MAX_KEYS", 0, int),
+            max_keys=_env("PERCEPT_GATE_MAX_KEYS", 0, int, bounds=_NON_NEGATIVE),
             stale_ask=_env("PERCEPT_GATE_STALE_ASK", False, _as_bool),
             require_false_first=_env("PERCEPT_GATE_REQUIRE_FALSE_FIRST", False, _as_bool),
             refractory_s=_env("PERCEPT_GATE_REFRACTORY_S", 0.0, float),
         ),
         entity=EntitySettings(
-            iou_match=_env("PERCEPT_IOU_MATCH", 0.5, float),
-            max_entities=_env("PERCEPT_MAX_ENTITIES", 64, int),
+            iou_match=_env("PERCEPT_IOU_MATCH", 0.5, float, bounds=_UNIT_INTERVAL),
+            max_entities=_env("PERCEPT_MAX_ENTITIES", 64, int, bounds=_AT_LEAST_ONE),
         ),
         cache=CacheSettings(
             enabled=_env("PERCEPT_CACHE_ENABLED", False, _as_bool),
-            threshold=_env("PERCEPT_CACHE_THRESHOLD", 0.0, float),
+            threshold=_env("PERCEPT_CACHE_THRESHOLD", 0.0, float, bounds=_UNIT_INTERVAL),
             ttl_s=_env("PERCEPT_CACHE_TTL_S", 8.0, float),
-            tau_bits=_env("PERCEPT_CACHE_TAU_BITS", 6, int),
-            audit_rate=_env("PERCEPT_CACHE_AUDIT_RATE", 0.05, float),
+            tau_bits=_env("PERCEPT_CACHE_TAU_BITS", 6, int, bounds=(0.0, 64.0)),
+            audit_rate=_env("PERCEPT_CACHE_AUDIT_RATE", 0.05, float, bounds=_UNIT_INTERVAL),
         ),
         models=ModelSettings(
             vision=_env("PERCEPT_VISION_BACKEND", None, str),
@@ -270,41 +400,55 @@ def load_settings() -> Settings:
             specialist_model=_env("PERCEPT_SPECIALIST_MODEL", "claude-haiku-4-5", str),
         ),
         routing=RoutingSettings(
-            confidence_threshold=_env("PERCEPT_ROUTE_THRESHOLD", 0.6, float),
+            confidence_threshold=_env("PERCEPT_ROUTE_THRESHOLD", 0.6, float, bounds=_UNIT_INTERVAL),
         ),
         identity=IdentitySettings(
-            appearance_threshold=_env("PERCEPT_APPEARANCE_MATCH", 0.8, float),
+            appearance_threshold=_env("PERCEPT_APPEARANCE_MATCH", 0.8, float, bounds=_UNIT_INTERVAL),
         ),
         episodes=EpisodeSettings(
             window_s=_env("PERCEPT_EPISODE_WINDOW_S", 3600.0, float),
-            max_episodes=_env("PERCEPT_MAX_EPISODES", 64, int),
+            max_episodes=_env("PERCEPT_MAX_EPISODES", 64, int, bounds=_AT_LEAST_ONE),
         ),
         events=EventSettings(
-            window=_env("PERCEPT_FRAME_WINDOW", 12, int),
-            preroll_max_bytes=_env("PERCEPT_PREROLL_MAX_BYTES", 134_217_728, int),
+            window=_env("PERCEPT_FRAME_WINDOW", 12, int, bounds=_AT_LEAST_ONE),
+            preroll_max_bytes=_env(
+                "PERCEPT_PREROLL_MAX_BYTES", 134_217_728, int, bounds=_NON_NEGATIVE
+            ),
             merge_gap_s=_env("PERCEPT_EVENT_MERGE_GAP_S", 1.5, float),
             audio_window_s=_env("PERCEPT_AUDIO_WINDOW_S", 4.0, float),
         ),
         consent=ConsentSettings(
             allow_computer_use=_env("PERCEPT_ALLOW_COMPUTER_USE", False, _as_bool),
             allowed_actions=_env("PERCEPT_ACT_ALLOWED_ACTIONS", frozenset(), _as_actions),
-            actuation=_env("PERCEPT_ACTUATION", "none", str),
+            actuation=_env("PERCEPT_ACTUATION", "none", str, choices=ACTUATION_CLASSES),
         ),
         edge=EdgeSettings(
-            motion_gate=_env("PERCEPT_MOTION_GATE", 0.10, float),
-            salience_stat=_env("PERCEPT_SALIENCE_STAT", "block_max", str),
+            motion_gate=_env("PERCEPT_MOTION_GATE", 0.10, float, bounds=_UNIT_INTERVAL),
+            # An out-of-vocabulary value here is the one config typo that silently changes what the
+            # eye ADMITS: worker.py hands it to ``_coerce_salience_stat`` as the *trusted* default,
+            # whose last line falls back to "mean", so the deployment runs mean@0.10 where the
+            # shipped tree gives block_max@0.20. Refuse it where it is typed.
+            salience_stat=_env("PERCEPT_SALIENCE_STAT", "block_max", str, choices=SALIENCE_STATS),
             ego_compensate=_env("PERCEPT_EGO_COMPENSATE", False, _as_bool),
-            motion_gate_block_max=_env("PERCEPT_MOTION_GATE_BLOCK_MAX", 0.20, float),
-            motion_gate_p95=_env("PERCEPT_MOTION_GATE_P95", 0.15, float),
+            motion_gate_block_max=_env(
+                "PERCEPT_MOTION_GATE_BLOCK_MAX", 0.20, float, bounds=_UNIT_INTERVAL
+            ),
+            motion_gate_p95=_env("PERCEPT_MOTION_GATE_P95", 0.15, float, bounds=_UNIT_INTERVAL),
             coast_enabled=_env("PERCEPT_COAST_ENABLED", True, _as_bool),
         ),
     )
 
 
 def as_dict(settings: Any) -> dict:
-    """Recursively render a Settings tree to a plain dict (for logging / /health)."""
+    """Recursively render a Settings tree to a plain dict (for logging / /health).
+
+    Sequences are walked too, so ``env_rejections`` renders as a list of ``{var, raw, reason,
+    substituted}`` records instead of a row of opaque dataclass reprs.
+    """
     if is_dataclass(settings) and not isinstance(settings, type):
         return {f.name: as_dict(getattr(settings, f.name)) for f in fields(settings)}
+    if isinstance(settings, (tuple, list)):
+        return [as_dict(item) for item in settings]
     return settings
 
 

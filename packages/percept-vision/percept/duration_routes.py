@@ -170,14 +170,14 @@ def duration_route_issues(
         )
 
     if type(gate_on) is not str or gate_on not in {
-        "motion", "structural", "semantic", "fixed"
+        "motion", "structural", "semantic", "fixed", "fused"
     }:
         issues.append(
             DurationRouteIssue(
                 path="Goal.state.cadence.gate_on",
                 code=UNSUPPORTED_DURATION_ROUTE,
                 goal_id=goal_id,
-                message="must name motion, structural, semantic, or fixed admission",
+                message="must name motion, structural, semantic, fixed, or fused admission",
             )
         )
     elif has_hold and gate_on != "fixed":

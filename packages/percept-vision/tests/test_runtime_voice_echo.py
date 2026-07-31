@@ -27,10 +27,11 @@ from percept.runtime import RuntimeStats, run
 STILL = gray_frame(8, 8, 0)  # identical frames => zero motion => the visual gate never escalates
 
 
-def _core() -> Percept:
+def _core(*, gate_on: str | None = None) -> Percept:
     vision = FakeVision(script={"quiet": Verdict(satisfied=False, confidence=0.9, evidence="nothing")})
     core = Percept.create(vision=vision, discover_plugins=False)
-    core.add_goal(Goal(id="listen", condition="someone is speaking", say="heard you"))
+    state = {"cadence": {"gate_on": gate_on}} if gate_on else {}
+    core.add_goal(Goal(id="listen", condition="someone is speaking", say="heard you", state=state))
     return core
 
 
@@ -383,11 +384,16 @@ class EnergyFreshnessTests(unittest.TestCase):
     def _wake(self):
         return WakePolicy(threshold=0.5, weights={"audio": 1.0})
 
+    def _fused_core(self):
+        # The goal OPTS IN to the fusion. A configured wake_policy no longer overrides every goal's
+        # own gate_on (BUG-A-01-04), so a Watch that wants to wake on the fused score says so.
+        return _core(gate_on="fused")
+
     def test_stale_energy_degrades_gate_to_video_only(self):
         # Baseline: no audio at all, STILL video, wake_policy armed -> zero escalations.
         base = RuntimeStats()
         video0 = [(2.0 + i, STILL, "quiet") for i in range(10)]
-        asyncio.run(_collect(_core(), video0, wake_policy=self._wake(), stats=base))
+        asyncio.run(_collect(self._fused_core(), video0, wake_policy=self._wake(), stats=base))
 
         # Dead mic: two early LOUD chunks then silence-of-death; the video runs seconds later, so the
         # pinned 0.9 energy is stale for every video frame. Without the freshness guard those pinned
@@ -396,7 +402,7 @@ class EnergyFreshnessTests(unittest.TestCase):
         video = [(2.0 + i, STILL, "quiet") for i in range(10)]
         audio = [(0.05, _frame(0x40), 0.9), (0.15, _frame(0x40), 0.9)]  # loud, then the mic dies
         # audio_gate=None isolates the ENERGY→WakePolicy path from the separate acoustic-onset wake.
-        asyncio.run(_collect(_core(), video, audio_source=audio, audio_gate=None,
+        asyncio.run(_collect(self._fused_core(), video, audio_source=audio, audio_gate=None,
                              wake_policy=self._wake(), stats=stats))
         self.assertEqual(stats.judge_calls, base.judge_calls,
                          "a dead mic's pinned energy must not keep escalating the gate")
@@ -408,9 +414,20 @@ class EnergyFreshnessTests(unittest.TestCase):
         video = [(i * 0.1, STILL, "quiet") for i in range(1, 12)]
         audio = [(i * 0.1 + 0.02, _frame(0x40), 0.9) for i in range(1, 12)]  # in-step, always fresh
         # audio_gate=None -> only the ENERGY→WakePolicy path can escalate (no acoustic-onset wake).
-        asyncio.run(_collect(_core(), video, audio_source=audio, audio_gate=None,
+        asyncio.run(_collect(self._fused_core(), video, audio_source=audio, audio_gate=None,
                              wake_policy=self._wake(), stats=stats))
         self.assertGreater(stats.judge_calls, 0, "fresh loud energy must still wake the gate")
+
+    def test_a_motion_goal_is_no_longer_woken_by_a_wake_policy_it_did_not_ask_for(self):
+        # The A-01-04 regression, on the live runtime: the SAME loud, fresh audio and the SAME policy,
+        # on the default gate_on="motion" goal. Before, the policy replaced the motion branch for
+        # every Watch in the spec and this escalated on every still frame.
+        stats = RuntimeStats()
+        video = [(i * 0.1, STILL, "quiet") for i in range(1, 12)]
+        audio = [(i * 0.1 + 0.02, _frame(0x40), 0.9) for i in range(1, 12)]
+        asyncio.run(_collect(_core(), video, audio_source=audio, audio_gate=None,
+                             wake_policy=self._wake(), stats=stats))
+        self.assertEqual(stats.judge_calls, 0)
 
 
 class StaleGuardRevalidationTests(unittest.TestCase):

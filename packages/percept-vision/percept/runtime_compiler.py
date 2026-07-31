@@ -348,12 +348,17 @@ def _sense_policy_from_effective(effective: Mapping[str, Any]) -> SensePolicy | 
     if not cadence_fields:
         return None
     default = CadenceProfile()  # no literal knobs here — read the shipped default, don't invent one
-    return SensePolicy(
+    # Re-run CadenceProfile rather than assembling the SensePolicy directly. These values arrived as
+    # ``WatchProfile.cadence.*``, so a resolved value the envelope forbids should fail as the profile's
+    # own ``WatchProfileError``, at compile time, naming the knob the caller actually set — not reach
+    # the fovea. (Both types now delegate to percept.sampling.validate_cadence, so this can no longer
+    # be the bypass it was: the two cannot disagree.)
+    return CadenceProfile(
         base_fps=cadence_fields.get("base_fps", default.base_fps),
         max_fps=cadence_fields.get("max_fps", default.max_fps),
         escalate_threshold=cadence_fields.get("escalate_threshold", default.escalate_threshold),
         hold_s=cadence_fields.get("hold_s", default.hold_s),
-    )
+    ).to_sense_policy()
 
 
 def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:

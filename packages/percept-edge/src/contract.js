@@ -21,6 +21,10 @@
 //
 // Any change to a field name is an interop break. Treat these shapes as frozen.
 
+// The one finite-number predicate, shared with the gate and the privacy screen (src/numeric.js).
+// Aliased so the ~20 call sites below read unchanged.
+import { finiteNumber as isFiniteNumber } from "./numeric.js";
+
 /**
  * Semantic version of the whole frozen contract surface — the JS twin of the Python
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
@@ -46,10 +50,6 @@ export class ContractError extends Error {
   }
 }
 
-function isFiniteNumber(v) {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
 function isPlainObject(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -64,9 +64,26 @@ function isStringArray(v) {
 
 /**
  * Build a normalized Box. All fields default to 0.
+ *
+ * Validates exactly what `parseBox` validates. It is the only make/parse pair in this file that
+ * used to disagree, and the asymmetry was not cosmetic: `makeWatchCondition` routes `region_hint`
+ * through here, so a NaN box was accepted, stored on the condition, and serialized into a WatchSpec
+ * the Python side cannot read back — the failure surfaced a hop away from its cause.
+ *
+ * NOT validated (deliberately): the [0,1] range and a positive area. The Python `Box` dataclass
+ * constrains neither, an off-frame or zero-extent box is meaningful to the gate (it clamps / scores
+ * 0), and rejecting one here would fork the wire contract. See `numeric.nonEmptyBox` for the
+ * predicate a box CONSUMER wants.
+ *
  * @returns {{x:number,y:number,w:number,h:number}}
+ * @throws {ContractError}
  */
 export function makeBox({ x = 0, y = 0, w = 0, h = 0 } = {}) {
+  for (const [k, v] of [["x", x], ["y", y], ["w", w], ["h", h]]) {
+    if (!isFiniteNumber(v)) {
+      throw new ContractError(`makeBox: ${k} must be a finite number`);
+    }
+  }
   return { x, y, w, h };
 }
 
@@ -89,7 +106,7 @@ export function parseBox(obj, { path = "region_hint" } = {}) {
 // ---------------------------------------------------------------------------
 // WatchCondition  { goal_id, anchor_text, threshold, region_hint: Box|null,
 //                   detectors: string[], cadence_s: number|null,
-//                   gate_on: "motion"|"structural"|"semantic"|"fixed" }
+//                   gate_on: "motion"|"structural"|"semantic"|"fixed"|"fused" }
 // ---------------------------------------------------------------------------
 
 /**
@@ -98,7 +115,13 @@ export function parseBox(obj, { path = "region_hint" } = {}) {
  * defaults to [] (the Python `field(default_factory=list)` default).
  * @returns {{goal_id:string,anchor_text:string,threshold:number,region_hint:object|null,detectors:string[]}}
  */
-export const GATE_ON = new Set(["motion", "structural", "semantic", "fixed"]);
+// `fused` is the wake-policy noisy-OR over the cheap channels. It is a channel a goal OPTS IN to, not
+// a mode that overrides the others: a configured wake policy used to replace the
+// structural/semantic/motion branch for every condition and still report the goal's own `gate_on`, so
+// a receipt could name a channel whose measured value was 0. Mirrors Python
+// `percept.behavior._VALID_GATE_ON` / `percept.contracts.GateOn`. Additive — an edge that never
+// receives `gate_on: "fused"` behaves byte-for-byte as before.
+export const GATE_ON = new Set(["motion", "structural", "semantic", "fixed", "fused"]);
 export const SALIENCE_STAT = new Set(["mean", "block_max", "p95"]);
 
 // ---------------------------------------------------------------------------

@@ -6,8 +6,12 @@
 // These mirror the app's existing egress-gate vocabulary so PrivacyScreen drops into the same paths
 // without changing their contracts.
 
-/** The category taxonomy a verdict may cite. Frozen Set for O(1) membership + immutability. */
-export const PRIVACY_CATEGORIES = new Set([
+// The taxonomy itself stays module-private. `Object.freeze` on a Set is a no-op for its CONTENTS —
+// add/delete/clear are prototype methods and stay fully functional on a frozen Set — so exporting the
+// Set directly would have made the "immutability" claim below unenforceable, and this taxonomy is
+// what scanText, makePrivacyVerdict and the image tier all validate against: any importer widening it
+// widens what three validators accept.
+const _categories = new Set([
   "pii-id", //       SSN, tax ID, national ID
   "payment", //      card number, CVV, expiry
   "financial", //    bank account / routing
@@ -16,8 +20,25 @@ export const PRIVACY_CATEGORIES = new Set([
   "document-id", //  identity document, passport, document in view
 ]);
 
+/**
+ * The category taxonomy a verdict may cite. A frozen READ-ONLY facade over the Set: O(1) `has`,
+ * a `size`, and iteration (so `[...PRIVACY_CATEGORIES]` and `new Set(PRIVACY_CATEGORIES)` both
+ * work) — and no mutator, so the claim of immutability is now true rather than documented.
+ *
+ * Deliberately NOT a `Set` instance: `x instanceof Set` is false and the Set-only methods
+ * (`add`/`delete`/`clear`, and also `forEach`/`values`/`keys`/`entries`) are absent. Spread or
+ * `new Set(PRIVACY_CATEGORIES)` first if you need those.
+ */
+export const PRIVACY_CATEGORIES = Object.freeze({
+  has: (c) => _categories.has(c),
+  get size() {
+    return _categories.size;
+  },
+  [Symbol.iterator]: () => _categories[Symbol.iterator](),
+});
+
 /** The egress actions, least → most restrictive. Order is load-bearing for escalation (never de-escalate). */
-export const PRIVACY_ACTIONS = ["allow", "redact", "confirm", "drop"];
+export const PRIVACY_ACTIONS = Object.freeze(["allow", "redact", "confirm", "drop"]);
 
 /** Restrictiveness rank (index into PRIVACY_ACTIONS). Higher = more restrictive. */
 export const ACTION_RANK = Object.freeze(
