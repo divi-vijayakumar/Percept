@@ -212,9 +212,13 @@ _SETTINGS: tuple[TunableSpec, ...] = (
         default=False, value_type="bool", env_var="PERCEPT_CACHE_ENABLED", requires_recompile=True,
         risk="medium", note=(
             "wires the FrameHashLayer cost-cascade short-circuit into the pipeline. An open episode "
-            "does NOT disable it: the episode's answer-affecting state is part of the cache key, so a "
+            "does NOT disable it, but how the two compose is path-dependent. On the drivers that put "
+            "the open episode in the judge context (percept.watch, Percept.perceive_judged, the "
+            "tier-0 harness) the episode's answer-affecting state is part of the cache key, so a "
             "continuing occurrence can be served from cache while any real change to it — close, "
-            "reopen, update, annotation — misses and is judged afresh. Note that enabling this alone "
+            "reopen, update, annotation — misses and is judged afresh. Under percept.run a vision or "
+            "fused goal takes the split-protocol path, which neither injects the episode nor keys on "
+            "it, so one slot spans a close and a reopen. Note that enabling this alone "
             "leaves the trust gate open; Settings.cache.threshold defaults to 0.0, at which every hit "
             "is served. See docs/configuration/episodes.md."
         ),

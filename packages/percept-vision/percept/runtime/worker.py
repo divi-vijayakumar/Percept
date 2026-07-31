@@ -2481,10 +2481,18 @@ class _JudgeScheduler:
         # AND THIS LANE IS LIVE, not hypothetical: ``judge_dispatch="async"`` is ``run()``'s DEFAULT
         # and builds a ``_ProviderScheduler`` (this class) over a ``Percept`` core, which publishes
         # both ``launch_judgments`` and ``dispatch_judgment`` — so ``_split_protocol`` is True and
-        # every ordinary VISION goal reaches this loop. (Audio-only and fused goals go through
-        # ``_LegacyJudgeScheduler`` into ``perceive_judged`` and are fanned out.) An earlier version
-        # of this comment claimed no production path reached here; it was wrong, and the deadline
-        # arithmetic in ``_batch_deadline_s`` was sized on that mistaken reading.
+        # every ordinary VISION goal reaches this loop. Neither of the other two modalities does, but
+        # for DIFFERENT reasons and only one of them leaves the split protocol: an AUDIO-ONLY goal
+        # gets its own ``_LegacyJudgeScheduler`` bound to ``core.perceive_audio_judged``, so it runs
+        # the legacy protocol and is fanned out under that method's semaphore; a FUSED goal also gets
+        # a ``_LegacyJudgeScheduler``, but bound to ``_dispatch_prepared_fused_job``, which is a
+        # prepared-job dispatch into ``core.dispatch_fused_judgment`` -> ``dispatch_judgment`` — the
+        # SAME split protocol this loop drives, one job at a time, and it never touches
+        # ``perceive_judged``. So fused pays the serial cost described below too; it just pays it in
+        # its own per-goal scheduler rather than in this batch. An earlier version of this comment
+        # claimed no production path reached here; it was wrong, and the deadline arithmetic in
+        # ``_batch_deadline_s`` was sized on that mistaken reading. A later version folded fused in
+        # with audio as "legacy, fanned out"; that was wrong too, and this is the correction.
         #
         # Two things follow, and only one is done here. (1) The BUDGET must match this execution:
         # ``_batch_deadline_s`` now sizes the split protocol serially, so a batch can no longer be

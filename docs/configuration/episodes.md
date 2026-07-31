@@ -11,8 +11,9 @@ a thousand frames later; a package is still on the porch all afternoon. **An epi
 that says "this is the same happening as before"**, so the second, third and thousandth observation
 of one occurrence produce no second notification.
 
-This page covers what an episode does, the one thing you must configure to get any at all, and the
-cost interaction you need to know about before you enable the verdict cache.
+This page covers what an episode does, which drivers put one in front of the judge, the one thing you
+must configure to get any at all, and the cost interaction you need to know about before you enable
+the verdict cache.
 
 ## What an episode gives you
 
@@ -29,8 +30,36 @@ With an episode:
   appending a row, so a 24/7 stream does not grow the log
 - an already-emitted episode **does not consult the Gate again**, so a TTL sweep or a re-minted
   entity id cannot manufacture a duplicate notification
-- the open episode is serialised into the judge's context, so the model answering "is the bag still
-  there?" knows there is an *it* to still be there
+
+Those three hold wherever episodes exist at all. A fourth one does not, and it is the one most
+people assume:
+
+- on **some** drivers the open episode is serialised into the judge's context, so the model
+  answering "is the bag still there?" knows there is an *it* to still be there
+
+## Where the judge sees the episode
+
+**Putting the open episode in the judge's prompt is not general.** There are two judgment paths in
+this codebase, and only one of them injects it. Which one a Watch takes is decided by how you drive
+it and by the goal's modality — not by anything you configure:
+
+| driver | goals | episode in the judge's context | episode in the cache key |
+|---|---|---|---|
+| `percept.watch()`, `Percept.perceive_judged()`, the tier-0 harness loop | all | yes | yes |
+| `percept.run()` | audio-only | yes | n/a — audio evidence never enters the single-frame cache |
+| `percept.run()` | vision, fused | **no** | **no** |
+
+`percept.run()` is the shipped runtime and a camera Watch is a vision goal, so **the example below
+does not put the episode in the prompt** — and neither dispatch mode changes that, since
+`judge_dispatch="async"` and `"inline"` both take the same path for vision.
+
+Everything above this section still happens on that path: the episode is opened, folded in place,
+and consulted for suppression exactly as described. What is missing is the *prompt*. The model
+re-answers the condition from the frame alone every time it is asked, with no record that it is
+continuing an occurrence rather than seeing one for the first time. For a condition phrased so a
+single frame decides it ("a package is on the porch") that costs nothing. For one phrased to lean on
+continuity ("is the bag *still* there?") the wording has to carry itself, because the episode will
+not.
 
 ## You must bind a SourceProfile
 
@@ -78,7 +107,10 @@ own notification. That is not over-delivery; that is the number of things that h
 The verdict cache short-circuits a judge call when the current frame perceptually matches one already
 judged for the same concern, subject and condition.
 
-An open episode is serialised into the judge context, so a verdict formed under one episode state must
+The two layers have to compose, and how they compose depends on which path you are on — the same
+split as the table above.
+
+**Where the judge context carries the open episode**, a verdict formed under one episode state must
 never be re-served under a different one. The cache handles that by **putting the episode state in the
 key**, not by refusing to cache: the key carries a hash of the episode's *answer-affecting* state —
 its identity, status, subject, value and the changes recorded against it — while the parts that move
@@ -89,10 +121,19 @@ place**: it advances "last seen" and appends nothing. So an occurrence that is s
 not disturb the key, and repeat observations of it can be served from cache. A genuine change — a
 close, a reopen, an update, an annotation — changes the key, and the next judgment is a real one.
 
-The practical consequence:
+The practical consequence, **on those drivers**:
 
 > **A long-running watch pays a model call when the occurrence changes, not on every frame that
 > observes it continuing.**
+
+**On the vision and fused paths there is no episode component in the key at all.** Nothing put the
+episode in the prompt there, so no verdict depends on episode state and none can be re-served
+wrongly — but the converse is that an episode change invalidates nothing. The slot is keyed on the
+frame hash, the concern, the subject and the condition, and **one slot spans a close and a reopen**:
+a new occurrence that looks like the old one can be answered from the verdict formed under the old
+one. What still holds on this path is the weaker, frame-level statement — repeat observations of a
+perceptually unchanged scene are served from cache — with the re-perception audit below as the only
+thing that catches a stale serve.
 
 Both mechanisms are off unless you turn them on. Episodes need a `SourceProfile`; the cache needs
 `Settings.cache.enabled`, which defaults to `False`.
@@ -111,9 +152,10 @@ serve — a cached verdict a fresh judgment would have contradicted. At the `0.0
 error is caught only after roughly nineteen of every twenty have already been delivered.
 
 Note also that `Settings.cache.ttl_s` is not the main lever on hit rate. The layer holds at most one
-entry per `(goal, entity, condition)` and overwrites on every store, so under dense admission the
-slot already holds the immediately preceding judged frame whatever the TTL says. Size the TTL to how
-long your scene stays decidable from a single frame.
+entry per slot — `(goal, entity, condition)`, plus the episode fingerprint on the drivers that mint
+one — and overwrites on every store, so under dense admission the slot already holds the immediately
+preceding judged frame whatever the TTL says. Size the TTL to how long your scene stays decidable
+from a single frame.
 
 ## Related
 
