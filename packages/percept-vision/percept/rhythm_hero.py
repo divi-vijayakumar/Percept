@@ -128,17 +128,31 @@ class RhythmHero:
         entities = self.core.graph.ingest(obs, frame=frame, t=t)  # returned aligned to obs order
         if self.record:
             self.frames.append((t, [(e.id, (e.box.x, e.box.y, e.box.w, e.box.h)) for e in entities]))
+        # ONE fold per entity per frame, not one per detection. `graph.ingest` returns a row per
+        # observation and MAY map two detections onto the same id — an overlapping pair, or a
+        # re-detection of a subject the matcher already claimed. Folding both rows would count that
+        # entity twice for a single frame, which is not merely noisy: `_present[id]` would exceed
+        # `measurement.observed` and `hero_track_coverage` would stop being a fraction at all
+        # (measured 1.031 on RepCount-A before this guard). It would also feed the SAME frame into
+        # that entity's rhythm tracker twice, inflating its rep tally off one observation.
+        # Where two rows collide, the higher-confidence detection is the one that describes the
+        # subject; a lower-confidence duplicate is the artefact.
+        best: dict[str, object] = {}
         for ent, m in zip(entities, measures):
+            prior = best.get(ent.id)
+            if prior is None or getattr(m, "pose_conf", 0.0) > getattr(prior, "pose_conf", 0.0):
+                best[ent.id] = m
+        for entity_id, m in best.items():
             # scale_floored is PER PERSON: two people in one frame can be at different distances, so
             # "were these channels normalized by a real torso?" is not a frame-level fact.
-            self.core.perceive_rhythm(self.goal_id, t=t, channels=m.channels, entity_id=ent.id,
+            self.core.perceive_rhythm(self.goal_id, t=t, channels=m.channels, entity_id=entity_id,
                                       scale_floored=bool(getattr(m, "scale_floored", False)))
-            self._present[ent.id] = self._present.get(ent.id, 0) + 1
+            self._present[entity_id] = self._present.get(entity_id, 0) + 1
             if self.prior is not None:
                 if self.prior in m.coverage:
-                    self._cov.setdefault(ent.id, []).append(m.coverage[self.prior])
+                    self._cov.setdefault(entity_id, []).append(m.coverage[self.prior])
                 if self.prior in m.channels:
-                    self._signal.setdefault(ent.id, []).append((t, m.channels[self.prior]))
+                    self._signal.setdefault(entity_id, []).append((t, m.channels[self.prior]))
 
     def _tracker(self, subject: str | None):
         """The SUBJECT's own tracker, never a shared slot.

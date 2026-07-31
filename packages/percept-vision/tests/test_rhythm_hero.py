@@ -322,6 +322,55 @@ class HeroCoverageDenominatorTests(unittest.TestCase):
         # ... and being honest is what makes the count escalate instead of being asserted clean.
         self.assertLess(res.hero_track_coverage, _BLIND_TRACK_COVERAGE)
 
+    def test_two_detections_resolving_to_one_entity_count_as_one_frame(self):
+        """``hero_track_coverage`` is a FRACTION, and only a per-entity fold keeps it one.
+
+        ``graph.ingest`` returns a row per observation and may map two detections onto the same id —
+        an overlapping pair, or a re-detection of a subject the matcher already claimed. Folding both
+        rows counted that entity twice for a single frame, so ``_present[id]`` could exceed
+        ``measurement.observed`` and the "fraction" went above 1.0. Measured at **1.031** on
+        RepCount-A (``stu3_18`` 235/228, ``stu6_13`` 158/157) before this guard, on real
+        multi-person footage — which is why no unit test had ever caught it.
+
+        The second half matters as much: the same loop fed that entity's rhythm tracker twice off one
+        observation, inflating its rep tally from a single frame.
+        """
+        core = _rhythm_core()
+        hero = RhythmHero(core, "g", prior_channel="limb-vertical")
+
+        # Force the collision the graph produces in the wild: two observations, one entity id.
+        real_ingest = core.graph.ingest
+        collided: list[int] = []
+
+        def _one_entity(obs, **kw):
+            entities = real_ingest(obs, **kw)
+            if len(entities) > 1:
+                collided.append(len(entities))
+                return [entities[0]] * len(entities)  # both rows resolve to the SAME entity
+            return entities
+
+        core.graph.ingest = _one_entity
+        n = 40
+        for i in range(n):
+            # Two bodies every frame; the graph will hand both rows the same id.
+            measures = person_measures([_person(_wave(i), cx=0.3), _person(_wave(i), cx=0.7)])
+            hero.observe(i / 6.0, measures, frame=None)
+
+        self.assertTrue(collided, "the fixture never produced a two-observation frame")
+        self.assertEqual(hero.measurement.observed, n)
+        for entity_id, present in hero._present.items():
+            self.assertLessEqual(
+                present, n,
+                f"entity {entity_id!r} was folded {present} times over {n} frames — "
+                "the per-detection loop counted it more than once per frame",
+            )
+        res = hero.result()
+        self.assertLessEqual(
+            res.hero_track_coverage, 1.0,
+            "hero_track_coverage exceeded 1.0 — it is a fraction of observed frames, so a value "
+            "above 1.0 means the numerator counted a frame twice",
+        )
+
     def test_a_fully_tracked_clip_and_a_mostly_empty_one_are_told_apart(self):
         """Rewritten (BUG-A-06-01): the two clips used to report the SAME coverage float."""
         _sparse_core, sparse = self._sparse_hero()
