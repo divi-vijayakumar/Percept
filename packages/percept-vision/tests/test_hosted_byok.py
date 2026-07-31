@@ -18,6 +18,8 @@ from collections import UserDict
 
 import pytest
 
+from percept.judge_context_producers import RESERVED_CONTEXT_KEYS
+
 import percept
 from percept import (
     HOSTED_BYOK_CONTRACT_VERSION,
@@ -2610,10 +2612,9 @@ def test_fused_typed_audio_rejects_invalid_mime_metadata_or_modality_before_cons
     assert constructions == 0
 
 
-@pytest.mark.parametrize(
-    "reserved_key",
-    ["process_qa", "observe_step", "running_answer", "claim_mode", "extractor", "judge_static_context"],
-)
+# Every key the runtime owns, taken from the registry rather than restated -- a key added there must
+# be refused here, and a hand-copied list is exactly how this fell two keys behind.
+@pytest.mark.parametrize("reserved_key", sorted(RESERVED_CONTEXT_KEYS))
 def test_reserved_context_key_presence_rejects_even_false_values_before_construction(reserved_key):
     constructions = 0
 

@@ -43,6 +43,7 @@ from dataclasses import dataclass, field, fields as dataclass_fields, replace
 from types import FunctionType, MappingProxyType, MethodType
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
+from .judge_context_producers import RESERVED_CONTEXT_KEYS
 from .adapters import AudioFrame, Verdict
 from .config import Settings, load_settings
 from .contracts import Box, ClipEvent, SubjectRef
@@ -106,16 +107,14 @@ _PROVIDER_ENV_KEYS = frozenset(
         "PERCEPT_STRIP_PROMPT",
     }
 )
-_RESERVED_CONTEXT_KEYS = frozenset(
-    {
-        "process_qa",
-        "observe_step",
-        "running_answer",
-        "claim_mode",
-        "extractor",
-        "judge_static_context",
-    }
-)
+#: Context keys the RUNTIME owns. A hosted caller supplying one is refused before any adapter is
+#: constructed: these select a different request shape, carry state the caller cannot have, or bind a
+#: correction channel — none of which a per-invocation lease gets to steer.
+#:
+#: DERIVED, not restated. This was a hand-maintained list and it had fallen two keys behind the
+#: runtime (``event_chain`` and the open-episode key), so a hosted caller could pass both. Deriving it
+#: means a key added to the registry is refused here on the same commit.
+_RESERVED_CONTEXT_KEYS = RESERVED_CONTEXT_KEYS
 
 
 _ACTIVE_INVOCATION_SCOPE: contextvars.ContextVar["_InvocationTaskScope | None"] = (

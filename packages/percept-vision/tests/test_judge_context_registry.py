@@ -132,23 +132,21 @@ class TestTreatmentsSayHowAKeyIsSpoken(unittest.TestCase):
                 self.assertTrue(spec.answer_affecting)
 
 
-class TestTheHostedSeamGap(unittest.TestCase):
-    def test_hosted_byok_reserved_set_is_currently_incomplete(self):
-        """Records the live gap the registry closes, so closing it is a deliberate edit.
+class TestTheHostedSeamRefusesEveryRuntimeOwnedKey(unittest.TestCase):
+    def test_hosted_byok_reserved_set_is_the_registry(self):
+        """The hosted seam refuses exactly the keys the runtime owns — no more, no fewer.
 
-        ``percept.hosted_byok`` maintains its own reserved-key set to refuse a hosted caller that
-        supplies runtime-owned context. It omits two keys the runtime really does own, so a hosted
-        caller can pass them today. This asserts the CURRENT state; when hosted_byok derives its set
-        from the registry, this test flips to an equality assertion.
+        It used to keep its own hand-written list, and that list had fallen two keys behind: a hosted
+        caller could pass ``event_chain`` and the open-episode key, both of which the runtime owns and
+        neither of which a per-invocation lease gets to steer. Deriving the set means a key added to
+        the registry is refused here on the same commit, rather than whenever someone notices.
         """
         from percept.hosted_byok import _RESERVED_CONTEXT_KEYS as hosted
 
-        missing = RESERVED_CONTEXT_KEYS - hosted
-        self.assertEqual(
-            missing, {JUDGE_OPEN_EPISODE_KEY, "event_chain"},
-            "the hosted reserved-key gap changed; derive it from RESERVED_CONTEXT_KEYS and make "
-            "this an equality assertion",
-        )
+        self.assertEqual(hosted, RESERVED_CONTEXT_KEYS)
+        # The two that were missing, named so a regression is legible rather than a set diff.
+        self.assertIn(JUDGE_OPEN_EPISODE_KEY, hosted)
+        self.assertIn("event_chain", hosted)
 
 
 if __name__ == "__main__":  # pragma: no cover
