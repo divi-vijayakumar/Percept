@@ -197,9 +197,16 @@ client-preview/*.whl
 
 # stage-validation corpus artifacts (media-derived, rebuildable via build_corpus.py)
 eval/stage-validation/corpus.json
+# Media-derived, rebuildable from bench-staging; same rule as corpus.json above.
+eval/stage-validation/audio_corpus.json
 eval/local-benchmark/
 eval/stage-validation/long_sources/
 eval/stage-validation/long_sources.json
+
+# Long-horizon injected sources — built media + manifest, rebuildable by
+# eval/longhorizon/build_injected_source.py. The pixels come from footage that is not ours to
+# redistribute; the tool and its README stay tracked, the outputs never are.
+eval/longhorizon/sources/
 eval/stage-validation/results/_pilot.*
 eval/stage-validation/results/_smoke*.
 docs/demo/timeline-data.json
