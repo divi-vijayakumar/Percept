@@ -18,7 +18,7 @@ and the builders; it does not have the pixels.
 | L1 quality | `eval/stage-validation/corpus.v1.1.json` | ✅ 100 cases | judge arms only |
 | L1 audio | `eval/stage-validation/audio_corpus.json` | ✅ 53 cases | no |
 | L2 temporal | `eval/stage-validation/long_sources/` | ✅ 7 sources | judge arms only |
-| L3 long-horizon | `eval/longhorizon/sources/inject_2h_v1.mp4` | ✅ 120 min | judge arms only |
+| L3 long-horizon | internal tree — not in this repository | — | — |
 | L4 trust | `eval/fixtures-golden/` | ⚠️ labels only, mostly unreviewed | judge arms only |
 | bench | `eval/golden-v1/` + `eval/bench-staging/` | ✅ 25 GB | judge arms only |
 
@@ -207,61 +207,16 @@ concurrent goals.
 so scene identity never persists — no lighting drift, no diurnal cycle, no stable background, and no
 disconnects.
 
-## L3 — injected long-horizon source
+## L3 — long-horizon (internal)
 
-**119.97 min · 32 injected events · 19 distinct watches · 128 labelled intervals (541.5 s).** Clips
-with known labels spliced into a long background at seeded offsets, giving **frame-exact ground truth
-at a horizon nobody can hand-label**.
+The injected long-horizon source and the live-watch harness live in the **internal** tree, not here,
+so a fresh clone of this repository does not carry them and nothing in this file links to them.
 
-```bash
-PYTHONPATH=. python3 eval/longhorizon/build_injected_source.py \
-  --source-id inject_2h_v1 --target-s 7200 --n-inject 32 \
-  --policy jittered --min-gap-s 45 --lead-in-s 60 --seed 20260731 \
-  --background-dataset proactiveqa,omnipro \
-  --gt-strengths annotated_interval --jobs 6
-
-# verify manifest ↔ media (19 checks incl. decoded frame at every injection offset)
-PYTHONPATH=. python3 eval/longhorizon/build_injected_source.py \
-  --verify eval/longhorizon/sources/inject_2h_v1.manifest.json \
-  --verify-origins --verify-deep
-```
-
-| | |
-|---|---|
-| media | `eval/longhorizon/sources/inject_2h_v1.mp4` — 204 MB, 640×360, 15 fps, CRF 28, no audio |
-| manifest | `…/inject_2h_v1.manifest.json` — 104 KB |
-| structure | 89 segments (57 background); 825 s injected, 6,373 s **unlabelled** background |
-| spread | first event @200 s, last @7107 s; inter-event gap median 195 s, max 313 s |
-| honesty | 0 collisions, 0 positives dropped, 1 clipped, max schedule drift 2.0 s |
-| licence | **`redistributable: false`** — AND over every contributor incl. background |
-
-**Determinism confirmed empirically** — two independent full rebuilds produced an identical media
-sha256. `--require-redistributable` refuses to write at all when any contributor is non-clearable.
-
-Ground truth is tier-pure here (**all 128 intervals `annotated_interval`**), and the manifest keys
-watches on `(goal_text, gt_strength)` so a scorer *structurally cannot* merge tiers. Background
-segments carry `gt: "none"` — **unlabelled, not negative**.
-
-**Proves:** re-arm across a 2-hour horizon with minutes of idle between occurrences; episode-window
-and refractory behaviour past any short clip; recall and latency against frame-exact GT at that
-horizon; and every label-free invariant (RSS, ledger reconciliation, restart continuity, judge calls
-and cost per source-hour).
-
-**Never proves — and these are active limitations, not gaps:**
-
-- **Not continuous footage.** A hard cut at each of 89 segment boundaries, including within the
-  background. No lighting drift, no diurnal cycle, no IR cutover.
-- **Scene identity is broken by construction.** Camera, room, people and framing change at every cut,
-  so long-horizon re-identification and entity-track longevity are *actively defeated*, not merely
-  unmeasured.
-- **No precision, no false-positive rate, no F1.** Background is unlabelled, so a fire outside an
-  injected interval is **not** evidence of a false positive. The manifest flags 7 goals by lexical
-  overlap where that risk is highest.
-- **No wall clock**, so `anchor_semantics: "none"` — schedule-derived ground truth (sunrise, transit,
-  timed lighting) is invalid on this source. No audio.
-
-This is what you build *because* you have not recorded 72 hours yet — and keep afterwards, because it
-stays the only frame-exact ground truth at that horizon.
+What they are, for orientation: known-labelled clips spliced into a long background at seeded
+offsets, giving frame-exact ground truth at a horizon nobody can hand-label — 120 minutes against
+the 81.6-minute maximum of `long_sources/` above. Ground truth is carried in three strengths that
+are never averaged, and background segments are marked unlabelled rather than negative, so a fire
+outside an injected interval is **not** evidence of a false positive.
 
 ## L4 — trust / gate cases
 
