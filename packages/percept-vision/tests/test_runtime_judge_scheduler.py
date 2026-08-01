@@ -290,10 +290,19 @@ class PendingRevisionDropTests(unittest.TestCase):
         self.assertEqual(stats.judge_revision_dropped, 1, "the stale pending candidate must be dropped")
         self.assertNotIn("f2", vision.judged, "old evidence must not be judged under the new plan")
         self.assertIn("f3", vision.judged, "the NEXT frame judges under the new revision")
-        self.assertEqual(stats.judge_calls, 2)  # f1 + f3; f2 never spent a call
+        # judge_calls is per (FRAME x GOAL) reaching the provider, not per admitted frame — the unit
+        # RuntimeStats declares for it (FIND-TIERZERO-03). f1 is judged under one goal and f3 under
+        # two (`g2` was added between them), so the provider is asked three times and this reads 3.
+        # Asserted against the provider seam rather than a literal, so it cannot drift from what was
+        # actually spent: `vision.judged` is appended once per `judge()` invocation.
+        self.assertEqual(vision.judged, ["f1", "f3", "f3"])
+        self.assertEqual(stats.judge_calls, len(vision.judged))  # f2 never spent a call
+        # The budget invariant, in the units it actually holds: `judge_calls` and `goal_admissions`
+        # are both (frame x goal), and the ONE revision-dropped batch was a single-goal batch, so
+        # every admitted (frame x goal) either spent a call or was dropped before it could.
         self.assertEqual(
             stats.judge_calls + stats.judge_superseded + stats.judge_revision_dropped,
-            stats.escalations,
+            stats.goal_admissions,
         )
 
     def test_revision_dropped_pending_is_traced_with_reason(self):

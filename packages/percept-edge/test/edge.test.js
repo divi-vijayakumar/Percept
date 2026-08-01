@@ -82,7 +82,10 @@ describe("Edge — WatchSpec down / Tier0Signal up wired loop", () => {
     expect(signals).toHaveLength(0);
   });
 
-  it("falls back to defaultThreshold when no WatchSpec / no conditions", () => {
+  it("falls back to defaultThreshold when no WatchSpec has ever been applied", () => {
+    // RETITLED: "/ no conditions" was in this name and is no longer true — an APPLIED spec carrying
+    // zero conditions never escalates now (see the FIND-PARITY-03 suite below). Only the
+    // never-configured edge keeps the fallback, which is the case this test actually drives.
     const { edge, signals } = makeEdge();
     // no applyWatchSpec at all -> defaultThreshold 0.05
     expect(edge.activeThreshold).toBeCloseTo(0.05, 10);
@@ -443,13 +446,14 @@ describe("Edge — salience modes (per-condition) + energy on the signal", () =>
     }
   });
 
-  it("a DEGENERATE region_hint is a permanent never-fire — 0 escalations against the control's 1", () => {
-    // Reported as the generalization of BUG-G-04-02 and NOT closed by this change: `parseBox`
-    // validates finiteness but not area, the Python `Box` dataclass validates neither, and a
-    // zero-extent box masks the whole frame away. A WatchSpec carrying `{x:0,y:0,w:0,h:1}` is
-    // accepted by both runtimes, is indistinguishable from a working one at admission, and can
-    // never escalate on ANY frame at ANY threshold. Frozen here so the behaviour is at least
-    // documented and a future decision to reject it shows up as a deliberate change.
+  it("a DEGENERATE region_hint is REFUSED at applyWatchSpec, not silently deployed (FIND-PARITY-01)", () => {
+    // REWRITTEN. This test used to assert that a WatchSpec carrying `{x:0,y:0,w:0,h:1}` is accepted
+    // and then escalates 0 times — "frozen here so the behaviour is at least documented and a future
+    // decision to reject it shows up as a deliberate change". This is that change. A permanent
+    // never-fire that is indistinguishable from a working watch is not a behaviour to freeze: the
+    // same authored zone admitted EVERY frame in the Python harness (the bounds truncate the origin
+    // and round the far bound, so a zero-extent zone can still be one real pixel column wide) and no
+    // frame here. The spec is now refused at the door instead of deployed deaf.
     const still = makeFrame(32, 32, 0);
     const moved = makeFrame(32, 32, 255);
     const withRegion = (region_hint) => ({
@@ -458,15 +462,114 @@ describe("Edge — salience modes (per-condition) + energy on the signal", () =>
     });
 
     const degenerate = makeEdge();
-    degenerate.edge.applyWatchSpec(withRegion({ x: 0, y: 0, w: 0, h: 1 }));
-    degenerate.edge.processFrame(still);
-    degenerate.edge.processFrame(moved);
-    expect(degenerate.signals).toHaveLength(0);
+    expect(() => degenerate.edge.applyWatchSpec(withRegion({ x: 0, y: 0, w: 0, h: 1 }))).toThrow(
+      /w and h must be > 0/
+    );
+    // The FIND-PARITY-01 zone itself — the one whose bounds do NOT collapse — is refused by the same
+    // rule, so the runtimes can no longer be handed a goal they answer differently.
+    expect(() => degenerate.edge.applyWatchSpec(withRegion({ x: 0.1, y: 0.1, w: 0, h: 0.5 }))).toThrow(
+      /w and h must be > 0/
+    );
+    // A refused spec is not installed: the edge is left exactly as it was, not half-configured.
+    expect(degenerate.edge.watchSpec).toBeNull();
 
     const control = makeEdge();
     control.edge.applyWatchSpec(withRegion({ x: 0, y: 0, w: 1, h: 1 }));
     control.edge.processFrame(still);
     control.edge.processFrame(moved);
     expect(control.signals).toHaveLength(1);
+  });
+});
+
+describe("Edge — the two runtimes must admit the same frames (FIND-PARITY-02 / -03)", () => {
+  // A 24x18 alternating-luma clip: every second frame is a total flip, so motion is 1.0 on frames
+  // 1..5 and the ONLY thing that can suppress an admission is a cadence brake. These are the JS half
+  // of the cross-runtime vectors in `parity/compare.py` (GATE_CASES) — pinned here too so a fork
+  // fails the unit suite as well as the release gate.
+  const alternating = [];
+  for (let i = 0; i < 6; i++) alternating.push(makeFrame(24, 18, i % 2 === 0 ? 0 : 255));
+
+  function marksFor(spec, { frames = alternating, apply = true } = {}) {
+    const signals = [];
+    let cursor = 0;
+    const edge = new Edge({ onSignal: (s) => signals.push(s), clock: () => cursor });
+    if (apply) edge.applyWatchSpec(spec);
+    let marks = "";
+    for (cursor = 0; cursor < frames.length; cursor++) {
+      marks += edge.processFrame(frames[cursor]) ? "1" : ".";
+    }
+    return { marks, edge, signals };
+  }
+
+  const goal = (goal_id, extra = {}) => ({
+    goal_id, anchor_text: "a hand", threshold: 0.2, cadence_s: 2.0, ...extra,
+  });
+
+  it("every goal that fires gets its cadence brake stamped, not just the first", () => {
+    // The defect: `_shouldEscalate` returned on the first firing condition, so the second goal's
+    // `_lastEscalate` stayed at -Infinity and it admitted again on the very next frame — inside the
+    // cadence window the deployment authored. Python `MotionGate.evaluate` stamps every goal that
+    // fired, and measured `.1.1.1` where the edge measured `.11111`.
+    const two = marksFor({ version: 1, conditions: [goal("first"), goal("second", { anchor_text: "a cup" })] });
+    expect(two.marks).toBe(".1.1.1");
+    // The control that rules out a threshold/salience explanation: ONE goal on the same cadence over
+    // the same clip admits the same frames. Two goals must not cost more than one.
+    const one = marksFor({ version: 1, conditions: [goal("only")] });
+    expect(one.marks).toBe(".1.1.1");
+    // ...and the stamp is per goal, both of them, at the frame each last fired.
+    expect(two.edge._lastEscalate.get("first")).toBe(5);
+    expect(two.edge._lastEscalate.get("second")).toBe(5);
+  });
+
+  it("three goals sharing a window are all braked — the accumulation is not two-deep", () => {
+    const three = marksFor({
+      version: 1,
+      conditions: [goal("a"), goal("b"), goal("c")],
+    });
+    expect(three.marks).toBe(".1.1.1");
+    for (const id of ["a", "b", "c"]) expect(three.edge._lastEscalate.get(id)).toBe(5);
+  });
+
+  it("a goal below its threshold does not get a brake stamped by a goal that fired", () => {
+    // The accumulating loop must not become "stamp everything once anything fires": only conditions
+    // that actually cleared their own bar are braked. `deaf` can never fire (threshold 1.5), so it
+    // must never appear in the throttle map.
+    const mixed = marksFor({
+      version: 1,
+      conditions: [goal("loud"), goal("deaf", { threshold: 1.5 })],
+    });
+    expect(mixed.marks).toBe(".1.1.1");
+    expect(mixed.edge._lastEscalate.has("deaf")).toBe(false);
+  });
+
+  it("an APPLIED spec with no conditions never escalates — the last watch was cancelled", () => {
+    // The defect: an empty applied spec fell through to `salience >= defaultThreshold`, so the
+    // device kept clearing 0.05 on ordinary motion and kept handing frames to the publisher for a
+    // watch nobody has. Python's gate has always answered this input with "nothing to look for".
+    const cancelled = marksFor({ version: 1, conditions: [] });
+    expect(cancelled.marks).toBe("......");
+    expect(cancelled.signals).toHaveLength(0);
+    expect(cancelled.edge.activeThreshold).toBe(Infinity);
+  });
+
+  it("...but an edge that was NEVER given a spec keeps the motion-only fallback", () => {
+    // The two states are not the same state, and only one of them changed. A bare `new Edge()` has
+    // no instruction, so it still gates on defaultThreshold.
+    const bare = marksFor(null, { apply: false });
+    expect(bare.marks).toBe(".11111");
+    expect(bare.edge.activeThreshold).toBeCloseTo(0.05, 10);
+    // The distinction is reachable from the same edge: cancel everything and it goes quiet.
+    bare.edge.applyWatchSpec({ version: 1, conditions: [] });
+    expect(bare.edge.processFrame(alternating[0])).toBeNull();
+  });
+
+  it("a publisher is not invoked for a cancelled watch (the privacy consequence)", () => {
+    const published = [];
+    let cursor = 0;
+    const edge = new Edge({ clock: () => cursor });
+    edge.setPublisher((frame, signal) => published.push(signal.ts));
+    edge.applyWatchSpec({ version: 1, conditions: [] });
+    for (cursor = 0; cursor < alternating.length; cursor++) edge.processFrame(alternating[cursor]);
+    expect(published).toHaveLength(0);
   });
 });

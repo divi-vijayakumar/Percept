@@ -132,13 +132,35 @@ class RefractorySuppressesReFireTests(unittest.TestCase):
         self.assertEqual(g2.evaluate(key, NO, now=3.0), SILENT)
         self.assertEqual(g2.evaluate(key, YES, now=6.0), FIRE)    # 6s since original fire -> clears
 
-    def test_rearm_clears_refractory_memory(self):
-        """An explicit rearm (e.g. a correction, or a time-bucket rollover) is a fresh episode boundary —
-        it must not leave a stale refractory stamp behind."""
+    def test_rearm_does_not_clear_refractory_memory(self):
+        """INVERTED by finding restart-03. ``rearm`` used to clear ``last_fire`` on the rationale that
+        "an explicit rearm is a fresh episode boundary", and that made the knob inert in exactly the
+        case it was bought for: a confident-false blip is BOTH the thing the refractory absorbs and
+        the thing that closes an episode, so the episode fold re-armed on the blip and erased the
+        stamp before it could suppress anything. The two shipped docstrings could not both be true;
+        ``Gate.decide``'s is the one that survives — "a genuine SECOND episode still fires once
+        refractory_s HAS ELAPSED since the last fire; only fires closer together than that are
+        suppressed". A rearm asserts the edge may fire again; it is not testimony that the previous
+        fire did not happen, and only a real fire moves ``last_fire``."""
         g = Gate(refractory_s=100.0)
         self.assertEqual(g.evaluate("k", YES, now=0.0), FIRE)
         g.rearm("k")
-        self.assertEqual(g.evaluate("k", YES, now=1.0), FIRE)  # would be suppressed but rearm cleared it
+        out = g.decide("k", YES, now=1.0)
+        self.assertEqual((out.action, out.reason), (SILENT, "refractory"))
+        self.assertTrue(out.suppressed, "and it is announced, not a silent non-event")
+        # The window still ELAPSES — this is a delay, not a permanent latch. The identical rearm
+        # call, once refractory_s has really passed since the last REAL fire, fires.
+        g.rearm("k")
+        self.assertEqual(g.evaluate("k", YES, now=101.0), FIRE)
+
+    def test_reset_goal_still_clears_refractory_memory(self):
+        """The other half, unchanged and now load-bearing: ``reset_goal`` DROPS the key. A caller
+        asking for the key to be forgotten gets it forgotten, stamp and all — which is the escape
+        hatch for a genuinely fresh start that ``rearm`` deliberately no longer is."""
+        g = Gate(refractory_s=100.0)
+        self.assertEqual(g.evaluate(("goal-a", "e1"), YES, now=0.0), FIRE)
+        g.reset_goal("goal-a")
+        self.assertEqual(g.evaluate(("goal-a", "e1"), YES, now=1.0), FIRE)
 
     def test_reset_goal_clears_refractory_memory(self):
         g = Gate(refractory_s=100.0)
@@ -150,7 +172,7 @@ class RefractorySuppressesReFireTests(unittest.TestCase):
 class RefractoryBoundaryTests(unittest.TestCase):
     """§4.1 Refractory / "Exactly at the boundary".
 
-    ``gate.py:597`` is ``(now - last_fire) < effective_refractory`` — a **strict** ``<``. So the
+    ``gate.py:635`` is ``(now - last_fire) < effective_refractory`` — a **strict** ``<``. So the
     inclusive side of the window is the FIRING side: at ``delta == refractory_s`` the fire is not
     suppressed. Nothing pinned that before, and an off-by-epsilon (``<=``) flips a real second
     episode landing exactly on the boundary into silence — the "real event delivered as none"

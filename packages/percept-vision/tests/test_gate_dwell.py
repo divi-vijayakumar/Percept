@@ -61,8 +61,8 @@ class GateDwellTests(unittest.TestCase):
 class RestartMidDwellTests(unittest.TestCase):
     """Restart while a dwell is in flight — `restore()` drops `_dwell_since` ON PURPOSE.
 
-    `snapshot()` carries the in-progress dwell "for inspection but is NOT restored" (gate.py:723-725);
-    `restore()` hard-resets both dwell fields (gate.py:767-768) because the pre-restart start stamp sits
+    `snapshot()` carries the in-progress dwell "for inspection but is NOT restored" (gate.py:821-823);
+    `restore()` hard-resets both dwell fields (gate.py:865-866) because the pre-restart start stamp sits
     on a timeline the new process has no anchor to rebase from. The consequence — the one a user
     actually feels — is that a restart mid-dwell costs the accumulated time: the dwell restarts from
     zero, and a full fresh `hold_s` must elapse before anything fires. These tests pin that in both
@@ -121,7 +121,7 @@ class RestartMidDwellTests(unittest.TestCase):
         self.assertEqual(after._last_fire, before._last_fire)
 
     def test_a_purely_pending_key_has_no_armed_entry_and_restores_armed(self):
-        # The dwell branches (gate.py:607-632) never write `armed`, so a key that has only ever been
+        # The dwell branches (gate.py:645-670) never write `armed`, so a key that has only ever been
         # dwell_pending is absent from the armed map — and absent from the snapshot's armed list.
         before, after, snap = self._restored()
         self.assertNotIn(self.PENDING, before._armed)

@@ -54,15 +54,34 @@ per call" is dimensionally broken. The only defensible form needs an EXPLICIT de
 With zero judge calls there is no measured mean, so ``estimated_saved_tokens`` is ``None`` — the
 renderer shows ``—``. It is never back-filled from a guess.
 
-``judge.started``/``judge.finished`` fire on EVERY tick that reaches the judge funnel, including a
-CONFIDENT :class:`~percept.direct_judge.DirectJudge` hit — it spends zero vision calls (the gate
-still classifies its substituted verdict, so the tick is real), but it is not an ACTUAL judge call.
-Counting it as one over-counts ``actual_judge_calls`` and, through the identity above, silently
-UNDER-reports ``estimated_saved_calls`` — a real saving reported as smaller than it is, not fabricated
-but pessimistic. ``judge_direct_hits`` (folded from ``judge.finished``'s ``data["direct"]`` — see
-:data:`STAGE_JUDGE_FINISHED`) is subtracted back out so the identity stays honest. No emitter sets
-that flag today, so ``judge_direct_hits`` is ``0`` and every existing trace is byte-for-byte
-unchanged; the moment one does, the savings identity is already correct for it.
+``judge.started``/``judge.finished`` fire on EVERY tick that reaches the judge funnel, including
+ticks that reached a verdict WITHOUT spending a provider call. The gate still classifies the
+substituted verdict, so the tick is real and belongs in the funnel — but it is not an ACTUAL judge
+call. Counting it as one over-counts ``actual_judge_calls`` and, through the identity above,
+silently UNDER-reports ``estimated_saved_calls``: a real saving reported as smaller than it is, and
+the error GROWS with the hit rate the mechanism exists to raise.
+
+Two such paths exist on the watch lane and they share ONE marker, :data:`JUDGE_SERVED_KEY` on
+``judge.finished`` (:data:`STAGE_JUDGE_FINISHED`), with :data:`JUDGE_SERVED_FROM_KEY` naming which
+one served the tick:
+
+* ``"direct"`` — a confident :class:`~percept.direct_judge.DirectJudge` substitution.
+* ``"cache"`` — a perception-cache HIT (``percept.agent``: the cached verdict is returned and the
+  vision adapter is never touched; the runtime's own completion carries ``provider_spent=False``).
+
+Both the inline (``perceive_judged``) and the split/async reducer emit it, so the two dispatch modes
+report the SAME funnel. The FUSED reducer does not yet: an incomplete fused bundle reaches a verdict
+through ``complete_fused_locally`` — no provider call — and its ``judge.finished`` row carries no
+marker, so a fused run still counts those ticks as spend. That is a known, un-filed gap, not a
+mechanism this module lacks: marking it is a one-line change at that emitter and every reader below
+picks it up unchanged.
+
+:func:`judge_call_was_served` is the ONE predicate every reader uses — do not re-derive it. It also
+honours the legacy boolean ``data["direct"]`` so a trace written before the marker was generalised
+still reads correctly. ``judge_direct_hits`` counts every served tick and is subtracted back out so
+the identity stays honest; ``judge_cache_hits`` is the cache's own share of it, carried separately
+so the cache's contribution is visible in the number that is supposed to measure it. An unmarked
+trace folds to ``0`` on both and is byte-for-byte unchanged.
 """
 
 from __future__ import annotations
@@ -88,11 +107,13 @@ STAGE_EDGE_DECISION = "edge.decision"      # EVERY frame: tier-0 motion/structur
 STAGE_SOURCE_FRAME = "source.frame"        # a frame ADMITTED into perceive_judged
 STAGE_SOURCE_AUDIO = "source.audio"        # exact retained AudioUnit tuple admitted to the judge
 STAGE_JUDGE_STARTED = "judge.started"
-STAGE_JUDGE_FINISHED = "judge.finished"           # ``data["direct"]=True`` marks a CONFIDENT
-#: DirectJudge hit (percept.direct_judge): the gate still ran, so the tick belongs in the funnel,
-#: but zero vision calls were spent — it must not count as an ACTUAL judge call (see
-#: :class:`TraceSummary` rule 4 and :attr:`TraceSummary.judge_direct_hits`). Absent/false is the
-#: default and byte-for-byte matches every emitter that doesn't know about direct routing yet.
+STAGE_JUDGE_FINISHED = "judge.finished"           # ``data["served"]=True`` marks a verdict reached
+#: WITHOUT spending a provider call: the gate still ran, so the tick belongs in the funnel, but zero
+#: vision calls were spent — it must not count as an ACTUAL judge call, and it must not enter a
+#: provider-latency population (see :class:`TraceSummary` rule 4,
+#: :attr:`TraceSummary.judge_direct_hits` and :func:`percept.slo.judge_provider_spans`).
+#: ``data["served_from"]`` names WHICH zero-cost path served it — ``"cache"`` or ``"direct"``.
+#: Absent/false is the default and byte-for-byte matches every emitter that spends a real call.
 STAGE_JUDGE_DEGRADED = "judge.degraded"
 STAGE_GATE_CLASSIFIED = "gate.classified"  # truth/action/reason
 STAGE_INCIDENT_CREATED = "incident.created"
@@ -190,6 +211,52 @@ TRACE_STAGES: tuple[str, ...] = (
     STAGE_RUN_ENDED,
 )
 
+#: The ``judge.finished`` ``data`` key that marks a tick which reached a verdict WITHOUT spending a
+#: provider call. ONE marker for both zero-cost paths — a perception-cache serve and a confident
+#: DirectJudge substitution — so a reader never has to know which mechanisms exist.
+JUDGE_SERVED_KEY = "served"
+
+#: Companion to :data:`JUDGE_SERVED_KEY`: which zero-cost path served the tick.
+JUDGE_SERVED_FROM_KEY = "served_from"
+
+#: The closed vocabulary of :data:`JUDGE_SERVED_FROM_KEY` values.
+JUDGE_SERVED_FROM: tuple[str, ...] = ("cache", "direct", "fused_local")
+
+#: The pre-generalisation boolean, kept readable forever: a trace written when ``direct`` was the
+#: only zero-cost marker must still fold correctly. New emitters set :data:`JUDGE_SERVED_KEY`.
+LEGACY_JUDGE_SERVED_KEY = "direct"
+
+
+def judge_call_was_served(data: Mapping[str, Any] | None) -> bool:
+    """Did this ``judge.finished`` record reach its verdict WITHOUT spending a provider call?
+
+    The ONE predicate for the zero-spend marker — the savings identity (:class:`TraceSummary`),
+    the recount fold (:class:`_Aggregate`) and the provider-latency population
+    (:func:`percept.slo.judge_provider_spans`) all read it, and none of them re-derives it. Three
+    readers agreeing by accident is how the funnel came to count its own cache hits as spend.
+
+    Unmarked records — every emitter that spent a real call — read ``False``, so an existing trace
+    is byte-for-byte unchanged.
+    """
+    if not data:
+        return False
+    return bool(data.get(JUDGE_SERVED_KEY) or data.get(LEGACY_JUDGE_SERVED_KEY))
+
+
+def judge_served_from(data: Mapping[str, Any] | None) -> str | None:
+    """Which zero-cost path served this record — ``"cache"``, ``"direct"``, or ``None``.
+
+    A record carrying only the legacy boolean reads ``"direct"``: that is the one thing that flag
+    could ever have meant.
+    """
+    if not data or not judge_call_was_served(data):
+        return None
+    named = data.get(JUDGE_SERVED_FROM_KEY)
+    if isinstance(named, str) and named:
+        return named
+    return "direct" if data.get(LEGACY_JUDGE_SERVED_KEY) else None
+
+
 #: The stage that means "the runtime OBSERVED one unit of evidence" (a frame reached the tier-0
 #: gate). ``edge.decision`` fires for every frame, escalated or not — that is what makes "why was it
 #: silent" answerable.
@@ -201,6 +268,15 @@ OBSERVATION_STAGE = STAGE_EDGE_DECISION
 #: ``edge.decision`` at all falls back to counting admissions as observations (see
 #: :meth:`TraceSummary._observed_fallback`).
 ADMISSION_STAGE = STAGE_SOURCE_FRAME
+
+#: EVERY stage that admits one unit of evidence, ONE per modality. ``source.audio`` is the audio
+#: lane's exact twin of ``source.frame`` — one record per AudioUnit that reached the judge, none for
+#: a chunk under the acoustic wake bar — and folding it nowhere is what made an audio run report
+#: ``observed=0 / admitted=0`` while judging every utterance, with the dispatch step's ``dropped``
+#: going NEGATIVE (a value :class:`percept.eval.stage_attribution.FunnelStep` documents as something
+#: a well-formed trace cannot produce). Deduped on ``trace_id`` like any admission, so a fused tick
+#: that emits both stages under one id is still ONE admitted unit.
+ADMISSION_STAGES: tuple[str, ...] = (STAGE_SOURCE_FRAME, STAGE_SOURCE_AUDIO)
 
 #: Health-event kinds that OPEN an unhealthy interval (degrade-loud: latched until a recovery).
 DEGRADED_HEALTH_KINDS: frozenset[str] = frozenset({
@@ -914,10 +990,13 @@ class TraceSummary:
 
     Three definitions worth stating out loud:
 
-    - ``judge_completed`` counts every tick that reached a verdict — a real vision call OR a
-      confident :class:`~percept.direct_judge.DirectJudge` hit that substituted for one.
-      ``judge_direct_hits`` is the subset that spent ZERO vision calls; ``estimated_saved_calls``
-      subtracts it back out (see module rule 4) so a direct hit is never counted as spend.
+    - ``judge_completed`` counts every tick that reached a verdict — a real vision call, a
+      perception-cache serve, or a confident :class:`~percept.direct_judge.DirectJudge` hit that
+      substituted for one. ``judge_direct_hits`` is the subset that spent ZERO provider calls
+      (BOTH zero-cost paths, read through :func:`judge_call_was_served`); ``estimated_saved_calls``
+      subtracts it back out (see module rule 4) so a served verdict is never counted as spend.
+      ``judge_cache_hits`` is the cache's own share of that subset — carried separately so the
+      benefit of the cache is legible in the funnel rather than hidden inside its cost.
     - ``admitted`` carries BOTH a count and ``admitted_evidence_union_s`` — the union of the
       evidence windows those admissions covered. The count times a nominal interval is *not* a
       duration and is not reported here.
@@ -944,6 +1023,7 @@ class TraceSummary:
     judge_started: int = 0
     judge_completed: int = 0
     judge_direct_hits: int = 0
+    judge_cache_hits: int = 0
     judge_degraded: int = 0
     judge_dropped: int = 0
     judge_superseded: int = 0
@@ -985,8 +1065,33 @@ class TraceSummary:
         aggregates (folded for every ingested record, whatever the retention level). When they are
         omitted — deriving from a trace file, where only retained records survive — the funnel is
         recounted from ``records``, which is exact at ``level="full"`` and a floor otherwise.
+
+        They are ONE measurement of ONE run and are supplied **together or not at all**. A PARTIAL
+        supply raises :class:`ValueError` naming ``counters`` as the required companion, because the
+        recount rebinds all four: silently discarding a caller's own metering answered a measured
+        question with "unknown" and left ``cost_usd`` ``None``, indistinguishable from a genuinely
+        unpriceable run. That is the no-false-zeros rule below in a quieter register — refusing is
+        the only option that does not produce a wrong-looking answer with no signal. A caller that
+        has usage but not counters should meter through :meth:`TraceRecorder.record_usage` so the
+        ``judge.usage`` records are in the trace and the recount can see them.
         """
         if counters is None:
+            partial = [
+                name
+                for name, value in (
+                    ("usage", usage),
+                    ("evidence_windows", evidence_windows),
+                    ("unhealthy_s", unhealthy_s),
+                )
+                if value
+            ]
+            if partial:
+                raise ValueError(
+                    "TraceSummary.derive recounts every aggregate from `records` when `counters` is "
+                    f"omitted, so {', '.join(partial)} would be silently discarded. Pass `counters=` "
+                    "alongside them (they are one measurement of one run), or meter through "
+                    "TraceRecorder.record_usage so the judge.usage records are in the trace."
+                )
             counters, usage, evidence_windows, unhealthy_s, span_s = _recount(records, manifest)
             if watch_duration_s is None:
                 watch_duration_s = span_s
@@ -998,11 +1103,13 @@ class TraceSummary:
         if observed == 0:  # a direct perceive_judged() driver never emits edge.decision
             observed = admitted
         judge_completed = int(c.get("judge_completed", 0))
-        # A confident DirectJudge hit fires judge.started/judge.finished too (the tick is real, the
-        # gate still classifies it) but spends ZERO vision calls — counting it as an ACTUAL judge
-        # call over-counts spend and, through the savings identity below, silently UNDER-reports
-        # estimated_saved_calls. Subtract it back out so a direct hit is never mistaken for spend.
+        # A perception-cache serve and a confident DirectJudge hit both fire judge.started/
+        # judge.finished (the tick is real, the gate still classifies it) while spending ZERO
+        # provider calls — counting either as an ACTUAL judge call over-counts spend and, through
+        # the savings identity below, silently UNDER-reports estimated_saved_calls by the same
+        # amount. Subtract them back out so a served verdict is never mistaken for spend.
         judge_direct_hits = int(c.get("judge_direct_hits", 0))
+        judge_cache_hits = int(c.get("judge_cache_hits", 0))
 
         if watch_duration_s is None:
             watch_duration_s = 0.0
@@ -1053,6 +1160,7 @@ class TraceSummary:
             judge_started=int(c.get("judge_started", 0)),
             judge_completed=judge_completed,
             judge_direct_hits=judge_direct_hits,
+            judge_cache_hits=judge_cache_hits,
             judge_degraded=int(c.get("judge_degraded", 0)),
             judge_dropped=int(c.get("judge_dropped", 0)),
             judge_superseded=int(c.get("judge_superseded", 0)),
@@ -1127,6 +1235,7 @@ class TraceSummary:
             "judge_started": self.judge_started,
             "judge_completed": self.judge_completed,
             "judge_direct_hits": self.judge_direct_hits,
+            "judge_cache_hits": self.judge_cache_hits,
             "judge_degraded": self.judge_degraded,
             "judge_dropped": self.judge_dropped,
             "judge_superseded": self.judge_superseded,
@@ -1227,7 +1336,7 @@ class _Aggregate:
             if r.trace_id not in self._seen_observed:  # one unit of evidence, however many records
                 self._seen_observed.add(r.trace_id)
                 self.counters["observed"] += 1
-        elif stage == ADMISSION_STAGE:
+        elif stage in ADMISSION_STAGES:  # one per modality — source.frame AND source.audio
             if r.trace_id not in self._seen_admitted:
                 self._seen_admitted.add(r.trace_id)
                 self.counters["admitted"] += 1
@@ -1236,8 +1345,10 @@ class _Aggregate:
             self.counters["judge_started"] += 1
         elif stage == STAGE_JUDGE_FINISHED:
             self.counters["judge_completed"] += 1
-            if r.data.get("direct"):  # a confident DirectJudge hit — zero vision calls spent
+            if judge_call_was_served(r.data):  # reached a verdict, spent no provider call
                 self.counters["judge_direct_hits"] += 1
+                if judge_served_from(r.data) == "cache":
+                    self.counters["judge_cache_hits"] += 1
         elif stage == STAGE_JUDGE_DEGRADED:
             self.counters["judge_degraded"] += 1
         elif stage == STAGE_JUDGE_DROPPED:
@@ -1272,9 +1383,40 @@ class _Aggregate:
         b = r.data.get("window_end_s")
         if isinstance(a, (int, float)) and isinstance(b, (int, float)):
             return (float(a), float(b))
+        if r.stage == STAGE_SOURCE_AUDIO:
+            audio = self._audio_window(r)
+            if audio is not None:
+                return audio
         ts = float(r.source_ts or 0.0)
         w = float(r.data.get("evidence_window_s", self._m.evidence_window_s) or 0.0)
         return (ts - w, ts) if w > 0 else (ts, ts)
+
+    @staticmethod
+    def _audio_window(r: TraceRecord) -> tuple[float, float] | None:
+        """An admitted audio unit's window, read from the boundaries the record already DECLARES.
+
+        ``source.audio`` carries ``provider_payloads[goal_id]["t_start"/"t_end"]`` — the exact span
+        of the payload handed to the provider. Reading them is a measurement, not an invention: the
+        audio lane emits no ``evidence_window_s``, so without this every admitted utterance was an
+        INSTANT and ``admitted_evidence_union_s`` read ``0.0`` on a run that judged minutes of
+        speech. ``None`` when the record declares nothing usable — the nominal fallback then
+        applies, unchanged.
+        """
+        payloads = r.data.get("provider_payloads")
+        if not isinstance(payloads, Mapping):
+            return None
+        starts: list[float] = []
+        ends: list[float] = []
+        for payload in payloads.values():
+            if not isinstance(payload, Mapping):
+                continue
+            a, b = payload.get("t_start"), payload.get("t_end")
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+                starts.append(float(a))
+                ends.append(float(b))
+        if not starts:
+            return None
+        return (min(starts), max(ends))
 
     def _fold_health(self, r: TraceRecord) -> None:
         state = str(r.data.get("state", ""))
@@ -1768,6 +1910,7 @@ def load_trace(payload: Mapping[str, Any] | str) -> tuple[RunTraceManifest, list
             judge_started=int(s.get("judge_started", 0)),
             judge_completed=int(s.get("judge_completed", 0)),
             judge_direct_hits=int(s.get("judge_direct_hits", 0)),
+            judge_cache_hits=int(s.get("judge_cache_hits", 0)),
             judge_degraded=int(s.get("judge_degraded", 0)),
             judge_dropped=int(s.get("judge_dropped", 0)),
             judge_superseded=int(s.get("judge_superseded", 0)),
@@ -1800,6 +1943,13 @@ __all__ = [
     "GATE_OUTCOMES",
     "OBSERVATION_STAGE",
     "ADMISSION_STAGE",
+    "ADMISSION_STAGES",
+    "JUDGE_SERVED_KEY",
+    "JUDGE_SERVED_FROM_KEY",
+    "JUDGE_SERVED_FROM",
+    "LEGACY_JUDGE_SERVED_KEY",
+    "judge_call_was_served",
+    "judge_served_from",
     "DEGRADED_HEALTH_KINDS",
     "RECOVERED_HEALTH_KINDS",
     "JUDGE_DROP_HEALTH_KINDS",

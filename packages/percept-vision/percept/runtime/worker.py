@@ -268,7 +268,12 @@ class RuntimeStats:
     # overload an admitted frame may be replaced before its judge launches (superseded) or discarded
     # because goals changed after admission (revision_dropped). The honest budget invariant is
     # Absent a source discontinuity, ``judge_calls + judge_superseded +
-    # judge_revision_dropped == admitted escalations`` once drained. A discontinuity additionally
+    # judge_revision_dropped == admitted escalations`` once drained — IN (FRAME x GOAL) UNITS on the
+    # left and frame units on the right, so it reduces to an equality only on a single-goal watch.
+    # On a G-goal watch each admitted frame contributes G to `judge_calls` and 1 to `escalations`,
+    # exactly as `goal_admissions` does; a supersession/revision drop discards a whole batch, so the
+    # honest general form is ``judge_calls + G x (judge_superseded + judge_revision_dropped) ==
+    # goal_admissions``. A discontinuity additionally
     # reports active/pending drops below; an active drop already spent a judge call, while a pending
     # drop did not, so the split is retained rather than hiding that distinction.
     # Observation (detection) lane accounting, the twin of judge_superseded below: the observation
@@ -311,8 +316,18 @@ class RuntimeStats:
     # Two denominators, deliberately: `escalations` answers "how many frames did the eye buy?" and
     # this block answers "which goal, and on what evidence, did the buying?". Read one for the other
     # and a 73-goal run looks like it escalated 73x the frames it did. `judge_calls` is per JUDGE
-    # CALL — i.e. per (frame x goal) that reached a provider — so it is the one comparable to
+    # CALL — i.e. per (frame x goal) DISPATCHED to a provider seam — so it is the one comparable to
     # `goal_admissions`, never to `escalations`.
+    #
+    # It is counted at LAUNCH, which is what makes it identical across dispatch modes (a superseded
+    # or revision-dropped candidate never launched and never spent). The one thing launch cannot
+    # know is whether the seam went on to serve the verdict from the perception cache instead of
+    # calling the model: only the COMPLETION carries `provider_spent`, and by then the async
+    # scheduler has moved on. So a cache-served dispatch is counted here. The TRACE is where served
+    # ticks are subtracted back out, from the marker the serve itself sets
+    # (`percept.tracing.judge_call_was_served` / `TraceSummary.judge_direct_hits`). Read this
+    # counter for DISPATCHES; read the trace's `actual_judge_calls` for SPEND. On a run with the
+    # cache off the two are equal.
     fixed_opportunities: int = 0
     goal_admissions: int = 0
     admission_by_goal: dict[str, int] = field(default_factory=dict)
@@ -1364,7 +1379,11 @@ class _LegacyJudgeScheduler:
         admitted_wall: float,
     ) -> None:
         if self._stats is not None:
-            self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
+            # Counted at launch — a superseded candidate spent nothing — and in (FRAME x GOAL)
+            # units, so async dispatch reports the SAME spend as the inline loop for the same batch.
+            # `goal_ids` is None only for a core that judges every goal in one call and cannot name
+            # them here; that batch counts 1 and the total is a FLOOR rather than a fabricated N.
+            self._stats.judge_calls += len(goal_ids) if goal_ids else 1
             self._stats.perceive_dispatches += 1
         self._active_t = t
         if self._include_payload:
@@ -2113,9 +2132,15 @@ class _JudgeScheduler:
             self._stats.perceive_dispatches += (
                 len(launched) if self._split_protocol else 1
             )
-            # RuntimeStats.judge_calls is the historical scheduler-launch
-            # count (one admitted frame batch), not provider subcall spend.
-            self._stats.judge_calls += 1
+            # (FRAME x GOAL), matching the inline loop: under the split protocol every launched job
+            # IS one provider call, so the batch contributes its own length. The legacy protocol
+            # hands the whole batch to one `perceive_judged`, which names its goals in `launched[2]`
+            # when it has them; with none named the batch counts 1 and the total is a FLOOR.
+            self._stats.judge_calls += (
+                len(launched)
+                if self._split_protocol
+                else (len(launched[2]) if len(launched) > 2 and launched[2] else 1)
+            )
         self._active_t = t
         self._active_launch_wall = self._mc_now(t)
         self._active_admitted_wall = admitted_wall
@@ -2906,11 +2931,15 @@ async def _assert_timebase(
 
 
 async def _drain_judge_health(core: Any, on_health: "Callable | None", t: float) -> None:
-    """Surface every judge-degradation event ``Percept.perceive_judged``/
+    """Surface every judge-lane health event ``Percept.perceive_judged``/
     ``_observe_and_log`` queued on ``core._judge_health_log`` (agent.py) -- a per-tick
     ``"judge_degraded"`` for each fail-closed-boundary catch (timeout / provider error / malformed /
-    partial), plus a ONE-TIME ``"judge_persistent_failure"`` escalation the moment a watch key's
-    consecutive-degrade streak crosses ``percept.agent.CONSECUTIVE_DEGRADE_ESCALATE``. This is the
+    partial), a ONE-TIME ``"judge_persistent_failure"`` escalation the moment a watch key's
+    consecutive-degrade streak crosses ``percept.agent.CONSECUTIVE_DEGRADE_ESCALATE``, and a
+    ``"claim_authority_unsatisfiable"`` when a Watch arms declaring an authority no wired judge can
+    satisfy (no shipped backend populates ``Verdict.asserted_by``, so every correction to that slot
+    would be refused). **The drain is generic** -- it emits whatever ``kind`` the queued entry names,
+    so this list describes the producers, not a constraint: a new kind needs no change here. This is the
     loud signal the old fail-loud path's ``runtime_error`` health event used to be for a judge
     failure -- degrading no longer crashes the run (see agent.py), so it must stay observable through
     ``on_health`` instead of only a log line. Drains UNCONDITIONALLY (even with ``on_health=None``)
@@ -2930,11 +2959,15 @@ async def _drain_judge_health(core: Any, on_health: "Callable | None", t: float)
 async def _drain_gate_health(core: Any, on_health: "Callable | None", t: float) -> None:
     """Surface every GATE SUPPRESSION ``percept.gate.Gate`` queued on ``core._gate_health_log``
     (agent.py) as a ``RuntimeHealthEvent("gate_suppressed")`` carrying the gate key, the typed reason
-    code (one of ``percept.gate.SUPPRESSION_REASONS`` -- ``start_anchored`` / ``refractory``) and the
-    stream time the decision was made at.
+    code (one of ``percept.gate.SUPPRESSION_REASONS`` -- ``start_anchored`` / ``refractory`` /
+    ``merged_duplicate``) and the stream time the decision was made at. Read the tuple, not this
+    list: the drain is generic and a new reason needs no change here.
 
     A suppression is a fire the BASELINE rising-edge gate would have delivered, withheld by an opt-in
-    precision guard. That is exactly the class of decision an operator must be able to see: without
+    precision guard -- or, for ``merged_duplicate``, by the DELIVERY seam rather than the gate's own
+    edge logic. That distinction is the point of the separate reason: attributing a delivery-layer
+    merge to ``rising_edge`` made stage attribution blame the gate for a drop it did not make.
+    That is exactly the class of decision an operator must be able to see: without
     this, turning on ``require_false_first`` / ``refractory_s`` makes the runtime quieter with no
     signal saying why. Both guards are off by default, so a default watch drains an empty queue every
     tick and emits nothing (no default behavior change, no new per-frame noise).
@@ -4087,7 +4120,8 @@ async def _run_audio_only(
             if scheduler is not None:
                 scheduler.submit(at, evidence, admitted_ids)
             else:
-                cov.judge_calls += 1
+                # (FRAME x GOAL) — the twin of the video loop's count. See RuntimeStats.judge_calls.
+                cov.judge_calls += len(admitted_ids)
                 cov.perceive_dispatches += 1
                 perceive_audio = getattr(core, "perceive_audio_judged")
                 fires = await perceive_audio(
@@ -7390,13 +7424,34 @@ async def _run_worker(
                     energy_now = float(ep) if ep is not None else None
                 except Exception:  # noqa: BLE001 - a bad energy provider must never crash the watch
                     energy_now = None
+            # ``include_outcomes`` is the gate's per-Watch policy result — the score it actually
+            # compared, that Watch's threshold, and the detector that produced them. THREE consumers
+            # need it and each one was previously re-deriving or approximating it from the reported
+            # whole-frame mean gauge, which is a different statistic on a different scale under the
+            # shipped ``block_max`` default: the live interest projection, the ``edge.decision``
+            # record (which could not otherwise reproduce its own admission), and the fovea's saccade
+            # (which could not otherwise see the localized events ``block_max`` exists to catch).
+            # Still opt-in, so a run with no tracer, no interest tracker and no coast allocates no
+            # outcome DTOs.
+            _want_outcomes = (
+                _interest_tracker is not None
+                or bool(coasts)
+                or getattr(core, "on_trace", None) is not None
+            )
             decision = gate.evaluate(
                 gate_frame,
                 ts=t,
                 energy=energy_now,
                 include_evidence_id=_interest_tracker is not None,
-                include_outcomes=_interest_tracker is not None,
+                include_outcomes=_want_outcomes,
             )
+            # ONE read of the gate's own per-Watch scores, shared by the saccade and the admission
+            # record below. Never re-derive either from ``decision.signal.motion``: that gauge is
+            # deliberately the config-stable full-frame MEAN, and pairing it with a ``block_max``
+            # cutoff is what made both surfaces disagree with the gate that produced them.
+            _gate_scores: dict[str, float] = {
+                outcome.goal_id: float(outcome.score) for outcome in decision.outcomes
+            }
 
             # Run edge detectors on the cheap motion/energy signals at native fps. Each emitted
             # boundary (a rep peak, an acoustic onset) is a distinct occurrence fed to the brain via
@@ -7451,10 +7506,30 @@ async def _run_worker(
                         yield incident
             # A brief-action Watch's own fovea coast admits only that Watch. Each controller carries
             # its own cadence state, so a dense Watch cannot spend judgment calls for a sparse one.
+            #
+            # THE SACCADE MUST SEE WHAT THE GATE SEES. This used to arm from
+            # ``decision.signal.motion`` — the whole-frame MEAN — while the shipped gate admits on
+            # ``block_max``. A localized event (a hand, a cup, a cursor: exactly the shape a
+            # brief-action prior is authored for, and exactly what ``block_max`` was introduced to
+            # catch) scores 1.0 at the gate and ~0.02 on the mean, well under the derived 0.05
+            # saccade floor — so the gate admitted and the fovea stayed at its quiet coast floor,
+            # byte-identical to a stream on which nothing ever happened. The coverage the brief
+            # prior sells was delivered only for whole-frame motion.
+            #
+            # MAX, not replace: a Watch whose gate score is structurally 0.0 this frame (schedule
+            # inactive, cadence-limited, or a non-motion channel) must not be made BLINDER than the
+            # mean gauge already made it, so the gauge remains the floor.
             coast_goal_ids = [
                 goal_id
                 for goal_id, controller in coasts.items()
-                if controller.should_process(goal_id, t, float(decision.signal.motion))
+                if controller.should_process(
+                    goal_id,
+                    t,
+                    max(
+                        float(decision.signal.motion),
+                        _gate_scores.get(goal_id, 0.0),
+                    ),
+                )
             ]
             coast_admit = bool(coast_goal_ids)
             # An audio onset admits a frame the visual gate would skip (off-camera cry / glass break). One-shot:
@@ -7553,6 +7628,42 @@ async def _run_worker(
                 # admission causes — emitted for EVERY frame, escalated or not, so "why didn't it fire"
                 # can be answered even when the gate never spent a cloud call. trace_id matches the one
                 # perceive_judged uses below (source+ts), so a dashboard can correlate the two.
+                #
+                # THE RECORD MUST REPRODUCE ITS OWN DECISION. `motion`/`structural`/`semantic` are
+                # the reported GAUGES — deliberately whole-frame, region-agnostic and config-stable
+                # (harness/tier0.py MotionGate.evaluate), so they stay comparable across configs —
+                # while `threshold` is the cutoff that actually applied. Under the shipped default
+                # (salience_stat="block_max") those are on DIFFERENT SCALES, and an admitted
+                # localized frame read `motion=0.0208` against `threshold=0.2, escalate=True`: the
+                # one record whose whole purpose is to explain an admission could not, and neither
+                # natural conclusion a reader drew from it was right (the gate is broken; lower
+                # PERCEPT_MOTION_GATE — the mean-scale knob, which has no effect at all here).
+                # So the ADMITTING statistic rides alongside the gauges, never in place of them:
+                #   admitting_score    the score that cleared the cutoff (max over gate-admitted
+                #                      Watches); None when no Watch was admitted BY THE GATE — a
+                #                      coast/audio admit has no salience behind it, and says so.
+                #   admitting_detector which statistic produced it ("motion_score.block_max"), the
+                #                      name of the knob that actually governs this decision.
+                #   loudest_score      the loudest any armed Watch measured, admitted or not — the
+                #                      "how close did it come" number for a silent frame.
+                # All three come from `decision.outcomes` via the gate's own per-Watch result, the
+                # same source the live-interest projection reads. Absent (legacy hand-built
+                # decisions with no outcomes) they are simply not emitted, and the record is
+                # byte-for-byte the historical one.
+                _admitting = max(
+                    (o for o in decision.outcomes if o.admitted),
+                    key=lambda o: float(o.score),
+                    default=None,
+                )
+                _salience_data = {} if not decision.outcomes else {
+                    "admitting_score": (
+                        None if _admitting is None else round(float(_admitting.score), 4)
+                    ),
+                    "admitting_detector": (
+                        None if _admitting is None else _admitting.detector_id
+                    ),
+                    "loudest_score": round(max(_gate_scores.values(), default=0.0), 4),
+                }
                 await emit_trace(
                     f"{gate_source}@{t}", t, "edge.decision",
                     motion=round(float(decision.signal.motion), 4),
@@ -7563,6 +7674,7 @@ async def _run_worker(
                     coast_admit=coast_admit,
                     goal_ids=tuple(admitted_goal_ids),
                     admission_causes=tuple(admitted_causes),
+                    **_salience_data,
                 )
             # Remember WHAT this frame had to clear, so an end-of-run zero-admission report can name
             # the bar the scene never crossed (a regate can move it; the last one applied is the one
@@ -7670,7 +7782,10 @@ async def _run_worker(
                         )
                 elif admitted_audio_ids:
                     _cov.perceive_dispatches += 1
-                    _cov.judge_calls += 1
+                    # (FRAME x GOAL), never per batch: one admitted utterance judged for three audio
+                    # goals is three provider calls and three `judge.started` rows, and reporting it
+                    # as one under-states an audio watch's model spend by exactly the goal count.
+                    _cov.judge_calls += len(admitted_audio_ids)
                     perceive_audio = getattr(core, "perceive_audio_judged")
                     fires = await perceive_audio(
                         audio_evidence,
@@ -7735,8 +7850,15 @@ async def _run_worker(
                     else ()
                 )
                 completions = []
-                if launched:
-                    _cov.judge_calls += 1
+                # ONE PER (FRAME x GOAL) that reached a provider — the unit RuntimeStats declares for
+                # this counter and the one that makes it comparable to `goal_admissions`. It used to
+                # be `if launched: += 1`, i.e. one per admitted FRAME: three goals on one admitted
+                # frame invoke the provider three times, emit three `judge.started` rows and bump
+                # `perceive_dispatches` three times (the loop below), and were reported as ONE call.
+                # Since this counter is the numerator of every calls-per-source-hour figure, an
+                # N-goal deployment under-reported its model spend — and its economy gate read green
+                # — by up to N times.
+                _cov.judge_calls += len(launched)
                 for job in launched:
                     _cov.perceive_dispatches += 1
                     completions.append(await core.dispatch_judgment(job))
@@ -8031,9 +8153,23 @@ async def _run_worker(
             autosave_task.cancel()
         _cov.frames_dropped = dropped[0]
         # One last save on the way out so a clean shutdown loses nothing since the last autosave.
-        if persistence is not None and getattr(core, "save_state", None):
+        # BOTH halves, exactly as the autosave loop writes them: the core snapshot AND the delivery
+        # idempotency ledger. Saving only the first discarded everything the outbox had learned since
+        # the last autosave tick — and with `autosave_every_s` unset (the DEFAULT) no tick ever
+        # happens, so the whole ledger was lost and the restore side read `None` and started blank.
+        # That is at-least-once delivery losing its idempotency key across precisely the restart it
+        # exists for: every pending record replayed after a clean stop reached the subscriber twice.
+        # The ledger half is gated on `persistence` ALONE (not on `core.save_state`) so a bare
+        # duck-typed core without `save_state` still commits its outbox memory — the same asymmetry
+        # the autosave loop already has.
+        if persistence is not None:
+            if getattr(core, "save_state", None):
+                try:
+                    core.save_state(persistence)
+                except Exception:  # noqa: BLE001 - teardown; a failed final save must not mask the real exit
+                    pass
             try:
-                core.save_state(persistence)
+                persistence.save("percept_delivery_ledger", _idem_ledger.snapshot())
             except Exception:  # noqa: BLE001 - teardown; a failed final save must not mask the real exit
                 pass
         core.on_trace = _prev_on_trace  # restore — don't leak this run's tracer into the next run(core)

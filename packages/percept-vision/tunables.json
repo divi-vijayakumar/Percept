@@ -141,6 +141,21 @@
     },
     {
       "bounds": null,
+      "choices": null,
+      "default": null,
+      "env_var": null,
+      "note": "percept.claims.concern_authority_of; the asserter identities permitted to MUTATE a claim-slot concern's value (replace/retract/close) \u2014 absent, blank or malformed means declared nothing, i.e. unrestricted, which is the shipped default. CAPABILITY BOUND: the check is against Verdict.asserted_by, which no shipped judge backend populates (a speaker is never inferred from text), so a declared authority refuses EVERY mutation \u2014 downgrading it to a non-mutating mention, traced as claim.authority_downgrade \u2014 unless the deployment supplies the speaker out of band. Declare it only with such a channel in place.",
+      "owner": "WatchPlan",
+      "path": "Goal.state.authority",
+      "requires_recompile": false,
+      "requires_restart": false,
+      "risk": "high",
+      "safe_to_optimize": false,
+      "value_type": "list",
+      "visibility": "public"
+    },
+    {
+      "bounds": null,
       "choices": [
         "motion",
         "structural",

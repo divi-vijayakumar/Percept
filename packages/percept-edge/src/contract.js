@@ -22,8 +22,9 @@
 // Any change to a field name is an interop break. Treat these shapes as frozen.
 
 // The one finite-number predicate, shared with the gate and the privacy screen (src/numeric.js).
-// Aliased so the ~20 call sites below read unchanged.
-import { finiteNumber as isFiniteNumber } from "./numeric.js";
+// Aliased so the ~20 call sites below read unchanged. `nonEmptyBox` is the area half of the Box
+// contract enforced below.
+import { finiteNumber as isFiniteNumber, nonEmptyBox } from "./numeric.js";
 
 /**
  * Semantic version of the whole frozen contract surface — the JS twin of the Python
@@ -63,28 +64,65 @@ function isStringArray(v) {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a normalized Box. All fields default to 0.
+ * The Box CONTRACT — the three rules `makeBox` and `parseBox` both enforce, in one place because
+ * they are the two doors a Box comes through and they are the pair in this file that has already
+ * drifted apart once.
+ *
+ *   1. **finite** — a NaN bound makes every derived pixel index NaN.
+ *   2. **normalized** — each of `x,y,w,h` in `[0,1]`. A Box is documented as "normalized 0..1 image
+ *      coordinates"; `x: 2` is not a coordinate in that space, it is a unit error, and it selects
+ *      nothing on any raster.
+ *   3. **positive area** — `w > 0 && h > 0`. A zero-area zone masks the whole frame away, so a goal
+ *      carrying one can never escalate on any frame at any threshold, and nothing downstream can
+ *      tell it apart from a working watch. That is an authoring mistake to refuse, not an input to
+ *      interpret — see `numeric.nonEmptyBox`.
+ *
+ * DELIBERATELY NOT a rule: `x + w <= 1`. A zone that overhangs the far edge is CLAMPED by the gate
+ * (`motion.regionBounds`, `tier0._region_bounds`), which is a defined, useful answer — and a
+ * float-exact sum check would reject legitimately-authored full-width zones (`0.7 + 0.3 !== 1`).
+ *
+ * Rule 3 is a WIRE CHANGE and forks from the Python half until it matches: `percept.contracts.Box`
+ * validates nothing and `harness.tier0._coerce_box` builds one straight out of `goal.state`, so a
+ * degenerate zone is still authorable server-side. Cross-referenced from FIND-PARITY-01.
+ */
+function validateBox(box, describe) {
+  for (const k of ["x", "y", "w", "h"]) {
+    const v = box[k];
+    if (!isFiniteNumber(v)) {
+      throw new ContractError(describe(`${k} must be a finite number`));
+    }
+    if (v < 0 || v > 1) {
+      throw new ContractError(
+        describe(`${k} must be within [0,1] (normalized image coordinates), got ${v}`)
+      );
+    }
+  }
+  if (!nonEmptyBox(box)) {
+    throw new ContractError(
+      describe(
+        `w and h must be > 0, got w=${box.w} h=${box.h} — a zero-area box selects no pixels, so a ` +
+          "goal carrying one can never fire at any threshold"
+      )
+    );
+  }
+}
+
+/**
+ * Build a normalized Box. All fields default to 0, which is NOT a valid Box (zero area) — the
+ * defaults exist so a partial object reports the field it is missing rather than a shape error.
  *
  * Validates exactly what `parseBox` validates. It is the only make/parse pair in this file that
  * used to disagree, and the asymmetry was not cosmetic: `makeWatchCondition` routes `region_hint`
  * through here, so a NaN box was accepted, stored on the condition, and serialized into a WatchSpec
  * the Python side cannot read back — the failure surfaced a hop away from its cause.
  *
- * NOT validated (deliberately): the [0,1] range and a positive area. The Python `Box` dataclass
- * constrains neither, an off-frame or zero-extent box is meaningful to the gate (it clamps / scores
- * 0), and rejecting one here would fork the wire contract. See `numeric.nonEmptyBox` for the
- * predicate a box CONSUMER wants.
- *
  * @returns {{x:number,y:number,w:number,h:number}}
  * @throws {ContractError}
  */
 export function makeBox({ x = 0, y = 0, w = 0, h = 0 } = {}) {
-  for (const [k, v] of [["x", x], ["y", y], ["w", w], ["h", h]]) {
-    if (!isFiniteNumber(v)) {
-      throw new ContractError(`makeBox: ${k} must be a finite number`);
-    }
-  }
-  return { x, y, w, h };
+  const box = { x, y, w, h };
+  validateBox(box, (why) => `makeBox: ${why}`);
+  return box;
 }
 
 /**
@@ -95,11 +133,7 @@ export function parseBox(obj, { path = "region_hint" } = {}) {
   if (!isPlainObject(obj)) {
     throw new ContractError(`${path}: expected an object, got ${typeof obj}`);
   }
-  for (const k of ["x", "y", "w", "h"]) {
-    if (!isFiniteNumber(obj[k])) {
-      throw new ContractError(`${path}.${k}: expected a finite number`);
-    }
-  }
+  validateBox(obj, (why) => `${path}: ${why}`);
   return { x: obj.x, y: obj.y, w: obj.w, h: obj.h };
 }
 

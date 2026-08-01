@@ -772,6 +772,22 @@ _GOAL_STATE: tuple[TunableSpec, ...] = (
         note="percept.identity_policy.identity_policy_of; overrides SourceProfile.identity_strategy "
         "for this concern only (percept.identity_policy.select_identity_policy).",
     ),
+    # -- goal.state["authority"] (percept/claims.py, AUTHORITY_STATE_KEY) — the OTHER half of the
+    # claim contract identity_policy='claim_slot' selects. identity_policy decides WHAT the episode is
+    # about; this decides WHO MAY REWRITE its value. Both are concern-level policies the concern
+    # SELECTS through the same authored goal.state channel, so both have to cross the plan boundary —
+    # a claim Watch that can only author half of its contract arms unrestricted, silently.
+    TunableSpec(
+        path="Goal.state.authority", owner="WatchPlan", visibility="public",
+        safe_to_optimize=False, default=None, value_type="list", risk="high",
+        note="percept.claims.concern_authority_of; the asserter identities permitted to MUTATE a "
+        "claim-slot concern's value (replace/retract/close) — absent, blank or malformed means "
+        "declared nothing, i.e. unrestricted, which is the shipped default. CAPABILITY BOUND: the "
+        "check is against Verdict.asserted_by, which no shipped judge backend populates (a speaker "
+        "is never inferred from text), so a declared authority refuses EVERY mutation — downgrading "
+        "it to a non-mutating mention, traced as claim.authority_downgrade — unless the deployment "
+        "supplies the speaker out of band. Declare it only with such a channel in place.",
+    ),
     # -- goal.state["judge_mode"] (percept/episode_memory.py, episode_memory_enabled) — opt-in flag
     # selecting the episode-memory judge mode; a future WatchProfile-driven seam, author-set today.
     TunableSpec(

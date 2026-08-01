@@ -2108,12 +2108,24 @@ def test_credential_tainted_or_malicious_inputs_spend_zero_constructions():
         return _Backend()
 
     hosted = HostedByokAdapterFactory(backend_factories={"openrouter": factory})
+
+    # A credential cannot even be CARRIED in an roi any more: `Box` validates its four fields are
+    # real finite numbers (FIND-PARITY-01's value-type half), so a tainted roi is refused at
+    # construction and never reaches the adapter's contract check at all. That is strictly stronger
+    # than the adapter refusing it — the vector is closed one layer earlier — so this asserts the
+    # earlier refusal rather than dropping the case.
+    with pytest.raises((TypeError, ValueError)):
+        percept.Box(SECRET_A, 0, 1, 1)
+
     attempts = (
         {"condition": SECRET_A, "frame": b"frame"},
         {"condition": "condition", "frame": SECRET_A.encode()},
         {"condition": "condition", "frame": b"frame", "context": {"safe": SECRET_A}},
         {"condition": "condition", "frame": b"frame", "corrections": {"safe": SECRET_A}},
-        {"condition": "condition", "frame": b"frame", "roi": percept.Box(SECRET_A, 0, 1, 1)},
+        # A well-formed roi carrying no secret still has to survive the adapter's own check, so the
+        # roi path stays exercised: the case above proves the tainted one cannot be built, this one
+        # proves removing the taint does not accidentally make the request acceptable.
+        {"condition": SECRET_A, "frame": b"frame", "roi": percept.Box(0.0, 0.0, 1.0, 1.0)},
         {"condition": "condition", "frame": b"frame", "context": {"bomb": Malicious()}},
     )
     for attempt in attempts:

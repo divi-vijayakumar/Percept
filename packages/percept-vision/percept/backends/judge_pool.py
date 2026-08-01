@@ -17,6 +17,13 @@ The pool has four load-bearing rules:
 * capacity exhaustion and deadline expiry fail closed to an UNKNOWN-shaped
   verdict while retaining bounded route occupancy and an inspectable receipt.
 
+The receipt is the DECLARATION that a decision was made, and its ring is bounded,
+so under sustained load some declarations must be discarded.  That discard is
+itself reported (ADR-001 §9) -- ``snapshot()['receipts_dropped']``, a per-route
+breakdown, a named reason and a ``judge_pool.receipt_evicted`` log line -- because
+a receipt ring that quietly scrolls is indistinguishable from a pool that never
+refused anything, which is the one reading this whole surface exists to prevent.
+
 Provider adapters can still own their retry/circuit-breaker mechanics.  The
 pool's outer deadline is authoritative for the Watch: retries that cannot
 finish within it are cancelled, and a cancellation-hostile adapter continues
@@ -73,6 +80,7 @@ from ..judge_context_producers import (
     spec_for,
     unregistered,
 )
+from ..observability import get_logger, log
 
 EvidenceShape = Literal[
     "single_image",
@@ -164,6 +172,20 @@ REFLEX_DECISION_DEADLINE_S = REFLEX_PROVIDER_DEADLINE_S + REFLEX_DECISION_MARGIN
 #: Naming the first few sorted keys is what makes the refusal diagnosable; naming all of an
 #: arbitrary number of them would make trace retention unbounded for no extra diagnostic value.
 _MAX_RECEIPT_CONTEXT_KEYS = 8
+
+#: How many undrained terminal routing failures the pool retains.  Unlike the receipt ring this one
+#: is CONSUMED (:meth:`JudgePool.take_terminal_error` pops), so it only fills when the deployment
+#: that opted into terminal outcomes has stopped draining them — which is itself the condition worth
+#: reporting.  A silently evicted terminal error is a routing failure the deployment declared must
+#: stop pending work, lost; the drop is counted and logged for that reason.
+_TERMINAL_ERROR_LIMIT = 256
+
+#: The reasons this pool's two bounded rings drop with.  ADR-001 §9: a bound-forced drop always
+#: names one.
+_RECEIPT_BOUND_REASON = "receipt_limit"
+_TERMINAL_ERROR_BOUND_REASON = "terminal_error_limit"
+
+_LOGGER = "percept.backends.judge_pool"
 
 
 @dataclass(frozen=True)
@@ -493,9 +515,20 @@ class JudgePool:
                 "JudgePool.terminal_outcomes contains unsupported outcomes"
             )
         self._terminal_outcomes = terminal
+        # Both rings are bounded, and ADR-001 §9 says a bound is only half the rule: "a drop forced
+        # by a bound is always reported with a reason, never a silent counter bump ... a drop the
+        # operator cannot see is worse than the resource exhaustion the bound prevents: it looks
+        # exactly like a quiet, working system." A deque at its maxlen discards silently, so every
+        # append below goes through a helper that counts the eviction, names its reason, and logs
+        # it — the idiom `percept.runtime._bounds.BoundedRecencyMap` already uses. The counters are
+        # published on :meth:`snapshot` so `receipts()` can never be mistaken for a COMPLETE record
+        # of what this pool decided.
         self._receipts: deque[JudgeRouteReceipt] = deque(maxlen=receipt_limit)
         self._state_lock = threading.Lock()
-        self._terminal_errors: deque[BaseException] = deque(maxlen=256)
+        self._terminal_errors: deque[BaseException] = deque(maxlen=_TERMINAL_ERROR_LIMIT)
+        self._receipts_dropped = 0
+        self._receipts_dropped_by_route: dict[str, int] = {}
+        self._terminal_errors_dropped = 0
 
     @property
     def mode(self) -> LatencyMode:
@@ -526,11 +559,28 @@ class JudgePool:
         )
 
     def receipts(self) -> tuple[JudgeRouteReceipt, ...]:
+        """The retained routing declarations — the most recent ``receipt_limit`` of them.
+
+        NOT necessarily every decision this pool made: the ring is bounded, and under sustained load
+        it will have discarded older ones. :meth:`receipts_dropped` (and ``snapshot()``) say how
+        many, so this tuple is never mistaken for a complete record.
+        """
         with self._state_lock:
             return tuple(self._receipts)
 
+    def receipts_dropped(self) -> int:
+        """How many declarations the receipt ring has discarded to stay inside its bound."""
+        with self._state_lock:
+            return self._receipts_dropped
+
     def snapshot(self) -> dict[str, Any]:
-        """Return bounded operational state without adapter objects or secrets."""
+        """Return bounded operational state without adapter objects or secrets.
+
+        ``receipts_dropped`` / ``terminal_errors_dropped`` are the ADR-001 §9 half a bound on its
+        own does not give: the count of declarations each ring had to discard, aggregate and (for
+        receipts) per route, so an operator draining :meth:`receipts` after an incident can tell a
+        pool that refused nothing from one whose refusals scrolled off the end.
+        """
         with self._state_lock:
             routes = {
                 name: {
@@ -539,6 +589,10 @@ class JudgePool:
                     "successes": state.successes,
                     "failures": state.failures,
                     "latency_ewma_s": state.latency_ewma_s,
+                    # Which route's declarations were lost, not merely how many: a receipt ring
+                    # overrun by a saturated route says nothing about a quiet one, and an operator
+                    # reading a gap has to know where it is.
+                    "receipts_dropped": self._receipts_dropped_by_route.get(name, 0),
                     "evidence_shapes": sorted(
                         state.route.capability.evidence_shapes
                     ),
@@ -552,10 +606,19 @@ class JudgePool:
                 }
                 for name, state in self._states.items()
             }
+            receipts_dropped = self._receipts_dropped
+            terminal_errors_dropped = self._terminal_errors_dropped
         return {
             "mode": self._mode,
             "deadline_s": self._deadline_s,
             "max_parallel": self._max_parallel,
+            "receipt_limit": self._receipts.maxlen,
+            "receipts_dropped": receipts_dropped,
+            "receipts_dropped_reason": _RECEIPT_BOUND_REASON if receipts_dropped else None,
+            "terminal_errors_dropped": terminal_errors_dropped,
+            "terminal_errors_dropped_reason": (
+                _TERMINAL_ERROR_BOUND_REASON if terminal_errors_dropped else None
+            ),
             "routes": routes,
         }
 
@@ -576,8 +639,23 @@ class JudgePool:
         return error
 
     def _set_terminal_error(self, error: BaseException) -> None:
+        evicted: BaseException | None = None
+        dropped_total = 0
         with self._state_lock:
+            if len(self._terminal_errors) == self._terminal_errors.maxlen:
+                evicted = self._terminal_errors[0]
+                self._terminal_errors_dropped += 1
+                dropped_total = self._terminal_errors_dropped
             self._terminal_errors.append(error)
+        if evicted is not None:
+            log(
+                get_logger(_LOGGER),
+                "judge_pool.terminal_error_evicted",
+                reason=_TERMINAL_ERROR_BOUND_REASON,
+                exception_type=type(evicted).__name__,
+                retained=self._terminal_errors.maxlen,
+                dropped_total=dropped_total,
+            )
 
     def _route_context(self, context: dict | None) -> dict | None:
         """Stamp the route's latency mode onto the context handed to the adapter.
@@ -678,8 +756,30 @@ class JudgePool:
                 )
 
     def _record(self, receipt: JudgeRouteReceipt) -> None:
+        evicted: JudgeRouteReceipt | None = None
+        dropped_total = 0
         with self._state_lock:
+            if len(self._receipts) == self._receipts.maxlen:
+                # The deque is about to discard this one on append. Read it FIRST: after the append
+                # the declaration is gone and nothing can say what it was.
+                evicted = self._receipts[0]
+                self._receipts_dropped += 1
+                route = evicted.route or "-"
+                self._receipts_dropped_by_route[route] = (
+                    self._receipts_dropped_by_route.get(route, 0) + 1
+                )
+                dropped_total = self._receipts_dropped
             self._receipts.append(receipt)
+        if evicted is not None:
+            log(
+                get_logger(_LOGGER),
+                "judge_pool.receipt_evicted",
+                reason=_RECEIPT_BOUND_REASON,
+                route=evicted.route,
+                outcome=evicted.outcome,
+                retained=self._receipts.maxlen,
+                dropped_total=dropped_total,
+            )
         if self._on_receipt is not None:
             try:
                 self._on_receipt(receipt)

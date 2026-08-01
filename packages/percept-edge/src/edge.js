@@ -22,8 +22,10 @@ export class Edge {
   /**
    * @param {object} [opts]
    * @param {(signal:object)=>void} [opts.onSignal]  up-channel sink for Tier0Signal
-   * @param {number} [opts.defaultThreshold]  salience floor when a spec has no
-   *        conditions (so motion-only still gates). Default 0.05.
+   * @param {number} [opts.defaultThreshold]  salience floor for an edge that has NEVER been given a
+   *        WatchSpec (so motion-only still gates). Default 0.05. It does NOT apply to an APPLIED
+   *        spec carrying zero conditions — that is a deployment whose goals were all cancelled, and
+   *        it never escalates.
    * @param {()=>number} [opts.clock]  returns seconds; for deterministic ts.
    */
   constructor({
@@ -128,13 +130,22 @@ export class Edge {
   }
 
   /**
-   * The salience threshold the gate must clear. We take the *minimum* threshold
-   * across active conditions (any goal clearing its bar escalates); with no
-   * spec/conditions we fall back to defaultThreshold so motion-only still gates.
+   * The salience threshold the gate must clear. We take the *minimum* threshold across active
+   * conditions (any goal clearing its bar escalates).
+   *
+   * THREE states, not two — an applied spec with no conditions is not the same edge as one that was
+   * never configured:
+   *
+   *   * no spec ever applied  -> `defaultThreshold`, so a motion-only edge still gates;
+   *   * an applied spec with conditions -> the minimum threshold across them;
+   *   * an applied spec with NO conditions -> `Infinity`. Every goal has been cancelled, so no
+   *     salience can clear the bar. Reporting `defaultThreshold` here said the opposite of what the
+   *     gate now does (FIND-PARITY-03).
    */
   get activeThreshold() {
-    const conds = this._spec?.conditions ?? [];
-    if (conds.length === 0) return this.defaultThreshold;
+    if (this._spec == null) return this.defaultThreshold;
+    const conds = this._spec.conditions;
+    if (conds.length === 0) return Infinity;
     let min = Infinity;
     for (const c of conds) min = Math.min(min, c.threshold);
     return Number.isFinite(min) ? min : this.defaultThreshold;
@@ -231,8 +242,24 @@ export class Edge {
   }
 
   _shouldEscalate({ ts, prevFrame, frame, motion, structural, semantic, salience, fused }) {
-    const conds = this._spec?.conditions ?? [];
-    if (conds.length === 0) return salience >= this.defaultThreshold;
+    // NEVER CONFIGURED is not the same state as EVERY GOAL CANCELLED, and one branch used to serve
+    // both. An edge that has not been handed a spec has no instruction, so it gates motion-only on
+    // `defaultThreshold` — that fallback is what makes a bare `new Edge()` useful. An edge holding
+    // an APPLIED spec with zero conditions has been told, precisely, that there is nothing to look
+    // for: the brain compiles exactly `{version, conditions: []}` when the last watch is cancelled.
+    // Falling back there kept the device clearing 0.05 on ordinary motion and handing frames to the
+    // publisher for a watch nobody has — the privacy promise of the on-device topology failing in
+    // the one state where nothing can possibly matter (FIND-PARITY-03). Python `MotionGate.evaluate`
+    // has always answered this input with "never escalates — there is nothing to look for".
+    if (this._spec == null) return salience >= this.defaultThreshold;
+    const conds = this._spec.conditions;
+    if (conds.length === 0) return false;
+    // EVERY armed condition is evaluated, and every one that fires is stamped — the loop
+    // ACCUMULATES, it does not return early. Returning on the first firing goal left every other
+    // goal sharing the frame unstamped, so its cadence brake stayed at -Infinity and it admitted
+    // again on the very next frame, inside the window the deployment authored (FIND-PARITY-02).
+    // Twin of Python `MotionGate.evaluate`, where `escalate` is a disjunction over the whole loop.
+    let escalate = false;
     for (const c of conds) {
       if (c.cadence_s != null && ts - (this._lastEscalate.get(c.goal_id) ?? -Infinity) < c.cadence_s) {
         continue;
@@ -260,10 +287,10 @@ export class Edge {
       }
       if (fired) {
         this._lastEscalate.set(c.goal_id, ts);
-        return true;
+        escalate = true;
       }
     }
-    return false;
+    return escalate;
   }
 
   _emit(signal) {

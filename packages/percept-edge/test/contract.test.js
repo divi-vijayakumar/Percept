@@ -160,7 +160,14 @@ describe("factories produce frozen-contract shapes", () => {
       w: 0.3,
       h: 0.4,
     });
-    expect(makeBox()).toEqual({ x: 0, y: 0, w: 0, h: 0 }); // all four default to 0
+    // The whole unit square, and a zone that overhangs the far edge — the gate CLAMPS an overhang
+    // (a defined answer), so it stays a legal authored Box.
+    expect(makeBox({ x: 0, y: 0, w: 1, h: 1 })).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+    expect(makeBox({ x: 0.9, y: 0.9, w: 0.5, h: 0.5 })).toEqual({ x: 0.9, y: 0.9, w: 0.5, h: 0.5 });
+    // REWRITTEN (was `expect(makeBox()).toEqual({x:0,y:0,w:0,h:0})` — "all four default to 0").
+    // All four still default to 0, and that box has no area, so it is no longer a Box the contract
+    // will hand out. The defaults survive only so a partial object names the field it is missing.
+    expect(() => makeBox()).toThrow(ContractError);
   });
 
   it("makeBox validates exactly what parseBox validates — they were the one pair that disagreed", () => {
@@ -179,10 +186,48 @@ describe("factories produce frozen-contract shapes", () => {
     }
     expect(() => makeWatchCondition({ goal_id: "g", anchor_text: "x", region_hint: { x: NaN, y: 0, w: 1, h: 1 } }))
       .toThrow(ContractError);
-    // NOT rejected, deliberately, by either half: an off-frame or zero-extent box. The Python `Box`
-    // dataclass constrains neither, so rejecting one here would fork the wire contract.
-    expect(makeBox({ x: 0, y: 0, w: 0, h: 1 })).toEqual({ x: 0, y: 0, w: 0, h: 1 });
-    expect(parseBox({ x: 2, y: -1, w: 5, h: 5 })).toEqual({ x: 2, y: -1, w: 5, h: 5 });
+  });
+
+  it("a zero-area or non-normalized Box is refused by BOTH halves (FIND-PARITY-01)", () => {
+    // REWRITTEN. These two lines used to assert the opposite — "NOT rejected, deliberately, by
+    // either half ... the Python `Box` dataclass constrains neither, so rejecting one here would
+    // fork the wire contract". Tolerating them is what let a zone with no area onto the wire, where
+    // it read as a working watch and could never fire: the mean gate path answered 0 for it while
+    // the Python gate measured a real pixel column and admitted EVERY frame. The score halves now
+    // agree (see motion.test.js); this is the other half of the fix — the input class is refused at
+    // the authoring/wire boundary instead of interpreted differently in two runtimes.
+    const zeroArea = [
+      { x: 0, y: 0, w: 0, h: 1 },     // zero width
+      { x: 0, y: 0, w: 1, h: 0 },     // zero height
+      { x: 0.1, y: 0.1, w: 0, h: 0.5 }, // the FIND-PARITY-01 zone: 0.1*7 truncates to 0, rounds to 1
+    ];
+    const notNormalized = [
+      { x: 2, y: -1, w: 5, h: 5 },    // not image coordinates at all
+      { x: 0, y: 0, w: -1, h: 1 },    // negative extent
+      { x: -0.1, y: 0, w: 0.5, h: 0.5 },
+      { x: 0, y: 0, w: 1.5, h: 0.5 },
+    ];
+    for (const bad of [...zeroArea, ...notNormalized]) {
+      expect(() => makeBox(bad), JSON.stringify(bad)).toThrow(ContractError);
+      expect(() => parseBox(bad), JSON.stringify(bad)).toThrow(ContractError);
+    }
+    for (const bad of zeroArea) {
+      expect(() => makeBox(bad), JSON.stringify(bad)).toThrow(/w and h must be > 0/);
+    }
+    // ...and it is refused where an author actually meets it: on a condition, and off the wire.
+    expect(() =>
+      makeWatchCondition({ goal_id: "g", anchor_text: "x", region_hint: { x: 0, y: 0, w: 0, h: 1 } })
+    ).toThrow(ContractError);
+    expect(() =>
+      parseWatchSpec({
+        version: 1,
+        conditions: [
+          { goal_id: "g", anchor_text: "x", threshold: 0.1, region_hint: { x: 0, y: 0, w: 0, h: 1 } },
+        ],
+      })
+    ).toThrow(/conditions\[0\]\.region_hint/);
+    // An Incident's `roi` rides the same validator — it is the same shape with the same meaning.
+    expect(() => parseBox({ x: 0.2, y: 0.2, w: 0, h: 0 }, { path: "roi" })).toThrow(/^roi: /);
   });
 });
 

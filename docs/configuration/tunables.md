@@ -1,6 +1,6 @@
 ---
 title: Tunables
-updated: 2026-07-31
+updated: 2026-08-01
 applies_to: percept-vision 1.0.0
 status: stable
 generated_by: tools/build_tunables_doc.py
@@ -10,15 +10,15 @@ generated_by: tools/build_tunables_doc.py
 
 **This page is generated** from `percept.tunables.REGISTRY` by `tools/build_tunables_doc.py`. Do not hand-edit it — change the registry and regenerate (`make docs-tunables`). That is why it cannot drift from what ships.
 
-Percept exposes **161 tunables**. Of those, **31 are `safe_to_optimize`** — the
+Percept exposes **162 tunables**. Of those, **31 are `safe_to_optimize`** — the
 only ones `percept-optimize` is permitted to search. The rest are declared, typed, and owned,
 but changing them is a deliberate act, not a search-space dimension.
 
 | | count |
 |---|---|
-| total tunables | **161** |
+| total tunables | **162** |
 | safe to optimize | **31** |
-| owned by `WatchPlan` | 57 |
+| owned by `WatchPlan` | 58 |
 | owned by `SourceProfile` | 39 |
 | owned by `DeploymentConfig` | 29 |
 | owned by `ExecutionPolicy` | 15 |
@@ -193,10 +193,11 @@ takes effect.
 | `WakePolicy.threshold` | float | `0.1` | 0.0 – 1.0 | — | ✅ | medium | fused wake score cutoff before spending a heavy vision call; admission-strategy shape. |
 | `WakePolicy.weights` | dict | — | — | — | — | medium | per-channel weights in the calibrated weighted-OR fusion. |
 
-### `WatchPlan` — 57 tunables (0 safe to optimize)
+### `WatchPlan` — 58 tunables (0 safe to optimize)
 
 | path | type | default | bounds / choices | env | safe? | risk | note |
 |---|---|---|---|---|---|---|---|
+| `Goal.state.authority` | list | — | — | — | — | high | percept.claims.concern_authority_of; the asserter identities permitted to MUTATE a claim-slot concern's value (replace/retract/close) — absent, blank or malformed means declared nothing, i.e. unrestricted, which is the shipped default. CAPABILITY BOUND: the check is against Verdict.asserted_by, which no shipped judge backend populates (a speaker is never inferred from text), so a declared authority refuses EVERY mutation — downgrading it to a non-mutating mention, traced as claim.authority_downgrade — unless the deployment supplies the speaker out of band. Declare it only with such a channel in place. |
 | `Goal.state.cadence.gate_on` | enum | — | motion – structural – semantic – fixed – fused | — | — | high | Per-Watch tier-0 admission mode; sustained worker Watches require fixed, and fused requires a wake_policy. |
 | `Goal.state.cadence.min_judge_interval` | float | — | 0.0 – inf | — | — | medium | Per-Watch minimum observation interval consumed by tier-0 admission. |
 | `Goal.state.cadence_s` | float | — | 1.0 – inf | — | — | low | interval-rearm period; clamped to _MIN_CADENCE_S=1.0 so it can't busy-loop. |

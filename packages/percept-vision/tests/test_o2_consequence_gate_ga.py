@@ -67,10 +67,19 @@ class VocabularyTests(unittest.TestCase):
             self.assertIn(reason, GATE_REASONS)
             self.assertEqual(REASON_ACTION[reason], SILENT)
 
-    def test_suppression_is_the_two_opt_in_precision_guards_only(self):
+    def test_suppression_is_the_precision_guards_only(self):
         """The set is deliberately NOT "every silent": already_fired is the base re-fire contract (one
-        per tick of any continuing true state) and dwell_pending is a deferral, not a withheld fire."""
-        self.assertEqual(set(SUPPRESSION_REASONS), {"start_anchored", "refractory"})
+        per tick of any continuing true state) and dwell_pending is a deferral, not a withheld fire.
+
+        ``merged_duplicate`` joined the two opt-in gate guards with the fix for finding reflex-05.
+        The definition is about what the BASELINE gate would have delivered, not about which layer
+        withheld it — the delivery merge withholds a fire the gate had already DECIDED — and leaving
+        it out is what let a merged delivery reach the trace as a plain silent carrying the gate's own
+        ``rising_edge``. ADR-006 open question 5 names that seam and names a new reason code as its
+        price."""
+        self.assertEqual(
+            set(SUPPRESSION_REASONS), {"start_anchored", "refractory", "merged_duplicate"}
+        )
         for not_a_suppression in ("already_fired", "dwell_pending", "not_satisfied"):
             self.assertNotIn(not_a_suppression, SUPPRESSION_REASONS)
 
@@ -148,11 +157,60 @@ class ReasonCodeTests(unittest.TestCase):
         d = g.decide("k", YES, hold_s=3.0, now=4.0)
         self.assertEqual((d.action, d.reason), (FIRE, "dwell_satisfied"))
 
-    def test_every_reason_code_is_reachable_from_the_real_decision_path(self):
-        """No dead vocabulary: drive the gate through scenarios that between them produce EVERY code,
-        and assert the observed set is exactly GATE_REASONS. Guards against the vocabulary growing a
-        code no decision path can actually emit."""
+    def test_merged_duplicate_is_produced_by_the_delivery_seam(self):
+        """The one code ``Gate.decide`` does not produce. The DELIVERY merge withholds a fire the
+        gate has already decided, so it is emitted one layer up — by the real executor, over the real
+        ``INCIDENT_MERGE_WINDOW_S``, never hand-constructed. Driven here so the vocabulary guard below
+        can stay exhaustive rather than carve it out."""
+        gate = Gate()
+        suppressions: list[GateOutcome] = []
+        gate.on_suppress = suppressions.append
+        executor = BehaviorExecutor(gate=gate)
+        goal = Goal(id="g", condition="c", say="s", state={})
+        program = program_of(goal)
+
+        first = executor.fire_judged(goal, YES, ("g", "e1"), program, t=0.0)
+        self.assertIsNotNone(first, "the first delivery establishes the merge anchor")
+        # A second decided FIRE for the same key inside the window. The gate has to be re-armed for
+        # it to decide FIRE at all — which is precisely the shape the merge exists to absorb.
+        gate.rearm(("g", "e1"))
+        merged = executor.fire_judged(goal, YES, ("g", "e1"), program, t=0.1)
+
+        self.assertIsNone(merged, "...and it is dropped as a re-notification")
+        self.assertEqual([d.reason for d in suppressions], ["merged_duplicate"])
+        self.assertEqual(suppressions[0].action, SILENT)
+        self.assertTrue(suppressions[0].suppressed)
+        self.assertEqual(suppressions[0].key, ("g", "e1"))
+
+    def test_note_suppressed_refuses_a_non_suppression(self):
+        """The entry point the seam above uses will not widen what ``gate_suppressed`` means: an
+        ``already_fired`` pushed through it would put the base re-fire contract on the health channel
+        as per-frame noise."""
+        gate = Gate()
+        seen: list = []
+        gate.on_suppress = seen.append
+        with self.assertRaises(ValueError):
+            gate.note_suppressed(GateOutcome(action=SILENT, reason="already_fired", key="k"))
+        self.assertEqual(seen, [])
+
+    def test_every_reason_code_is_reachable_from_a_real_decision_path(self):
+        """No dead vocabulary: drive the real code through scenarios that between them produce EVERY
+        code, and assert the observed set is exactly GATE_REASONS. Guards against the vocabulary
+        growing a code nothing can actually emit. Every code but one comes from ``Gate.decide``;
+        ``merged_duplicate`` is the delivery seam's, driven through the executor above and folded in
+        here from the same real path rather than asserted by construction."""
         seen: set[str] = set()
+
+        merge_gate = Gate()
+        merge_seen: list[GateOutcome] = []
+        merge_gate.on_suppress = merge_seen.append
+        merge_executor = BehaviorExecutor(gate=merge_gate)
+        merge_goal = Goal(id="g", condition="c", say="s", state={})
+        merge_program = program_of(merge_goal)
+        merge_executor.fire_judged(merge_goal, YES, ("g", "e1"), merge_program, t=0.0)
+        merge_gate.rearm(("g", "e1"))
+        merge_executor.fire_judged(merge_goal, YES, ("g", "e1"), merge_program, t=0.1)
+        seen.update(d.reason for d in merge_seen)              # merged_duplicate
 
         plain = Gate(threshold=0.7, fresh_min=0.5)
         seen.add(plain.decide("k", YES, now=0.0).reason)            # rising_edge

@@ -84,7 +84,7 @@ class TestGateActionMembers(unittest.TestCase):
         self.assertFalse(hasattr(gate_mod, "LOG"))
 
 
-# ---- key growth bound: the `_bound` LRU table (gate.py:412-441) ----------------------------------
+# ---- key growth bound: the `_bound` LRU table (gate.py:441-470) ----------------------------------
 class TestBoundLruOrdering(unittest.TestCase):
     """A direct table for the LRU half of the growth bound.
 
@@ -285,7 +285,7 @@ class TestNoEvictExemption(unittest.TestCase):
 
 class TestEvictionIsNeverSilent(unittest.TestCase):
     """With NO `on_evict` wired the default path must still log the drop and its reason
-    (`gate.py:410`). A silent eviction is a re-notification whose cause is unrecoverable from the
+    (`gate.py:439`). A silent eviction is a re-notification whose cause is unrecoverable from the
     trace."""
 
     def test_a_max_keys_drop_is_logged_with_its_reason(self):
@@ -318,7 +318,7 @@ class TestEvictionIsNeverSilent(unittest.TestCase):
 
 
 class TestResetEntitySweepsCompanionState(unittest.TestCase):
-    """`reset_entity` (`gate.py:676`) is wired to EntityGraph eviction: when a subject dies, its gate
+    """`reset_entity` (`gate.py:774`) is wired to EntityGraph eviction: when a subject dies, its gate
     state must die with it. A dwell-pending key is the case that exposes the seam — the dwell
     branches (`:607-632`) write `dwell_since`/`dwell_last_supported`/`touched` but NEVER `armed`,
     and `reset_entity` iterates `_armed` alone.

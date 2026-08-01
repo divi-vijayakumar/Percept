@@ -17,6 +17,7 @@ a thin re-export shim so every existing ``from percept.adapters import X`` keeps
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -133,12 +134,42 @@ def negotiate(local: str, remote: str) -> bool:
 
 @dataclass(frozen=True)
 class Box:
-    """Axis-aligned box in normalized 0..1 image coordinates."""
+    """Axis-aligned box in normalized 0..1 image coordinates.
+
+    **Finiteness only is enforced here, deliberately.** The full contract — inside ``[0, 1]`` and
+    positive area — belongs at the AUTHORING boundary (``harness.tier0._coerce_box``) and at the WIRE
+    boundary (the JS ``makeBox``/``parseBox``), not on the value type, because most ``Box`` instances
+    in the runtime are DERIVED rather than authored: a track centroid (``entity.py``), a pose measure
+    (``rhythm_hero.py``), a restored snapshot row (``entity.py``). A derived box legitimately collapses
+    to zero area when a detection degenerates, and that must **degrade, not crash** — a raise here
+    would take the watch down on ordinary bad input.
+
+    A non-finite box is different: it is not a position under any policy, and left alone it poisons
+    every comparison it reaches (every comparison against NaN is False, so a NaN box silently passes
+    "is this inside the frame?" and then scores nothing). That one is refused for everybody.
+    """
 
     x: float
     y: float
     w: float
     h: float
+
+    def __post_init__(self) -> None:
+        for name in ("x", "y", "w", "h"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"Box.{name} must be a real number, got {value!r}")
+            if not math.isfinite(float(value)):
+                raise ValueError(f"Box.{name} must be finite, got {value!r}")
+
+    @property
+    def is_empty(self) -> bool:
+        """No area — so no pixel is inside it, whatever the raster.
+
+        Ask this rather than testing ``w``/``h`` at a call site: a collapsed derived box is a normal
+        runtime state and consumers should be able to name it instead of scoring it by accident.
+        """
+        return not (self.w > 0.0 and self.h > 0.0)
 
     def iou(self, o: "Box") -> float:
         """Intersection-over-union with another box. 0.0 when disjoint or degenerate."""

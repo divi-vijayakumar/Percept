@@ -688,6 +688,13 @@ def judge_stage_latencies(records: "Iterable[Any]") -> list[float]:
 
     Accepts anything with ``.stage`` and ``.latency_s`` — a ``percept.tracing.TraceRecord``, or a
     replayed one. A closing record with no usable clock contributes nothing rather than a zero.
+
+    A SERVED tick (``percept.tracing.judge_call_was_served`` — a perception-cache hit or a confident
+    DirectJudge substitution) IS counted here and is deliberately NOT filtered. This function
+    measures what the CLIENT waited for, and a client that got its verdict in 0.2 ms really did wait
+    0.2 ms; censoring the fast half of the distribution would report a worse number than anyone
+    experienced. The provider's own population is a different question and is asked separately, by
+    :func:`judge_provider_spans`, which does filter them.
     """
     samples: list[float] = []
     for record in records:
@@ -707,7 +714,20 @@ def judge_provider_spans(records: "Iterable[Any]") -> list[float]:
     reader whether a failing gate is the provider being slow or the runtime making a goal wait, so
     the gate reports a cause rather than only a colour. Paired on
     ``(trace_id, goal_id)``: one admitted frame judges many goals under one ``trace_id``.
+
+    **A tick that spent no provider call contributes no span.** A perception-cache serve emits the
+    same ``judge.started``/``judge.finished`` pair as a real call and returns in microseconds; left
+    in, it drags this distribution toward the cache and away from the provider, so under the ordinary
+    steady state — a warm cache, which is what the cache is FOR — a latency gate reading the trace
+    goes green while the provider is slow, and stage attribution names the wrong stage. Measured on a
+    0.15 s adapter judging one frame six times behind a warm cache: six spans, p50 0.000144 s against
+    a real call of 0.1516 s, a ~1000x understatement that nothing refused to quote. The closing
+    record carries the marker (``percept.tracing.judge_call_was_served`` — ONE predicate, shared with
+    the funnel's savings identity), so ``len(judge_provider_spans(records))`` is the number of calls
+    that actually reached a provider. An unmarked trace is unchanged.
     """
+    from .tracing import judge_call_was_served  # noqa: PLC0415 - tracing imports slo lazily too
+
     started: dict[tuple, float] = {}
     spans: list[float] = []
     for record in records:
@@ -722,8 +742,13 @@ def judge_provider_spans(records: "Iterable[Any]") -> list[float]:
             started[key] = float(emitted)
             continue
         begin = started.pop(key, None)
-        if begin is not None:
-            spans.append(max(0.0, float(emitted) - begin))
+        if begin is None:
+            continue
+        # Popped FIRST so a served tick still closes its open span — otherwise the next real call on
+        # the same (trace_id, goal_id) would be measured from a stale start.
+        if judge_call_was_served(getattr(record, "data", None)):
+            continue
+        spans.append(max(0.0, float(emitted) - begin))
     return spans
 
 

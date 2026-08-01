@@ -167,9 +167,9 @@ class _SpyGate(Gate):
         super().__init__(*a, **kw)
         self.rearms: list = []
 
-    def rearm(self, key):
+    def rearm(self, key, **kw):
         self.rearms.append(key)
-        super().rearm(key)
+        super().rearm(key, **kw)
 
 
 def _drive(gate, ex, goal, prog, log, stream, *, sweeps=None):

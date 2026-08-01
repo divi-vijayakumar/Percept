@@ -7,10 +7,12 @@
 //          saliencePairs: [{w,h,a,b,stat?,region?,blockGrid?}],   // blockGrid defaults to [8,6]
 //          egoPairs: [{w,h,a,b,k?,region?}],                        // region defaults to null
 //          wakeCases: [{signals:object, policy?:object|null}],       // policy defaults to null
+//          gateCases: [{name,w,h,frames:number[][],ts:number[],spec}],  // one Edge per case
 //          latency?: {width,height,frames} }
 //   out: { motionBoundaries: Boundary[][], onsetBoundaries: Boundary[][], motionScores: number[],
 //          saliences: number[], egoScores: number[],
 //          wakeScores: number[], wakeTopChannels: (string|null)[], wakeFlags: boolean[],
+//          gateAdmissions: boolean[][],
 //          latency?: {frames,width,height,totalMs,perFrameUs,fps} }
 
 import { MotionPeriodicity, AcousticOnset, wakeScore, shouldWake } from "../src/skills.js";
@@ -64,6 +66,21 @@ const result = {
     ({ signals, policy }) => shouldWake(signals, policy ?? null).top_channel,
   ),
   wakeFlags: (cases.wakeCases || []).map(({ signals, policy }) => shouldWake(signals, policy ?? null).wake),
+  // The GATE, not a function: one `Edge` per case, driven frame by frame over the case's own clip
+  // with the case's timestamps injected as the clock, reporting whether each frame ESCALATED. This
+  // is the only section that exercises `Edge.applyWatchSpec` -> `processFrame` end to end, which is
+  // where the cadence brake and the meaning of an empty spec live.
+  gateAdmissions: (cases.gateCases || []).map(({ w, h, frames, ts, spec }) => {
+    let cursor = 0;
+    const edge = new Edge({ clock: () => ts[cursor] });
+    if (spec != null) edge.applyWatchSpec(spec);
+    const admitted = [];
+    for (cursor = 0; cursor < frames.length; cursor++) {
+      const frame = { width: w, height: h, data: Uint8Array.from(frames[cursor]) };
+      admitted.push(edge.processFrame(frame) !== null);
+    }
+    return admitted;
+  }),
   audioEnergies: (cases.audioEnergyVectors || []).map(({ samples }) => pcm16Energy(samples)),
   audioTimelines: (cases.audioTimelineVectors || []).map(({ units }) => {
     const timeline = new OrderedAudioBuffer({ seconds: 10 });

@@ -149,8 +149,9 @@ npm run eval    # prints the scorecard + regression-checks it against eval/score
 
 ## Known tuning
 
-The motion-gate threshold (a `WatchCondition.threshold`, default `0.3`; the edge falls back to
-`Edge.defaultThreshold = 0.05` when a condition sets none) is a **cost↔recall knob**: well-calibrated for salient motion,
+The motion-gate threshold (a `WatchCondition.threshold`, default `0.3`; an edge that has never been
+given a WatchSpec falls back to `Edge.defaultThreshold = 0.05`, while an applied spec with no
+conditions — every goal cancelled — never escalates) is a **cost↔recall knob**: well-calibrated for salient motion,
 but it skips very-low-motion onsets (measured edge event-recall ≈ 0 on subtle actions — the gate never
 escalates, so the VLM never sees them). Tune the threshold per motion regime for your use case. This is a
 deliberate post-publish tuning item, not a blocker.

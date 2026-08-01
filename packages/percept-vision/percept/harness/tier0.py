@@ -802,7 +802,7 @@ def compile_watchspec(
                 goal_id=goal.id,
                 anchor_text=goal.condition,
                 threshold=_clamp01(base + bias),
-                region_hint=_coerce_box(goal.state.get(REGION_HINT_KEY)),
+                region_hint=_coerce_box(goal.state.get(REGION_HINT_KEY), goal_id=goal.id),
                 detectors=supported,  # cheap edge skills the brain selected, filtered to what the edge can run
                 schedule=_coerce_schedule(goal.state.get(SCHEDULE_KEY)),
                 cadence_s=cadence_s,  # how OFTEN to look (distinct from PerceptionSpec = how DEEP)
@@ -893,12 +893,71 @@ def _coerce_bias(obj: Any, *, goal_id: str) -> float:
         ) from exc
 
 
-def _coerce_box(obj: Any) -> Box | None:
-    if obj is None or isinstance(obj, Box):
+class UnsupportedRegionHintError(ValueError):
+    """An authored ``region_hint`` the gate cannot answer, named by goal and by field.
+
+    Untyped and unattributed refusals were the defect in the sibling coercers (BUG-A-01-06); this one
+    carries ``goal_id`` and the offending field so the author is told which goal to edit.
+    """
+
+    def __init__(self, message: str, *, goal_id: str | None = None, field: str | None = None) -> None:
+        super().__init__(message)
+        self.goal_id = goal_id
+        self.field = field
+
+
+def _coerce_box(obj: Any, *, goal_id: str | None = None) -> Box | None:
+    """The AUTHORING boundary for a watch-out zone — the full Box contract, refused loudly.
+
+    This mirrors the JS ``validateBox`` behind ``makeBox``/``parseBox`` term for term, because the two
+    runtimes must answer "is this zone admissible?" identically or the same authored goal admits in the
+    harness and not on device (FIND-PARITY-01). The rules are:
+
+    * every field finite (inherited from :class:`~percept.contracts.Box`, which enforces it for
+      derived boxes too),
+    * every field within ``[0, 1]`` — these are normalized coordinates and nothing outside that range
+      names a position in the frame,
+    * ``w > 0 and h > 0`` — a zero-area zone selects no pixels, so the goal can never admit. Left
+      unchecked it was a **permanent, undiagnosable never-fire** reachable from a valid WatchPlan.
+
+    Deliberately NOT checked: ``x + w <= 1``. An overhang is clamped by ``_region_bounds`` to a defined
+    answer, and a float-exact sum check would reject a legitimate full-width zone (``0.7 + 0.3`` is not
+    ``1.0`` in binary floating point). The JS side makes the same exclusion for the same reason.
+    """
+    if obj is None:
         return obj
-    if isinstance(obj, dict):
-        return Box(x=obj["x"], y=obj["y"], w=obj["w"], h=obj["h"])
-    return None  # pragma: no cover - defensive: unknown hint shape -> no hint.
+    if isinstance(obj, Box):
+        box = obj
+    elif isinstance(obj, dict):
+        try:
+            box = Box(x=obj["x"], y=obj["y"], w=obj["w"], h=obj["h"])
+        except KeyError as exc:
+            raise UnsupportedRegionHintError(
+                f"goal {goal_id!r} region_hint is missing {exc.args[0]!r}; a zone needs x, y, w and h",
+                goal_id=goal_id, field=str(exc.args[0]),
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise UnsupportedRegionHintError(
+                f"goal {goal_id!r} region_hint is not a usable zone: {exc}", goal_id=goal_id
+            ) from exc
+    else:
+        return None  # pragma: no cover - defensive: unknown hint shape -> no hint.
+
+    for name in ("x", "y", "w", "h"):
+        value = float(getattr(box, name))
+        if not 0.0 <= value <= 1.0:
+            raise UnsupportedRegionHintError(
+                f"goal {goal_id!r} region_hint.{name}={value!r} is outside [0, 1]; a watch-out zone is "
+                "in normalized image coordinates",
+                goal_id=goal_id, field=name,
+            )
+    if box.is_empty:
+        raise UnsupportedRegionHintError(
+            f"goal {goal_id!r} region_hint has zero area (w={box.w!r}, h={box.h!r}); it selects no "
+            "pixels, so the goal could never admit a frame",
+            goal_id=goal_id, field="w" if not box.w > 0.0 else "h",
+        )
+    return box
 
 
 def _coerce_schedule(obj: Any) -> Schedule | None:

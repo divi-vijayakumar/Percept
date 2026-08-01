@@ -41,11 +41,16 @@ export function clamp01(v) {
 /**
  * A Box `{x,y,w,h}` of finite numbers that encloses actual area (`w > 0 && h > 0`).
  *
- * NOTE the asymmetry with the wire contract: `parseBox`/`makeBox` require finiteness only, because
- * the Python `Box` dataclass permits a zero-extent box and rejecting one here would fork the
- * contract. This predicate is for the CONSUMERS of a box — a zero-area region masks the whole
- * frame away, so a gate reading one can never fire and should say so (or short-circuit) rather than
- * grind through an empty span.
+ * This is the AREA half of the Box contract `makeBox`/`parseBox` enforce at the authoring/wire
+ * boundary (they add the [0,1] range check). A zero-area zone selects no region of any image, so a
+ * goal carrying one is a permanent never-fire at every threshold — an authoring mistake that is
+ * indistinguishable from a working watch once it is on the wire, which is why it is refused there
+ * rather than interpreted.
+ *
+ * It is deliberately NOT applied to a Box used as a VALUE: `motionScore` takes whatever box a
+ * caller derived, including one that collapsed, and measures the pixel span the bounds give it (see
+ * `motion.regionBounds` — a zero-EXTENT box is not always a zero-PIXEL box). Enforcing area there
+ * instead of here is what forked the two runtimes on the mean path (FIND-PARITY-01).
  */
 export function nonEmptyBox(box) {
   return (

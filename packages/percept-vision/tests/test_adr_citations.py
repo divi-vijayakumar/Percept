@@ -86,29 +86,29 @@ GATE_ANCHORS = [
     (13, "Rising-edge"),
     (16, "confident-false and re-arms"),
     (32, "Suppression is observable"),
-    (77, "_DEFAULT_MAX_KEYS"),
-    (78, "_DEFAULT_KEY_TTL_S"),
-    (80, "GateAction = Literal"),
-    (111, "GATE_REASONS"),
-    (121, ")"),
-    (125, "REASON_ACTION"),
-    (143, "SUPPRESSION_REASONS"),
-    (220, "def classify("),
-    (289, "evaluate`` is the only firing path"),
+    (79, "_DEFAULT_MAX_KEYS"),
+    (80, "_DEFAULT_KEY_TTL_S"),
+    (82, "GateAction = Literal"),
+    (123, "GATE_REASONS"),
+    (134, ")"),
+    (138, "REASON_ACTION"),
+    (162, "SUPPRESSION_REASONS"),
+    (239, "def classify("),
+    (318, "evaluate`` is the only firing path"),
     # The six per-key facts. They were six parallel dicts; they are now the fields of ONE
     # `_KeyState` record, which is what made `_drop`/`reset_goal`/`reset_entity` and the `max_keys`
     # denominator agree. Each field's comment still names the dict it replaced, so the ADR's cite
     # resolves to the state it is talking about.
-    (262, "_armed"),
-    (263, "_dwell_since"),
-    (266, "_no_evict"),
-    (267, "_last_fire"),
-    (488, "def decide("),
-    (569, "confident-false re-arms"),
-    (594, "effective_refractory"),
-    (600, '"refractory"'),
-    (676, "def reset_entity("),
-    (710, "def snapshot("),
+    (281, "_armed"),
+    (282, "_dwell_since"),
+    (285, "_no_evict"),
+    (286, "_last_fire"),
+    (517, "def decide("),
+    (607, "confident-false re-arms"),
+    (632, "effective_refractory"),
+    (638, '"refractory"'),
+    (774, "def reset_entity("),
+    (808, "def snapshot("),
 ]
 
 
@@ -122,9 +122,9 @@ def test_gate_line_anchors_still_hold(lineno, token):
 
 #: The corrected gate.py cites, verbatim, as ADR-006 now writes them.
 GATE_CITES = [
-    ":13-16", ":32-40", ":77-78", ":80", ":111-121", ":125-135", ":143",
-    ":220-236", ":289", ":262-267", ":263", ":330-331", ":266",
-    ":488", ":569", ":594-600", ":676", ":710-861",
+    ":13-16", ":32-42", ":79-80", ":82", ":123-134", ":138-149", ":162",
+    ":239-255", ":318", ":281-286", ":282", ":359-360", ":285",
+    ":517", ":607", ":632-638", ":774", ":808-970",
 ]
 
 

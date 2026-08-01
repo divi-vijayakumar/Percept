@@ -60,7 +60,10 @@ SUMMARY: dict[str, str] = {
     "watches/scenario-screenshare.md": "A fixed-cadence content watch.",
     "sources/voice-and-watchdog.md": "The voice-escalation seam and long-running watches.",
     "configuration/overview.md": "**Everything you can tune** — the `Settings` tree, every env var, and resolver precedence.",
-    "configuration/tunables.md": "**All 157 tunables, and the 31 an optimizer may search.** Generated from the registry.",
+    # The two counts are hand-carried from `percept.tunables.REGISTRY` (this generator does not
+    # import the package) and had already drifted 4 rows behind it. Re-read them off the summary
+    # table at the top of docs/configuration/tunables.md whenever a TunableSpec is added or removed.
+    "configuration/tunables.md": "**All 162 tunables, and the 31 an optimizer may search.** Generated from the registry.",
     "judges/registries.md": "**Backend seams, detectors, and profile registries** — and how to add your own. Generated.",
     "resources/cli.md": "All nine console scripts, their flags, and install requirements.",
     "incidents/scope-and-persistence.md": "**Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart.",

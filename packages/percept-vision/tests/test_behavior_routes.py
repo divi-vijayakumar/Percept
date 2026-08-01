@@ -1243,9 +1243,9 @@ class _RearmSpyGate(Gate):
         super().__init__(*a, **kw)
         self.rearms: list = []
 
-    def rearm(self, key):
+    def rearm(self, key, **kw):
         self.rearms.append(key)
-        super().rearm(key)
+        super().rearm(key, **kw)
 
 
 class StartAnchorSurvivesEpisodeFoldTests(unittest.TestCase):
@@ -1298,7 +1298,7 @@ class StartAnchorSurvivesEpisodeFoldTests(unittest.TestCase):
             outcome_sink=outcomes.append,
         )
         self.assertIsNone(fired)
-        # gate.py:574-586 — seen-but-disarmed, not a rising edge this deployment watched happen.
+        # gate.py:612-624 — seen-but-disarmed, not a rising edge this deployment watched happen.
         self.assertEqual([o.reason for o in outcomes], ["start_anchored"])
         self.assertIn(key, gate._armed)
         self.assertFalse(gate._armed[key])

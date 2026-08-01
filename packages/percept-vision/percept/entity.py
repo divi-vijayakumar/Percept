@@ -7,16 +7,60 @@ freshness, and the load-bearing rule is enforced here: **assertion beats observa
 
 Appearance re-id (recognizing a thing across a tracking gap) is Phase 4; this module ships the
 continuity reference and retains an ``appearance`` slot on every entity for forward-compat.
+
+**One entity, one observation, one frame.** A frame is the strongest identity evidence there is:
+two simultaneous detections are two subjects, however close they are and however alike they look.
+:meth:`EntityGraph.ingest` enforces that as an invariant rather than hoping the matcher happens to
+respect it — see the ``claimed`` set there.
+
+**Identity churn is reported, never silent.** Mints, contested claims, coast refusals and deaths
+all bump a counter on :meth:`EntityGraph.identity_counters` and reach
+:attr:`EntityGraph.on_identity`, so a run whose subjects merged or re-minted does not publish a
+signature identical to a run where they never met.
 """
 
 from __future__ import annotations
 
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .adapters import Attribute, Box, Observation
 from .identity import ContinuityIdentity
+from .observability import get_logger, log
+
+_LOGGER = "percept.entity"
+
+#: The identity lifecycle events this graph publishes. Named here so a dashboard, a counter scrape
+#: and a test can iterate them instead of grepping for string literals.
+IDENTITY_EVENTS: tuple[str, ...] = ("mint", "contested", "coast_expired", "evicted")
+
+
+@dataclass(frozen=True)
+class IdentityEvent:
+    """One thing that happened to an id, on the "never silent" principle the gate already states.
+
+    ``kind`` is one of :data:`IDENTITY_EVENTS`:
+
+    * ``mint`` — a NEW id entered the scene. Ordinary when a subject arrives; the signal a client
+      reads is the RATE, because a graph minting more ids than the scene holds subjects is a graph
+      losing tracks (an occluded subject that comes back past the coast window is a fresh id, and
+      everything downstream of it — gate edge, cache slot, episode — is fresh too).
+    * ``contested`` — an observation's best match was an entity another observation in the SAME
+      frame had already claimed. The claim was refused and this observation was matched against
+      what remained. This is the near-merge: without the refusal, two subjects would share one id.
+    * ``coast_expired`` — the recovery matcher declined to re-link a track because its last real
+      observation was older than ``coast_s``. ``gap_s`` carries the age that was refused — the
+      closest miss — which is the occlusion-duration datum the window itself has never been
+      calibrated against.
+    * ``evicted`` — the graph's ``max_entities`` bound killed this subject.
+    """
+
+    kind: str
+    entity_id: str
+    label: str = ""
+    gap_s: float | None = None
 
 
 @dataclass
@@ -76,6 +120,7 @@ class EntityGraph:
         predict_iou: float = 0.3,
         coast_s: float = 1.0,
         on_evict: Callable[[str], None] | None = None,
+        on_identity: "Callable[[IdentityEvent], None] | None" = None,
     ) -> None:
         self._iou = iou_match
         self._max = max_entities
@@ -84,6 +129,17 @@ class EntityGraph:
         # ``Gate.reset_entity`` (+ cache invalidation) so a dead entity leaves no orphan gate key behind.
         # Settable after construction too (the gate is built after the graph). Default None -> no-op.
         self.on_evict = on_evict
+        # Every identity lifecycle event, typed. Settable after construction for the same reason
+        # ``on_evict`` is — an owner that wants these on its own metrics/health channel wires one
+        # line. Unwired is NOT silent: the counters below are always kept, and every event that
+        # means a subject was nearly or actually LOST (a refused claim, a refused coast, a death)
+        # also logs a structured line, the same shape
+        # ``percept.runtime._bounds.BoundedRecencyMap`` uses for a bound-forced drop.
+        self.on_identity = on_identity
+        # ``identity.<kind>`` -> count. Dotted to match the runtime's counter vocabulary
+        # (``episode.new``, ``gate.silent``), so publishing these on a metrics registry is a
+        # pass-through rather than a translation.
+        self._identity_counts: Counter[str] = Counter()
         self._clock = clock or time.monotonic
         # The matcher decides "same thing?" — continuity by default; AppearanceIdentity re-ids
         # across gaps when an embedder is supplied. Either way, ids are assigned here, below the LLM.
@@ -109,17 +165,42 @@ class EntityGraph:
         *,
         t: float | None = None,
     ) -> list[Entity]:
-        """Match observations to entities by IoU+label; mint/update; record observed attrs."""
+        """Match observations to entities by IoU+label; mint/update; record observed attrs.
+
+        **At most one observation per entity per frame.** Two simultaneous detections are two
+        subjects: the frame itself is the evidence, and no similarity score outranks it. The
+        ``claimed`` set below is that invariant — an entity an earlier observation in this frame
+        already bound to is off the table for every later one, which is exactly what
+        :meth:`_predict_match` has always done with its ``exclude`` argument. Without it a mover
+        whose own continuity has broken lands on the nearest stranger's box (a crossing), or two
+        similarly-dressed subjects at DISJOINT boxes both answer the appearance matcher's "same
+        thing?" with one id — and the passed-by subject's identity is destroyed while the other
+        inherits its box, its motion model and every downstream key scoped by it.
+
+        The loser of a contested match is not dropped: it is re-matched against what remains, then
+        offered to the recovery path, and mints a new id only if neither can place it. The refusal
+        itself is reported (``contested``) — a near-merge is the identity event most worth seeing.
+
+        The returned list is aligned to ``observations`` and, by the same invariant, carries each
+        entity at most once.
+        """
         now = self._clock() if t is None else t
         touched: list[str] = []
+        claimed: set[str] = set()
         for obs in observations:
             signature = self._embedder(frame, obs.box) if self._embedder is not None else None
             match_id = self._match_id(obs, signature)
+            if match_id is not None and match_id in claimed:
+                # Contested: the best match this frame already belongs to another detection. Refuse
+                # it and ask again over what is left — the cost of the second pass is paid only on
+                # the rare frame where two observations actually compete.
+                self._identity_event("contested", match_id, obs.label)
+                match_id = self._match_id(obs, signature, exclude=claimed)
             if match_id is None:
                 # AUGMENT, don't replace: only when normal continuity+appearance fails do we try where the
                 # entity is PREDICTED to be. So a held subject (crowd) is untouched; a fast displacement that
                 # broke memoryless IoU re-links instead of minting a new id.
-                match_id = self._predict_match(obs, now, exclude=set(touched))
+                match_id = self._predict_match(obs, now, exclude=claimed)
             entity = self._entities.get(match_id) if match_id else None
             if entity is None:
                 entity = self._mint(obs, now, source)
@@ -133,6 +214,7 @@ class EntityGraph:
                 entity.appearance = signature  # retain on every entity (forward-compat re-id)
             self._record_observed(entity, obs, now)
             touched.append(entity.id)
+            claimed.add(entity.id)
         self._last_frame_ids = touched
         self._evict()
         return [self._entities[i] for i in touched]
@@ -140,16 +222,30 @@ class EntityGraph:
     def _predict_match(self, obs: Observation, now: float, *, exclude: set) -> str | None:
         """Recovery path (motion mode): match ``obs`` against each entity's PREDICTED box (constant
         velocity), so a fast displacement re-links to the same id. Coasts only within ``_coast_s`` of the
-        last real observation — a stale track doesn't reach out and grab a passer-by."""
+        last real observation — a stale track doesn't reach out and grab a passer-by.
+
+        A candidate refused for age alone is reported as ``coast_expired`` when nothing else could
+        place the observation either, carrying the gap that was refused. That is the one moment the
+        coast window actually decides something, and the gap it refused is the measurement the
+        window's own value has never been chosen against."""
         best, best_iou = None, self._predict_iou
+        stalest: tuple[float, Entity] | None = None
         for e in self._entities.values():
             if e.id in exclude or e.label != obs.label or e.anchor_box is None:
                 continue
-            if now - e.anchor_t > self._coast_s:
+            gap = now - e.anchor_t
+            if gap > self._coast_s:
+                # The closest miss, not the worst one: a track refused by 0.1s is what a client
+                # tuning the window needs to see, and a long-dead track says nothing about it.
+                if stalest is None or gap < stalest[0]:
+                    stalest = (gap, e)
                 continue
             iou = e.predicted_box(now).iou(obs.box)
             if iou >= best_iou:
                 best, best_iou = e, iou
+        if best is None and stalest is not None:
+            gap, e = stalest
+            self._identity_event("coast_expired", e.id, e.label, gap_s=gap)
         return best.id if best is not None else None
 
     def _update_motion(self, entity: Entity, new_box: Box, now: float) -> None:
@@ -167,9 +263,17 @@ class EntityGraph:
             entity.vel = tuple(al * m + (1 - al) * v for m, v in zip(measured, entity.vel))
         entity.anchor_box, entity.anchor_t = new_box, now
 
-    def _match_id(self, obs: Observation, signature: Any) -> str | None:
-        """Ask the identity strategy for the matching entity id (None -> mint a new one)."""
-        known = list(self._entities.values())
+    def _match_id(
+        self, obs: Observation, signature: Any, *, exclude: "set[str] | None" = None
+    ) -> str | None:
+        """Ask the identity strategy for the matching entity id (None -> mint a new one).
+
+        ``exclude`` is applied to the KNOWN SET rather than passed on, so same-frame exclusivity
+        holds for every conformer of the frozen ``match(obs, known)`` protocol — including a custom
+        one this graph has never seen. A matcher cannot answer "the same thing" about an entity it
+        is not shown.
+        """
+        known = [e for e in self._entities.values() if not exclude or e.id not in exclude]
         try:
             return self._identity.match(obs, known, signature=signature)
         except TypeError:
@@ -188,7 +292,45 @@ class EntityGraph:
             sources={source},
         )
         self._entities[eid] = entity
+        self._identity_event("mint", eid, obs.label)
         return entity
+
+    # -- observability -------------------------------------------------------
+    def _identity_event(
+        self, kind: str, entity_id: str, label: str = "", *, gap_s: float | None = None
+    ) -> None:
+        """Publish one identity lifecycle event. Counted always; hooked when wired; logged when not.
+
+        A ``mint`` is the ordinary way a subject enters a scene, so it is counted and not logged —
+        a 24/7 watch would otherwise pay a log line per person who walks in. The other three are
+        each a subject the graph came close to losing, or did lose, and those are never silent:
+        ADR-001 §9's rule for a bound-forced drop is the same rule an identity that changed under a
+        client's feet deserves.
+        """
+        self._identity_counts[f"identity.{kind}"] += 1
+        event = IdentityEvent(kind=kind, entity_id=entity_id, label=label, gap_s=gap_s)
+        if self.on_identity is not None:
+            try:
+                self.on_identity(event)
+            except Exception:  # noqa: BLE001 - observability never becomes the tracking failure
+                pass
+        elif kind != "mint":
+            log(
+                get_logger(_LOGGER),
+                f"identity.{kind}",
+                entity_id=entity_id,
+                label=label,
+                **({} if gap_s is None else {"gap_s": round(gap_s, 4)}),
+            )
+
+    def identity_counters(self) -> dict[str, int]:
+        """``identity.<kind>`` -> count for this graph's whole life. See :data:`IDENTITY_EVENTS`.
+
+        Every key is present from the first call, zero included: a client comparing two runs must
+        be able to read "no contested claims" as a measurement rather than as an absent field.
+        """
+        return {f"identity.{kind}": self._identity_counts[f"identity.{kind}"]
+                for kind in IDENTITY_EVENTS}
 
     def _record_observed(self, entity: Entity, obs: Observation, now: float) -> None:
         for key, value in obs.attrs.items():
@@ -203,6 +345,7 @@ class EntityGraph:
         while len(self._entities) > self._max:
             oldest = min(self._entities.values(), key=lambda e: e.last_seen)
             del self._entities[oldest.id]
+            self._identity_event("evicted", oldest.id, oldest.label)
             if self.on_evict is not None:
                 self.on_evict(oldest.id)  # sweep this entity's downstream state (gate keys, cache)
 
@@ -308,4 +451,4 @@ class EntityGraph:
         self._counter = max_n  # new mints continue past the restored ids
 
 
-__all__ = ["Entity", "EntityGraph"]
+__all__ = ["Entity", "EntityGraph", "IdentityEvent", "IDENTITY_EVENTS"]

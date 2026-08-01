@@ -1,16 +1,18 @@
 """Edge↔harness selected-contract parity + edge latency.
 
-Compares the explicitly listed detector boundaries, motion scores, audio energy, and ordered-audio
-result fields between the JS percept-edge route and Python percept-harness route on identical inputs.
+Compares the explicitly listed detector boundaries, motion scores, gate admissions, audio energy,
+and ordered-audio result fields between the JS percept-edge route and Python percept-harness route
+on identical inputs.
 Passing means those selected fields conform for these frozen vectors; it is not a byte-for-byte
 serialization proof or a claim about untested downstream precision/recall. Also measures edge frame
 latency (JS Edge.processFrame throughput).
 
 The motion, salience, and ego fields are compared with EXACT float equality (:func:`bit_identical`),
-because that is the invariant their sources advertise; the detector-boundary and audio fields keep a
-small tolerance, since those paths are not integer-exact. The vector lists are not decoration — each
-one was chosen against a measured fork of the implementation, so read the notes above them before
-editing.
+because that is the invariant their sources advertise; the gate admissions are compared as a
+per-frame decision STRING (two runtimes can buy the same NUMBER of judge calls on different frames);
+the detector-boundary and audio fields keep a small tolerance, since those paths are not
+integer-exact. The vector lists are not decoration — each one was chosen against a measured fork of
+the implementation, so read the notes above them before editing.
 
 Run (node auto-discovered via PATH or ~/.nvm; or set PERCEPT_NODE):
     PYTHONPATH=packages/percept-vision \
@@ -27,7 +29,7 @@ import sys
 import warnings
 from pathlib import Path
 
-from percept.adapters import AudioFrame, Box
+from percept.adapters import AudioFrame, Box, WatchCondition, WatchSpec
 from percept.events import AudioBoundary, AudioUnit, AudioWindow
 from percept.harness.detectors import (
     AcousticOnset,
@@ -37,6 +39,7 @@ from percept.harness.detectors import (
 )
 from percept.harness.tier0 import (
     DegenerateBlockPartitionWarning,
+    MotionGate,
     ego_residual_score,
     motion_score,
 )
@@ -231,6 +234,29 @@ SALIENCE_PAIRS = [
     # the boundary from the other side: an 8x6 area is EXACTLY the [8,6] grid, so the clamp must not
     # bite at all. -> 0.176471, forks to 0.162745 if it fires one pixel early.
     {"w": 8, "h": 6, "a": [0] * (8 * 6), "b": _GRAD86, "stat": "p95"},
+    # --- a ZERO-EXTENT zone, which the bounds do NOT collapse (FIND-PARITY-01) -------------------
+    # Every region vector above encloses area, so none of them can see what the two runtimes do with
+    # a zone that does not. The bounds are asymmetric — the origin TRUNCATES and the far bound ROUNDS
+    # — so a zero-extent Box is only a zero-PIXEL box when that shared product rounds down: at x=0.1
+    # on a 7px raster it is trunc(0.7)=0 .. round(0.7)=1, one real column. Python measured it and the
+    # JS mean path short-circuited to 0 on `!nonEmptyBox(region)`, which is the widest admission fork
+    # this gate can express: the same authored goal admitted EVERY frame server-side and NO frame on
+    # device. -> 1.000000, forks to 0.000000. The zone is refused at the authoring/wire boundary now,
+    # but `motionScore` still takes a Box as a value (a derived zone may collapse), so the two
+    # runtimes must still answer it identically.
+    {"w": 7, "h": 3, "a": [0] * 21, "b": [255] * 21, "stat": "mean",
+     "region": {"x": 0.1, "y": 0.1, "w": 0.0, "h": 0.5}},
+    # the same zone on a BLOCK stat, which never had the short-circuit: it agreed with Python
+    # throughout, and pinning it is what keeps a "fix" that collapses all three to 0 from passing.
+    # -> 1.000000.
+    {"w": 7, "h": 3, "a": [0] * 21, "b": [255] * 21, "stat": "block_max",
+     "region": {"x": 0.1, "y": 0.1, "w": 0.0, "h": 0.5}},
+    # the control from the other side: 0.1*3 = 0.3 truncates AND rounds to 0, so THIS zone really
+    # does collapse to an empty span and 0 is the right answer on both sides. Together with the two
+    # above it says the divergence was about the rounding, not about zero-extent zones in general.
+    # -> 0.000000.
+    {"w": 7, "h": 3, "a": [0] * 21, "b": [255] * 21, "stat": "mean",
+     "region": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.0}},
 ]
 
 # Mode B (ego compensation): a pure pan residual ~0 while its raw mean is high; a localized subject the
@@ -274,7 +300,113 @@ EGO_PAIRS = [
     {"w": 13, "h": 11, "a": _NDA, "b": _NDB, "k": 3,
      "region": {"x": 0.5, "y": 0.0, "w": 0.5, "h": 1.0}},
 ]
+# --- the GATE: same media + same authored WatchSpec -> the same ADMITTED FRAMES ------------------
+# Everything above compares a FUNCTION. A deployment does not buy a number, it buys a judge call, and
+# the decision to buy one runs through per-goal cadence and through what an APPLIED-but-empty spec
+# means — neither of which any salience vector can reach. Both were measured forks:
+#
+#   * the edge RETURNED on the first firing condition, so only that goal's cadence brake was stamped
+#     and every other goal sharing the frame admitted again on the very next one (FIND-PARITY-02);
+#   * an applied spec with no conditions fell through to the specless `defaultThreshold` fallback, so
+#     a device kept publishing frames after the last watch was cancelled (FIND-PARITY-03).
+#
+# Compared as a decision STRING (`.1.1.1`), not a count: two runtimes can buy the same number of
+# calls on different frames. The clip is alternating luma, so motion is 1.0 on every frame after the
+# first and the ONLY thing that can suppress an admission is the policy under test.
+_GATE_W, _GATE_H = 24, 18
+_GATE_FRAMES = [
+    ([0] * (_GATE_W * _GATE_H) if i % 2 == 0 else [255] * (_GATE_W * _GATE_H)) for i in range(6)
+]
+_GATE_TS = [float(i) for i in range(6)]
+
+# A SECOND clip, for the over-correction of the same bug. Every goal above is whole-frame, so they
+# all fire on the same frames and a runtime that stamped a goal which never fired would score the
+# same marks. Here the first change misses the left quarter entirely: a zone goal does NOT fire on
+# frame 1 and DOES on frame 2, so a brake it never earned suppresses a real admission.
+_ZONE_LEFT = {"x": 0.0, "y": 0.0, "w": 0.25, "h": 1.0}
+_ZONE_FRAMES = [
+    [0] * (_GATE_W * _GATE_H),
+    # everything RIGHT of the zone flips (whole-frame mean 0.75, in-zone 0.0)
+    [0 if (i % _GATE_W) < 6 else 255 for i in range(_GATE_W * _GATE_H)],
+    [255] * (_GATE_W * _GATE_H),   # ...now the zone flips too (in-zone 1.0)
+    [0] * (_GATE_W * _GATE_H),
+    [255] * (_GATE_W * _GATE_H),
+    [0] * (_GATE_W * _GATE_H),
+]
+
+
+def _goal(goal_id, **overrides):
+    """One condition of the shared shape: threshold 0.2, cadence 2 s, motion channel."""
+    condition = {
+        "goal_id": goal_id, "anchor_text": "a hand", "threshold": 0.2, "cadence_s": 2.0,
+    }
+    condition.update(overrides)
+    return condition
+
+
+GATE_CASES = [
+    # two goals whose thresholds are cleared by the SAME frame, sharing one cadence window.
+    # -> '.1.1.1'; an edge that stamps only the first goal forks to '.11111'.
+    {"name": "two goals, one cadence window", "conditions": [_goal("first"), _goal("second")]},
+    # the control that rules out threshold/salience explanations: ONE goal, same cadence, same clip.
+    # Two goals must not cost more than one. -> '.1.1.1' on both sides before AND after the fix.
+    {"name": "one goal, same cadence (control)", "conditions": [_goal("only")]},
+    # three, because "stamp the first" and "stamp the first two" are different bugs.  -> '.1.1.1'.
+    {"name": "three goals, one cadence window",
+     "conditions": [_goal("a"), _goal("b"), _goal("c")]},
+    # the accumulation must not become "brake everything once anything fires": `deaf` can never clear
+    # 1.5, so its brake must never be stamped and its presence must not move the marks. -> '.1.1.1'.
+    {"name": "a goal that never clears its bar",
+     "conditions": [_goal("loud"), _goal("deaf", threshold=1.5)]},
+    # every goal cancelled — the spec `compile_watchspec` emits for an empty goal list. Nothing to
+    # look for. -> '......'; an edge falling back to its specless default forks to '.11111'.
+    {"name": "every goal cancelled (empty spec)", "conditions": []},
+    # ...and the control that says the empty case is about the SPEC, not about the clip: one armed
+    # goal with no cadence admits every frame after the first. -> '.11111'.
+    {"name": "one armed goal, no cadence (control)",
+     "conditions": [_goal("armed", cadence_s=None)]},
+    # THE OVER-CORRECTION of FIND-PARITY-02, on the zone clip: only a goal that FIRED may be braked.
+    # The zone goal cannot fire on frame 1 (nothing moved in its quarter) and fires on frame 2; a
+    # runtime that stamps every armed condition instead of every firing one brakes it at frame 1 and
+    # eats the real admission at frame 2. -> '.11111', forks to '.1.1.1'.
+    {"name": "a brake only a goal that fired may earn",
+     "frames": _ZONE_FRAMES,
+     "conditions": [_goal("whole"), _goal("zone", region_hint=_ZONE_LEFT)]},
+]
+
 LATENCY = {"width": 32, "height": 32, "frames": 5000}
+
+
+def _gate_condition(condition: dict) -> WatchCondition:
+    """One GATE_CASES condition dict -> the Python :class:`WatchCondition` the harness gates on.
+
+    The SAME dict is sent to the JS side as wire JSON, so both runtimes are driven from one authored
+    description of the watch rather than from two hand-kept copies of it.
+    """
+    return WatchCondition(
+        goal_id=condition["goal_id"],
+        anchor_text=condition["anchor_text"],
+        threshold=condition["threshold"],
+        region_hint=_box(condition.get("region_hint")),
+        cadence_s=condition.get("cadence_s"),
+        gate_on=condition.get("gate_on", "motion"),
+        salience_stat=condition.get("salience_stat", "mean"),
+        ego_compensate=condition.get("ego_compensate", False),
+    )
+
+
+def py_gate_admissions(case: dict) -> list[bool]:
+    """Drive the Python :class:`MotionGate` over the gate clip: one escalate decision per frame."""
+    gate = MotionGate(WatchSpec(conditions=[_gate_condition(c) for c in case["conditions"]]))
+    return [
+        gate.evaluate((_GATE_W, _GATE_H, tuple(pixels)), ts=ts).escalate
+        for pixels, ts in zip(case.get("frames", _GATE_FRAMES), _GATE_TS)
+    ]
+
+
+def _marks(decisions) -> str:
+    """``.1.1.1`` — a per-frame decision string, so a mismatch shows WHICH frame moved."""
+    return "".join("1" if d else "." for d in decisions)
 
 
 def py_detector(cls, signal):
@@ -340,6 +472,15 @@ def main():
         "saliencePairs": SALIENCE_PAIRS,
         "egoPairs": EGO_PAIRS,
         "wakeCases": WAKE_CASES,
+        "gateCases": [
+            {
+                "name": case["name"],
+                "w": _GATE_W, "h": _GATE_H,
+                "frames": case.get("frames", _GATE_FRAMES), "ts": _GATE_TS,
+                "spec": {"version": 1, "conditions": case["conditions"]},
+            }
+            for case in GATE_CASES
+        ],
         "audioEnergyVectors": AUDIO_FIXTURE["energy_vectors"],
         "audioTimelineVectors": AUDIO_FIXTURE["timeline_vectors"],
         "latency": LATENCY,
@@ -378,6 +519,7 @@ def main():
         for c in EGO_PAIRS
     ]
     py_wake = [wake_score(c["signals"], c.get("policy")) for c in WAKE_CASES]
+    py_gate = [py_gate_admissions(case) for case in GATE_CASES]
     py_wake_decisions = [should_wake(c["signals"], c.get("policy")) for c in WAKE_CASES]
     py_audio_energy = [
         pcm_energy(struct.pack(f"<{len(c['samples'])}h", *c["samples"]))
@@ -446,6 +588,14 @@ def main():
                 f"wake-decision[{i}]  py=({pd.top_channel!r}, {pd.wake}) != "
                 f"js=({jt!r}, {jw})"
             )
+        checks.append((label, same))
+    for i, (pd, jd) in enumerate(zip(py_gate, js["gateAdmissions"])):
+        name = GATE_CASES[i]["name"]
+        py_marks, js_marks = _marks(pd), _marks(jd)
+        same = py_marks == js_marks
+        label = f"gate-admission[{i}] {name} = {py_marks}"
+        if not same:
+            label = f"gate-admission[{i}] {name}  py={py_marks} != js={js_marks}"
         checks.append((label, same))
     for i, (ps, jsc) in enumerate(zip(py_audio_energy, js["audioEnergies"])):
         name = AUDIO_FIXTURE["energy_vectors"][i]["name"]

@@ -307,11 +307,41 @@ describe("motionScore — region bounds clamp to the frame (row JS-4)", () => {
   });
 
   it("an entirely off-frame or zero-extent region collapses to an empty span and scores 0", () => {
+    // NOTE these two boxes collapse because their BOUNDS collapse (2*8 clamps to the right edge;
+    // 0*8 truncates and rounds to the same 0) — not because they enclose no area. A zero-extent box
+    // whose bounds do NOT collapse is the case below.
     for (const box of [{ x: 2, y: 0, w: 0.1, h: 1 }, { x: 0, y: 0, w: 0, h: 1 }]) {
       expect(motionScore(still, row2, { region: box })).toBe(0);
       expect(motionScore(still, row2, { region: box, stat: "block_max" })).toBe(0);
       expect(motionScore(still, row2, { region: box, stat: "p95" })).toBe(0);
     }
+  });
+
+  it("a zero-extent zone whose bounds do NOT collapse is measured, identically on every stat (FIND-PARITY-01)", () => {
+    // The bounds are asymmetric on purpose: the ORIGIN truncates and the FAR bound rounds
+    // half-to-even. At x=0.1 on a 7px raster that is trunc(0.7)=0 .. round(0.7)=1 — one real pixel
+    // column — so a zero-EXTENT box is not a zero-PIXEL box. Python's `_region_bounds` computes
+    // exactly that and `_motion_score_region` scored the column 1.0, while the mean path here
+    // short-circuited on `!nonEmptyBox(region)` and answered 0: the same authored goal admitted
+    // EVERY frame server-side and no frame on device. The block stats never had the short-circuit
+    // and always agreed with Python; all three now do.
+    const a = makeFrame(7, 3, 0);
+    const b = makeFrame(7, 3, 255);
+    const zone = { x: 0.1, y: 0.1, w: 0.0, h: 0.5 };
+    expect(motionScore(a, b, { region: zone })).toBe(1);
+    expect(motionScore(a, b, { region: zone, stat: "block_max" })).toBe(1);
+    expect(motionScore(a, b, { region: zone, stat: "p95" })).toBe(1);
+    // Half the frame moved, so the column being measured is a real measurement and not a saturated
+    // "everything moved": the same zone over a partial change reads the column's own diff.
+    const half = makeFrame(7, 3, [0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0]);
+    // rows 0..1 of column 0 (y: trunc(0.3)=0 .. round(1.8)=2) — one of the two moved.
+    expect(motionScore(a, half, { region: zone })).toBe(0.5);
+    // ...and the control from the other side: 0.1*3 = 0.3 truncates AND rounds to 0, so THIS zone
+    // really does collapse and 0 is the right answer.
+    expect(motionScore(a, b, { region: { x: 0.1, y: 0.1, w: 0.5, h: 0.0 } })).toBe(0);
+    // Both zones are refused at the authoring/wire boundary — `motionScore` takes a Box as a VALUE
+    // (a derived zone may collapse), so it degrades to the number the other runtime computes rather
+    // than throwing. See contract.test.js for the boundary that refuses them.
   });
 });
 
@@ -439,11 +469,13 @@ describe("motionScore — the opts are inputs too, and the return type is a numb
     }
   });
 
-  it("a finite but DEGENERATE region still scores 0 — the wire contract permits one", () => {
-    // Unchanged behaviour, now decided in one place. Python's Box validates nothing either, so
-    // rejecting a zero-extent box here would fork the contract; `numeric.nonEmptyBox` names it
-    // instead. NOTE this is a permanent never-fire, not a transient miss: a WatchCondition
-    // carrying `{x:0,y:0,w:0,h:1}` can never escalate on any frame, at any threshold.
+  it("a DEGENERATE region whose bounds collapse scores 0 — measured, not short-circuited", () => {
+    // The prose here used to say the answer was decided "in one place" by a `nonEmptyBox`
+    // short-circuit, and that "rejecting a zero-extent box here would fork the contract". Both
+    // claims are retired: the short-circuit is gone (it forked the two runtimes — FIND-PARITY-01),
+    // and the zero-area box is refused at the authoring/wire boundary instead. These three still
+    // score 0, and now for the reason the docstring always gave — on an 8x8 raster their BOUNDS
+    // collapse (0*8 and -1*8 both land on an empty span), so the pixel loops measure nothing.
     for (const region of [
       { x: 0, y: 0, w: 0, h: 1 },
       { x: 0, y: 0, w: 1, h: 0 },

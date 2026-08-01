@@ -54,7 +54,12 @@ from percept.runtime.envelope import SourceEnvelope
 from percept.runtime.worker import RuntimeHealthEvent, RuntimeStats, run
 from percept.sourceprofile import SourceProfile
 from percept.contracts import judgment_event_id
-from percept.tracing import PlanIdentity, content_hash
+from percept.tracing import (
+    JUDGE_SERVED_FROM_KEY,
+    JUDGE_SERVED_KEY,
+    PlanIdentity,
+    content_hash,
+)
 from percept.tunables import REGISTRY
 from percept.watchplan_apply import apply_watch_plan
 
@@ -326,6 +331,17 @@ _EDGE_DECISION_KEYS = {
     "coast_admit",
     "goal_ids",
     "admission_causes",
+    # The ADMITTING statistic, beside the whole-frame gauges above. `motion`/`structural`/`semantic`
+    # are deliberately config-stable full-frame gauges and `threshold` is the cutoff that actually
+    # applied, which under the shipped `salience_stat="block_max"` are on DIFFERENT SCALES — so a
+    # receipt carrying only the gauges could not reproduce the admission it records. These three
+    # come from the gate's own per-Watch outcome (percept/runtime/worker.py, the `edge.decision`
+    # emit). `admitting_score`/`admitting_detector` are NULL on a frame no Watch was admitted on by
+    # the gate — a coast or audio admit has no salience behind it, and says so rather than
+    # borrowing one.
+    "admitting_score",
+    "admitting_detector",
+    "loudest_score",
 }
 _TRACE_DATA_KEYS = {
     "edge.decision": _EDGE_DECISION_KEYS,
@@ -397,6 +413,15 @@ _DEGRADED_GATE_TRACE_DATA_KEYS = {
     "action",
     "entity_id",
     "degraded",
+}
+#: The VARIANT shape of ``judge.finished`` for a tick that reached its verdict WITHOUT spending a
+#: provider call — a perception-cache serve or a confident DirectJudge substitution. The two marker
+#: keys ride together or not at all (``percept.agent.Percept._judge_served_trace``), so an exact-key
+#: schema needs a second set rather than a loosened first one — the same treatment the degraded gate
+#: row above already gets. A tick that really spent a call adds no keys and matches the base set.
+_SERVED_JUDGE_TRACE_DATA_KEYS = _TRACE_DATA_KEYS["judge.finished"] | {
+    JUDGE_SERVED_KEY,
+    JUDGE_SERVED_FROM_KEY,
 }
 _HEALTH_DATA_KEYS = {
     "runtime_started": {"candidate_count", "media", "replay", "source_kind"},
@@ -1376,8 +1401,18 @@ def _parse_candidate_receipt(
     t = _strict_float(doc["t"], f"{context}.t")
     raw_edge = _object(doc["edge_decision"], f"{context}.edge_decision")
     _exact(raw_edge, _EDGE_DECISION_KEYS, f"{context}.edge_decision")
-    for key in ("threshold", "motion", "structural", "semantic"):
+    for key in ("threshold", "motion", "structural", "semantic", "loudest_score"):
         _strict_float(raw_edge[key], f"{context}.edge_decision.{key}")
+    # NULL is a real, load-bearing value on these two: it says no Watch was admitted by the GATE on
+    # this frame, which is different from an admitting score of 0.0 and must not be coerced into one.
+    if raw_edge["admitting_score"] is not None:
+        _strict_float(raw_edge["admitting_score"], f"{context}.edge_decision.admitting_score")
+    if raw_edge["admitting_detector"] is not None:
+        _strict_string(raw_edge["admitting_detector"], f"{context}.edge_decision.admitting_detector")
+    _require(
+        (raw_edge["admitting_score"] is None) == (raw_edge["admitting_detector"] is None),
+        f"{context}.edge_decision admitting score and detector must be present together",
+    )
     for key in ("escalate", "coast_admit"):
         _strict_bool(raw_edge[key], f"{context}.edge_decision.{key}")
     for key in ("goal_ids", "admission_causes"):
@@ -1754,6 +1789,8 @@ def _parse_arm_receipt(
         trace_data_keys = (
             _DEGRADED_GATE_TRACE_DATA_KEYS
             if stage == "gate.classified" and trace_data.get("degraded") is True
+            else _SERVED_JUDGE_TRACE_DATA_KEYS
+            if stage == "judge.finished" and trace_data.get(JUDGE_SERVED_KEY) is True
             else _TRACE_DATA_KEYS[stage]
         )
         _exact(trace_data, trace_data_keys, f"{context}.traces[{index}].data")

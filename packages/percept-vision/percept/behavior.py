@@ -50,7 +50,7 @@ from .contracts import (
 )
 from .episodes import EPISODE_POLICIES, ContinuationDecision
 from .duration_routes import duration_policy
-from .gate import ASK, FIRE, Gate, GateOutcome, classify
+from .gate import ASK, FIRE, SILENT, Gate, GateOutcome, classify
 from .identity_policy import SCENE_IDENTITY, is_entity_scoped
 from .observability import get_logger, log
 from .runtime._bounds import BoundedRecencyMap
@@ -483,6 +483,38 @@ _OPERATION_TO_MUTATION: dict[str, EpisodeMutation] = {
     "close": "closed",
 }
 
+#: The acts that ESTABLISH an episode's value, and therefore the only ones that may open its
+#: delivery. Byte-identical to :data:`percept.claims.VALUE_SETTING` and pinned equal to it by
+#: ``test_e2e_claim_conversation.py`` — restated here rather than imported because ``claims``
+#: imports from this module (``revision_id``) and the reverse edge would be a cycle.
+#:
+#: The mutation channel above cannot answer this question. ``assert``/``confirm``/``mention`` all
+#: fold to ``confirmed`` because none of them MUTATES an episode — which is right, and is a different
+#: question from which of them WROTE the slot. ``claims`` states the rule this restores: "Containing
+#: a value is not asserting it. mention/confirm leave the value untouched." That was true of the
+#: ledger and false of what reached a subscriber: a conversation opening with a value-bearing
+#: question ("Could we do $25K?") minted a new episode, and a new episode's first observation fires
+#: whatever verdict is in hand — so the delivered value was one the claim channel had explicitly
+#: refused, while the ``assert`` that really established the value folded as a re-statement of an
+#: already-emitted episode and reached no one. Only claim-slot concerns thread an ``operation`` at
+#: all, so every other fold is untouched.
+_ESTABLISHING_OPERATIONS: frozenset[str] = frozenset({"assert", "replace"})
+
+#: The mutations that are TESTIMONY THAT WHAT WAS ALREADY REPORTED NO LONGER STANDS, as opposed to a
+#: re-statement of it. Exactly the images of :data:`percept.contracts.MUTATING_OPERATIONS` under
+#: :data:`_OPERATION_TO_MUTATION` — and they arrive already authority-gated, because the claim state
+#: machine downgrades an unpermitted mutation to ``mention`` BEFORE the effective operation reaches
+#: this module. A speaker who may not correct the slot therefore cannot reach this set.
+#:
+#: It exists because "this edge is already spent" and "this is the same fact again" are different
+#: claims, and a gate key cannot tell them apart on its own: it holds one bit and no value. A
+#: restart makes them come apart — the episode map is session-only, so the first post-restart
+#: observation always looks like a new episode — and the two answers are opposite. A re-statement of
+#: a still-running occurrence must NOT re-arm (it would re-report what was already delivered), while
+#: a correction MUST (the value changed; silence is the worst outcome of the three). This set is
+#: what :func:`episode_fold` reports the difference with.
+_CHANGING_MUTATIONS: frozenset[str] = frozenset({"updated", "retracted", "closed"})
+
 
 def episode_mutation_of(operation: str) -> EpisodeMutation:
     """Map a Verdict :data:`~percept.contracts.Operation` to the episode fold's :data:`EpisodeMutation`.
@@ -513,6 +545,13 @@ class EpisodeFoldResult:
       episode (its first fire must not be suppressed by a key another subject left disarmed) and for an
       accepted update (a new revision is allowed to fire again).
     * :attr:`supersedes` — for an update, the :func:`revision_id` this new revision replaces.
+    * :attr:`fact_changed` — is this observation TESTIMONY that what was already reported no longer
+      stands (an authority-gated ``replace``/``retract``/``close``), rather than a re-statement of
+      it? The gate cannot answer this — it holds one bit per key and no value — and the two come
+      apart precisely on a restart, where a fold with no memory reports every observation as a new
+      episode. :meth:`percept.gate.Gate.rearm` refuses to re-open a spent edge read back from a
+      snapshot on an INFERRED boundary and honours it on an observed change, so a still-running
+      occurrence is not re-reported while a correction is not silently dropped.
 
     :attr:`match` and :attr:`mutation` are the typed WHY, from the closed :data:`EPISODE_MATCHES` /
     :data:`EPISODE_MUTATIONS` vocabularies. This is a pure record — :func:`episode_fold` computes it and
@@ -526,6 +565,7 @@ class EpisodeFoldResult:
     should_rearm: bool
     should_evaluate_gate: bool
     supersedes: str | None = None
+    fact_changed: bool = False
 
     def __post_init__(self) -> None:
         if self.match not in EPISODE_MATCHES:
@@ -543,6 +583,7 @@ def episode_fold(
     mutation: EpisodeMutation = "confirmed",
     ambiguous: bool = False,
     unknown: bool = False,
+    operation: "str | None" = None,
 ) -> EpisodeFoldResult:
     """Fold one observation against its episode's emission history → an :class:`EpisodeFoldResult`.
 
@@ -557,6 +598,11 @@ def episode_fold(
     * ``ambiguous`` — the subject resolved to more than one candidate → ``ambiguous``, gate-only.
     * ``unknown`` — the subject was SEEN BUT NOT IDENTIFIED (``resolution='unknown'``,
       derived by :func:`percept.episodes.subject_is_unknown`). A visible abstention.
+    * ``operation`` — the LOCAL speech act that produced ``mutation``, threaded through by
+      :meth:`BehaviorExecutor.fold_episode` when the caller supplied one. Read for exactly ONE
+      decision (see :data:`_ESTABLISHING_OPERATIONS`): may a non-establishing act OPEN an episode's
+      delivery? ``None`` (every caller that does not speak the claim channel) is byte-for-byte the
+      fold from before this parameter existed.
 
     Rules (made executable):
 
@@ -570,7 +616,11 @@ def episode_fold(
       match. The SOLE exception is a provisional single-focus continuation of an active BOUND episode
       (``decision.reason == 'unknown_provisional_continuation'``): that is a genuine continuation and
       folds as one below.
-    * ``new`` → a fresh episode: evaluate AND re-arm (its own edge, immune to a shared/disarmed key).
+    * ``new`` → a fresh episode: evaluate AND re-arm (its own edge, immune to a shared/disarmed key)
+      — UNLESS the act that opened it does not establish a value (a claim-channel ``mention``/
+      ``confirm``), in which case the episode opens but its delivery does not: there is nothing
+      authoritative to report yet, and the establishing act that follows still finds the episode
+      un-emitted and fires with the value the slot actually holds.
     * ``continuation`` + ``confirmed``/``none``:
         - already emitted → do NOT re-enter the gate (idempotent; THE TTL-invariant case);
         - not yet emitted → keep evaluating (a new episode mid-dwell/after an ASK may still fire).
@@ -601,12 +651,36 @@ def episode_fold(
             episode_id=episode_id, match="ambiguous", mutation="none",
             should_rearm=False, should_evaluate_gate=True, supersedes=None,
         )
+    changed = mutation in _CHANGING_MUTATIONS
     if decision.is_new:
+        if (
+            operation is not None
+            and operation not in _ESTABLISHING_OPERATIONS
+            and not changed
+        ):
+            # A birth the opening act neither established nor changed — a claim-channel
+            # ``mention``/``confirm``. The slot is still empty (the claim channel refused this
+            # utterance's value), so there is no authoritative value to deliver, and firing here
+            # delivers the UTTERANCE's value instead of the CLAIM's. Open the episode, withhold the
+            # delivery: ``emitted`` stays 0, so the establishing act that follows folds as an
+            # un-emitted continuation and fires normally, carrying the value that was actually
+            # written. Never re-arms — an act that wrote nothing has no claim on another key's edge.
+            return EpisodeFoldResult(
+                episode_id=episode_id, match="new", mutation="none",
+                should_rearm=False, should_evaluate_gate=False, supersedes=None,
+            )
         # A birth: nothing prior to mutate. Re-arm so its first fire is never suppressed by a key a
         # different subject (mapping to the same gate key) happened to leave disarmed.
+        #
+        # ``fact_changed`` is what makes a restart survivable in BOTH directions. A birth is the one
+        # match a fold with no memory always reports, so on the first post-restart observation it
+        # means nothing on its own; the SPEECH ACT still means what it says. A ``replace`` here is a
+        # correction whose value moved, and it must reach the subscriber even though the gate's
+        # restored edge is spent — while a plain re-statement of the same running occurrence must not.
         return EpisodeFoldResult(
             episode_id=episode_id, match="new", mutation="none",
             should_rearm=True, should_evaluate_gate=True, supersedes=None,
+            fact_changed=changed,
         )
     # continuation of an existing episode
     if mutation == "closed":
@@ -619,6 +693,7 @@ def episode_fold(
         return EpisodeFoldResult(
             episode_id=episode_id, match="continuation", mutation="retracted",
             should_rearm=True, should_evaluate_gate=True, supersedes=supersedes,
+            fact_changed=True,
         )
     if mutation == "updated":
         # An accepted update is a new revision. It may re-arm and fire again — but only if the episode
@@ -629,6 +704,7 @@ def episode_fold(
                 episode_id=episode_id, match="continuation", mutation="updated",
                 should_rearm=True, should_evaluate_gate=True,
                 supersedes=revision_id(episode_id, emitted),
+                fact_changed=True,
             )
         return EpisodeFoldResult(
             episode_id=episode_id, match="continuation", mutation="updated",
@@ -942,8 +1018,11 @@ class BehaviorExecutor:
         ``operation`` (OPTIONAL) is the Verdict's LOCAL speech-act. When supplied it DERIVES
         the episode ``mutation`` via :func:`episode_mutation_of` (overriding the ``mutation`` kwarg), so
         a caller threads ``verdict.operation`` straight through and the fold consumes the mutation
-        channel without ever parsing a value. When ``None`` (default) the explicit ``mutation`` kwarg
-        is used, so an existing caller is byte-for-byte unchanged.
+        channel without ever parsing a value — and it is passed on to :func:`episode_fold`, which reads
+        it for the one thing the mutation cannot express: whether a NEW episode's opening act
+        established anything worth delivering (:data:`_ESTABLISHING_OPERATIONS`). When ``None``
+        (default) the explicit ``mutation`` kwarg is used and both behaviours are byte-for-byte the
+        path from before this parameter existed.
 
         ``unknown`` (OPTIONAL) marks a subject SEEN BUT NOT IDENTIFIED — the caller derives it
         with :func:`percept.episodes.subject_is_unknown` on the verdict. When ``True`` the fold degrades
@@ -966,7 +1045,8 @@ class BehaviorExecutor:
             self.metrics.incr(f"episode.fold.no_decision.{origin}")
         emitted = self._incidents.emitted(decision.episode.id) if decision is not None else 0
         return episode_fold(
-            decision, emitted=emitted, mutation=mutation, ambiguous=ambiguous, unknown=unknown
+            decision, emitted=emitted, mutation=mutation, ambiguous=ambiguous, unknown=unknown,
+            operation=operation,
         )
 
     def shadow_observe(
@@ -1385,7 +1465,10 @@ class BehaviorExecutor:
         failure to build the event degrades to ``judgment=None`` rather than to a changed decision.
 
         ``outcome_sink`` is an internal observability seam: when supplied, it receives the exact
-        typed outcome from this method's sole gate evaluation. It never causes a second evaluation.
+        typed outcome from this method's sole gate evaluation — and, when the DELIVERY MERGE below
+        withholds a decided FIRE, the ``merged_duplicate`` outcome that records which layer withheld
+        it, so a reader of the last outcome is never told the gate went silent on a rising edge. It
+        never causes a second evaluation.
 
         ``merge_anchor`` overrides the point in time the DELIVERY MERGE measures its window from
         (see :data:`INCIDENT_MERGE_WINDOW_S`); the default reads this key's live last-delivery stamp.
@@ -1426,7 +1509,16 @@ class BehaviorExecutor:
             if not fold.should_evaluate_gate:
                 # The episode already reported and nothing changed — do not consult the gate at all, so
                 # neither a shared key nor a TTL-evicted key can produce a duplicate incident.
-                self.metrics.incr(f"{metric}.idempotent_suppressed")
+                #
+                # ...or (``match='new'``) the episode was opened by an act that established no value,
+                # so there is nothing authoritative to report YET. Counted apart: the two look
+                # identical from here and mean opposite things — one is "already said", the other is
+                # "nothing to say yet, ask me after the next turn" — and reading a withheld opening
+                # as idempotency is how a claim conversation's establishing turn goes missing.
+                self.metrics.incr(
+                    f"{metric}.unestablished_withheld" if fold.match == "new"
+                    else f"{metric}.idempotent_suppressed"
+                )
                 return None
             if fold.should_rearm and not self.gate.require_false_first:
                 # A genuinely new episode (or an accepted update) — re-arm its own edge so a key another
@@ -1439,7 +1531,14 @@ class BehaviorExecutor:
                 # the watch started, which is the one thing the flag exists to refuse. Arming is then the
                 # gate's business alone. With the flag off (the default) a fresh key is already armed, so
                 # this re-arm only ever undoes a disarm — byte-for-byte the behaviour above.
-                self.gate.rearm(key)
+                #
+                # ``fact_changed`` carries the ONE thing the gate cannot see for itself: whether this
+                # observation restates the report the edge is spent on, or supersedes it. The fold's
+                # ``match`` cannot say — after a restart it reports every observation as a birth,
+                # because the episode map it would have consulted is session-only — so a gate key read
+                # back from a snapshot honours the speech act instead. See
+                # :meth:`percept.gate.Gate.rearm`.
+                self.gate.rearm(key, fact_changed=fold.fact_changed)
         # Pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
         # and this is byte-for-byte the rising-edge path. A never-goal's key is marked no_evict so a TTL
         # drop can never re-arm it (the fire-once-ever contract; see Gate.evaluate).
@@ -1483,6 +1582,20 @@ class BehaviorExecutor:
             # an "alert me the nth time" count.
             if self._merges_into_prior_delivery(key, t, merge_anchor):
                 self.metrics.incr(f"{metric}.merged_duplicate")
+                # ...and SAY SO. A drop here is a fire the baseline gate would have delivered,
+                # withheld one layer above the gate — ADR-001 §9's "a bound-driven drop is never a
+                # silent non-event" covers it, and ADR-006 open question 5 named this seam as the
+                # second place an event can be withheld and a new reason code as the price. Without
+                # the code the merge left nothing behind but an in-process counter, and the trace
+                # derived the record's action from the absent FireEvent while still carrying the
+                # gate's own ``rising_edge`` — so a ``.ptrace`` read ``silent: rising_edge`` and
+                # stage attribution charged the GATE for a drop the delivery layer made.
+                merged = GateOutcome(
+                    action=SILENT, reason="merged_duplicate", key=key, at=t,
+                )
+                self.gate.note_suppressed(merged)
+                if outcome_sink is not None:
+                    outcome_sink(merged)
                 return None
             # A DISTINCT occurrence for this watch — it anchors the window from here. Stamped on the
             # occurrence, not on the eventual delivery, so a duplicate is still merged (and still not
@@ -1743,6 +1856,16 @@ class BehaviorExecutor:
                     # evidence that the reported transition was a distinct second event.
                     merged = True
                     self.metrics.incr("transition.gate.merged_duplicate")
+                    # Deliberately NOT announced through ``Gate.note_suppressed`` the way the judged
+                    # path's merge is. The reason those differ is not symmetry, it is what already
+                    # reaches a reader: this drop is reported to the caller as
+                    # ``TransitionTick.outcome == "merged_duplicate"`` and written to the trace on
+                    # EVERY tick as ``transition.decision``'s ``outcome``, correctly attributed. The
+                    # judged path had no such row — its drop returned ``None`` and the trace derived
+                    # a gate silent carrying the gate's own reason (finding reflex-05). Adding a
+                    # second announcement here would only duplicate an already-attributed fact onto
+                    # the health channel, and it moves a stream a measured-evidence oracle
+                    # reconstructs (``percept/eval/matched_watch.py``'s health-append order).
                 else:
                     if now is not None:
                         self._note_merge_anchor(key, now)

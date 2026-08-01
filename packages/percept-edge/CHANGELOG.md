@@ -5,10 +5,10 @@ versioning. The package version (this file) moves independently of the wire `CON
 `src/contract.js` (currently `1.10.0`, additive-compatible with the Python `percept.contracts` wire),
 which changes only on wire-shape changes.
 
-## Unreleased — numeric-seam hardening (**breaking**: warrants a MAJOR at release)
+## Unreleased — numeric-seam hardening + cross-runtime admission parity (**breaking**: warrants a MAJOR at release)
 
-Three changes below alter observable behaviour of an exported surface, so this line cannot ship as a
-minor. **The version number is deliberately not chosen here** — pick it at release. No wire-contract
+Several changes below alter observable behaviour of an exported surface, so this line cannot ship as
+a minor. **The version number is deliberately not chosen here** — pick it at release. No wire-contract
 change beyond the additive `gate_on: "fused"` member (see below); `CONTRACT_VERSION` moves additively.
 
 ### Fixed — the audio gate could not fire on the material it exists to hear
@@ -72,6 +72,48 @@ backs these seams; it absorbed four separate copies of the finite-number predica
   `low === high` stays permitted — the oscillation is unreachable at a zero-width band.
 - **A malformed `wake_policy` raises** instead of silently degrading to the legacy `max(signals)` while
   still wearing an authored threshold.
+
+### Changed — **breaking**: three cross-runtime admission forks (FIND-PARITY-01/02/03)
+
+The edge ships twice — here and as `percept.harness.tier0` — and `make parity` is the release gate
+that says the two agree. These three inputs were admitted differently by the two runtimes on
+identical media, and none of them was reachable by any vector the gate carried.
+
+- **An applied `WatchSpec` with no conditions no longer escalates.** `Edge._shouldEscalate` took the
+  specless branch for it — `conds.length === 0 → salience >= defaultThreshold` — but that branch is
+  reached not only by a never-configured edge: it is exactly what the brain compiles when **every
+  goal has been cancelled**. So a device kept clearing `0.05` on ordinary motion, kept building
+  `Tier0Signal`s and kept handing frames to the publisher slot for a watch nobody has. Measured on a
+  10-frame clip: the Python gate escalated 0 frames, the edge 2. **An edge that has never been given
+  a spec keeps the motion-only fallback** — only an *applied* empty spec changed meaning. A
+  deployment that cancelled every goal and relied on the edge continuing to publish must now apply a
+  spec that says so. `Edge.activeThreshold` reports `Infinity` for that state (was
+  `defaultThreshold`).
+- **Every goal that fires now gets its cadence brake stamped, not just the first.**
+  `_shouldEscalate` returned on the first firing condition, so every other goal sharing the frame
+  kept a `_lastEscalate` of `-Infinity` and admitted again on the very next frame, inside the cadence
+  window the deployment authored. Python `MotionGate.evaluate` accumulates over every armed
+  condition and stamps each one that fired. Measured on a 6-frame clip, two goals at `cadence_s = 2`:
+  python `.1.1.1`, edge `.11111`. **A watch with two or more goals sharing a cadence budget now buys
+  the judge calls its cadence allows, which is fewer than before.** Only a goal that actually fired
+  is braked.
+- **`makeBox` / `parseBox` enforce the full Box contract: finite, within `[0,1]`, and positive
+  area.** A zero-area zone was accepted on the wire, then answered differently by the two runtimes:
+  the region bounds truncate the origin and *round* the far bound, so `Box(x=0.1, w=0)` on a 7px
+  raster is one real pixel column — Python scored it `1.0` and admitted every frame, while the JS
+  mean path short-circuited to `0` and admitted none. The short-circuit is gone (`motionScore` now
+  measures whatever span the bounds give it, bit-identically with Python, so a *derived* box that
+  collapses still degrades rather than forking), and the zone is refused where it is authored
+  instead. A box that overhangs the far edge is still legal and still clamped. `makeBox()` with no
+  arguments now throws. **This half of the contract is not yet mirrored in Python** — `Box` validates
+  nothing and `harness.tier0._coerce_box` builds one straight from `goal.state` — so a degenerate
+  zone authored server-side will be rejected by the edge until it is.
+
+`parity/compare.py` gained the vectors these forks were invisible to: three salience vectors for the
+zero-extent zone and a new `GATE_CASES` section that compares **admitted frames**, not just scores,
+between `Edge.processFrame` and `MotionGate.evaluate` (81 → 91 checks). Mutation-tested: the pre-fix
+runtime, each fork separately, and the obvious over-correction are all caught by the new vectors and
+all pass the old ones.
 
 ### Changed — wake fusion (additive wire member)
 

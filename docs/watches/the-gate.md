@@ -85,6 +85,7 @@ outcome.delivered  # True iff action is FIRE or ASK
 | `already_fired` | `silent` | Confident true, but this episode's edge is already spent. |
 | `start_anchored` | `silent` | **Suppression.** Already true on the first observation (`require_false_first`). |
 | `refractory` | `silent` | **Suppression.** A fire was due but lands inside this key's refractory window. |
+| `merged_duplicate` | `silent` | **Suppression.** The gate decided to fire; the *delivery* layer merged it into this key's previous notification. |
 | `dwell_pending` | `silent` | True, but has not held for `hold_s` yet — a deferral, not a suppression. |
 
 Each reason implies **exactly one** action (`REASON_ACTION`), so keying off either can never
@@ -92,10 +93,16 @@ disagree. A `GateOutcome` whose action contradicts its reason cannot be construc
 
 ## Suppression is observable
 
-`SUPPRESSION_REASONS == ("start_anchored", "refractory")` — the cases where a fire the *baseline*
-rising-edge gate would have delivered was deliberately withheld by an opt-in precision guard. That is
-the one class of decision an operator must be able to see: without it, turning on a guard makes the
-runtime quieter with no signal saying why.
+`SUPPRESSION_REASONS == ("start_anchored", "refractory", "merged_duplicate")` — the cases where a
+fire the *baseline* rising-edge gate would have delivered was deliberately withheld by a precision
+guard. That is the one class of decision an operator must be able to see: without it, turning on a
+guard makes the runtime quieter with no signal saying why.
+
+The first two are the gate's own guards and are **off by default**. The third is one layer up: the
+delivery merge drops a second notification for a key that already delivered inside a short window,
+*after* the gate has decided to fire. It is listed here because the definition is about what the
+baseline gate would have delivered, not about which layer withheld it — and the reason code is what
+tells you which one did, so a trace never reports the gate going silent on a rising edge.
 
 Every suppression emits a structured `gate.suppressed` log line, and — when running under
 `percept.runtime.worker.run` — a health event:

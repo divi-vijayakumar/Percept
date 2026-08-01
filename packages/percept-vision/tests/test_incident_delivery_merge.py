@@ -28,7 +28,7 @@ from percept.behavior import (
     BehaviorProgram,
     EpisodeFoldResult,
 )
-from percept.gate import FIRE, Gate
+from percept.gate import FIRE, SILENT, Gate
 from percept.observability import Metrics
 
 YES = Verdict(satisfied=True, confidence=0.95, evidence="yes")
@@ -253,8 +253,18 @@ class GateIsUntouchedTests(unittest.TestCase):
                                 outcome_sink=outcomes.append)
 
         self.assertIsNone(merged)
-        self.assertEqual([o.action for o in outcomes], [FIRE, FIRE])
-        self.assertEqual([o.reason for o in outcomes], ["rising_edge", "rising_edge"])
+        # The gate DECIDED twice, and both times it decided to fire. Untouched means the decision and
+        # the edge state are the gate's own — not that the drop is invisible: the third outcome is the
+        # delivery seam reporting, in the gate's typed vocabulary, that IT withheld the second
+        # notification (finding reflex-05). Without it a reader of the last outcome is told the gate
+        # went silent on a rising edge.
+        gate_decisions = [o for o in outcomes if o.reason != "merged_duplicate"]
+        self.assertEqual([o.action for o in gate_decisions], [FIRE, FIRE])
+        self.assertEqual([o.reason for o in gate_decisions], ["rising_edge", "rising_edge"])
+        self.assertEqual(
+            [(o.action, o.reason, o.key, o.at) for o in outcomes if o.reason == "merged_duplicate"],
+            [(SILENT, "merged_duplicate", ("g", "scene"), 0.4)],
+        )
         self.assertFalse(gate._armed[("g", "scene")])  # the edge is spent, exactly as the gate left it
 
     def test_a_merged_delivery_does_not_advance_an_nth_distinct_count(self):

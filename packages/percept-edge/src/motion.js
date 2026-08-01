@@ -12,7 +12,7 @@
 // `data` is single-channel grayscale, length === width * height, one byte
 // (0..255) per pixel in row-major order.
 
-import { finiteNumber, nonEmptyBox } from "./numeric.js";
+import { finiteNumber } from "./numeric.js";
 
 /**
  * Absolute-difference motion salience between two grayscale frames, normalized to [0, 1].
@@ -71,17 +71,24 @@ export function motionScore(
   if (a.length < n || b.length < n) {
     throw new Error("motionScore: data shorter than width*height");
   }
-  // The block path FIRST, so an impossible `blockGrid` is refused whatever the region is. Its own
-  // `partition` reaches the same 0 for a zero-extent zone (an empty span clamps the grid to 0), so
-  // ordering it ahead of the short-circuit below changes no score — only which of two bad inputs
-  // gets diagnosed when a caller supplies both.
+  // The block path FIRST, so an impossible `blockGrid` is refused whatever the region is.
   if (stat !== "mean") return motionScoreBlocks(a, b, w, h, region, blockGrid, stat);
   if (n === 0) return 0;
-  // A finite but ZERO-EXTENT zone masks the whole frame away. Same 0 the pixel loops below would
-  // reach via an empty span, decided in one place — and see `numeric.nonEmptyBox`: a degenerate
-  // region_hint is a PERMANENT never-fire, not a transient miss, so it is worth naming here rather
-  // than leaving a caller to infer it from `regionBounds` collapsing.
-  if (region != null && !nonEmptyBox(region)) return 0;
+  // NO short-circuit on a zero-EXTENT zone. There used to be one — `if (!nonEmptyBox(region))
+  // return 0`, commented as reaching "the same 0 the pixel loops below would reach via an empty
+  // span". It does not: `regionBounds` is deliberately ASYMMETRIC (the origin truncates, the far
+  // bound rounds half-to-even), so a zero-extent Box is not a zero-PIXEL box whenever that shared
+  // product has a fractional part >= 0.5 — `Box(x=0.1, w=0)` on a 7px raster is trunc(0.7)=0 ..
+  // round(0.7)=1, one real column. Python's `_region_bounds` computes exactly that and
+  // `_motion_score_region` scored it 1.0 while this path answered 0, so the same authored zone
+  // admitted every frame in the harness and no frame on device (FIND-PARITY-01). The block stats
+  // never had the short-circuit and always agreed with Python; the mean path now does too. Zero
+  // pixels is still 0 — decided by the bounds, in `motionScoreRegion`, on both sides of the wire.
+  //
+  // A zone that ENCLOSES no area is refused upstream instead, at the authoring/wire boundary
+  // (`contract.makeBox`/`parseBox`), which is where an authored never-fire belongs. This function
+  // takes a Box as a VALUE, including one a caller derived and watched collapse, so it degrades
+  // rather than throwing — and degrades to the number the other runtime computes.
   if (region != null) return motionScoreRegion(a, b, w, h, region);
 
   let acc = 0;

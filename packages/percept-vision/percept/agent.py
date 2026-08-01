@@ -33,6 +33,7 @@ from .behavior import (
     BehaviorExecutor,
     EpisodeFoldResult,
     ShadowObservation,
+    episode_mutation_of,
     normalize_event_chain_verdict,
     program_of,
 )
@@ -60,7 +61,7 @@ from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escala
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
 from .extraction import CONTEXT_KEY as EXTRACTOR_CONTEXT_KEY
-from .claims import ClaimState, concern_authority_of
+from .claims import ClaimOutcome, ClaimState, concern_authority_of
 from .episodes import (
     EPISODE_POLICIES,
     ContinuationDecision,
@@ -95,7 +96,13 @@ from .observability import Funnel, Metrics, OTelExporter, TraceEvent, get_logger
 from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
-from .tracing import STAGE_JUDGMENT_EVENT, STAGE_SHADOW_FOLD, STAGE_TRANSITION_DECISION
+from .tracing import (
+    JUDGE_SERVED_FROM_KEY,
+    JUDGE_SERVED_KEY,
+    STAGE_JUDGMENT_EVENT,
+    STAGE_SHADOW_FOLD,
+    STAGE_TRANSITION_DECISION,
+)
 
 
 #: LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
@@ -1041,6 +1048,13 @@ _BATCH_STALE = object()
 #: real gate key (the non-entity scope a concern gets when nothing is in focus).
 _NO_SCENE_KEY = object()
 
+#: The two :data:`~percept.behavior.EpisodeMutation` values that manufacture a CORRECTION on an
+#: already-emitted episode: ``updated``/``retracted`` both re-arm the rising edge and mint a
+#: ``supersedes`` link (``percept.behavior.episode_fold``). ``closed`` mutates the episode too, but it
+#: neither re-arms nor supersedes — it terminates. Used by
+#: :meth:`Percept._claim_episode_operation` to keep a claim act that WROTE NOTHING out of this arm.
+_CORRECTING_MUTATIONS: tuple[str, ...] = ("updated", "retracted")
+
 #: Metric-name prefix for :data:`EPISODE_FOLD_SKIP_REASONS`. One counter per reason
 #: (``episode.fold.skipped.<reason>``), mirroring the existing ``episode.denied.<reason>`` shape —
 #: :class:`percept.observability.Metrics` is a flat counter registry with no label dimension, so a
@@ -1576,6 +1590,12 @@ class Percept:
         # in this same call, and the hook needs the finished ``obj`` to queue onto. Queue only; the
         # runtime loop drains it into on_health (this class never calls on_health itself).
         obj.gate.on_suppress = obj._note_gate_suppressed
+        # Identity lifecycle (mint / contested / coast_expired / evicted) must reach the run's own
+        # metrics, not only ``EntityGraph.identity_counters()``. Identity churn was the one lifecycle
+        # in the runtime with no observability at all: a run whose subjects nearly merged published a
+        # signature identical to a run where they never met (FIND-IDENTITY-OCCLUSION-02). Wired here
+        # for the same reason as ``on_evict`` above — the graph is built in this same call.
+        obj.graph.on_identity = obj._note_identity_event
         # Announce scripted backends LOUDLY at construction, in the one consistent vocabulary.
         # This decides on the CONSTRUCTED CLASS (the fact), not the requested name — a registry miss /
         # plugin / stray PERCEPT_*_BACKEND can land a scripted double after you asked for real.
@@ -1814,10 +1834,63 @@ class Percept:
             get_logger("percept.agent").warning("%s", message)
             self.metrics.incr(f"goal.armed.undriven_route.{item.route.value}")
 
+    def _check_declared_authority(self, ops: "tuple[GoalOp, ...]") -> None:
+        """ARM-TIME containment for ``goal.state['authority']`` — a knob that is inert-and-TOTAL.
+
+        :class:`~percept.contracts.ConcernAuthority` gates a mutating act on ``Verdict.asserted_by``:
+        :meth:`~percept.contracts.ConcernAuthority.permits` requires a NAMED asserter, so ``None`` is
+        refused. No shipped judge backend populates that field — the three of them share one
+        ``_parse_verdict``, which deliberately leaves ``asserted_by`` unset because there is no
+        diarization behind it and a speaker must never be invented from the words. The two halves are
+        each correct and compose into a lockout: a concern that DECLARES an authority has every
+        replace/retract downgraded to a non-mutating mention, so the value it guards can never move
+        again, by anyone — including the party the author meant to privilege.
+
+        That is a capability bound, not a defect, and it is not fixable here: relaxing ``permits`` to
+        accept an unnamed asserter would widen who may write to a claim slot, which is the exact
+        opposite of what declaring an authority asks for. What IS fixable is the silence. The bound
+        used to be observable only as an INFO ``claim.authority_downgrade`` line, one per refused
+        correction, after the fact. It is now stated ONCE, at the instant the concern arms, on the
+        two channels a deployment actually watches:
+
+        * a queued run-level health event (``claim_authority_unsatisfiable``), drained into
+          ``on_health`` by the worker like every other queued health entry — Percept never calls
+          ``on_health`` itself;
+        * a WARNING log line, for the 24/7 deployment where nobody is reading a health stream.
+
+        The escape hatch is a declaration, not a guess: a deployment that supplies the speaker out of
+        band (a diarizer, or a badge-style client-asserted identity) sets
+        ``supports_speaker_attribution = True`` on its judge adapter and the concern arms quietly.
+        Nothing infers the capability, because inferring it wrongly is how the value silently freezes.
+        """
+        if getattr(self.vision, "supports_speaker_attribution", False):
+            return
+        for op in ops:
+            goal = op.goal if op.op == "create" else None
+            if goal is None or concern_authority_of(goal) is None:
+                continue
+            message = (
+                f"goal {goal.id!r} declared goal.state['authority'] "
+                f"{sorted(concern_authority_of(goal).asserters)!r}, but this deployment's judge does "
+                f"not populate Verdict.asserted_by — no shipped backend does, because a speaker is "
+                f"never inferred from transcript text. ConcernAuthority.permits refuses an unnamed "
+                f"asserter, so EVERY replace/retract on this claim will be downgraded to a "
+                f"non-mutating mention and the value can never be corrected by anyone. Supply the "
+                f"speaker out of band (diarization, or a client-asserted identity) and mark the "
+                f"adapter 'supports_speaker_attribution = True', or leave 'authority' undeclared — "
+                f"undeclared is unrestricted, and revision chains still form."
+            )
+            self._judge_health_log.append(
+                ("claim_authority_unsatisfiable", goal.id, message)
+            )
+            get_logger("percept.agent").warning("%s", message)
+            self.metrics.incr("goal.armed.claim_authority_unsatisfiable")
+
     def _on_goal_mutations(self, ops: tuple[GoalOp, ...]) -> None:
         """Keep executable state coherent for every GoalRegistry mutation path."""
         # Fail/flag the batch's ARM routes before any per-op state work below mutates anything.
         self._check_armed_routes(ops)
+        self._check_declared_authority(ops)
         for op in ops:
             goal_id = op.goal.id if op.op == "create" and op.goal is not None else op.goal_id
             if goal_id is None:
@@ -2680,6 +2753,37 @@ class Percept:
         """
         return not self._verdict_from_cache.get(goal_id, False)
 
+    def _judge_served_trace(
+        self, goal_id: str, *, direct: bool = False, served_from: str | None = None
+    ) -> dict:
+        """The ZERO-SPEND marker for this goal's ``judge.finished`` record, or ``{}``.
+
+        ``judge.started``/``judge.finished`` fire on every tick that reaches a verdict, including
+        the two that reach one WITHOUT calling a provider: a perception-cache serve (this same
+        ``_verdict_from_cache`` flag the episode fold reads) and a confident
+        :class:`~percept.direct_judge.DirectJudge` substitution. The runtime has always known the
+        difference — the cache path's completion carries ``provider_spent=False`` and meters no judge
+        latency — and none of it reached the trace, so every trace-derived spend and provider-latency
+        figure counted the runtime's own cache hits as model calls, by an error that GROWS with the
+        hit rate the cache exists to raise.
+
+        This is the ONE place the marker originates. Its readers are
+        :func:`percept.tracing.judge_call_was_served` (the savings identity and the recount fold) and
+        :func:`percept.slo.judge_provider_spans` (the provider-latency population); neither
+        re-derives it. A tick that really spent a call adds no keys at all, so its record is
+        byte-for-byte what it always was.
+        """
+        if served_from is not None:
+            # The caller already HOLDS the declaration (`_ProviderCallCompletion.provider_spent`)
+            # rather than needing it looked up. Passing it in keeps one marker vocabulary and one
+            # emit shape while never inferring zero-spend from a side effect like empty usage.
+            return {JUDGE_SERVED_KEY: True, JUDGE_SERVED_FROM_KEY: served_from}
+        if direct:
+            return {JUDGE_SERVED_KEY: True, JUDGE_SERVED_FROM_KEY: "direct"}
+        if self._verdict_from_cache.get(goal_id, False):
+            return {JUDGE_SERVED_KEY: True, JUDGE_SERVED_FROM_KEY: "cache"}
+        return {}
+
     def _document_episode_fold(
         self,
         goal: Goal,
@@ -3048,16 +3152,54 @@ class Percept:
             t, verdict, subject_key=goal.id, judged=self._observation_was_judged(goal.id)
         )
         self._claim_episode_id[goal.id] = decision.episode.id
-        fold = self.executor.fold_episode(decision, operation=outcome.effective)
+        fold = self.executor.fold_episode(
+            decision, operation=self._claim_episode_operation(outcome)
+        )
         if outcome.applied:
             log.annotate(decision.episode, value=outcome.value_after)
-            if not decision.is_new and fold.mutation in ("updated", "retracted", "closed"):
+            if decision.is_new:
+                # The "opened" row was appended by observe_decision a few lines above — BEFORE this
+                # fold knew what the slot became — so it was born with ``value=None`` and nothing
+                # else ever back-fills it. Name the value the establishment set, so walking
+                # ``episode.revisions`` recovers what each revision (including the FIRST, the one a
+                # later correction supersedes) established, rather than an absence where a delivered
+                # value stood. ``Revision`` is frozen, so the row is replaced, not mutated.
+                revisions = decision.episode.revisions
+                if revisions and revisions[-1].kind == "opened" and revisions[-1].value is None:
+                    revisions[-1] = replace(revisions[-1], value=outcome.value_after)
+            elif fold.mutation in ("updated", "retracted", "closed"):
                 # The initial write's "opened" row was already recorded by observe_decision; only a
                 # genuine SUBSEQUENT state change (an accepted replace/retract/close) appends a new one.
                 log.record_revision(
                     decision.episode, fold.mutation, t=t, value=outcome.value_after
                 )
         return fold
+
+    @staticmethod
+    def _claim_episode_operation(outcome: "ClaimOutcome") -> str:
+        """The operation the EPISODE fold is given for a claim outcome — the claim machine's verdict on
+        whether anything was written, not merely on whether it was authorized.
+
+        :meth:`~percept.claims.ClaimState.apply` already rewrites an UNAUTHORIZED mutation to
+        ``mention``. It does not rewrite an authorized one that simply wrote nothing: re-stating the
+        value already in the slot ("Still $25K then") is a well-formed, permitted ``replace`` whose
+        diff over the whole ``(value, normalized_value)`` pair is empty, so ``outcome.applied`` is
+        ``False``, no revision is minted and no row joins the timeline. Handing that straight to
+        :meth:`~percept.behavior.BehaviorExecutor.fold_episode` mapped it through
+        ``episode_mutation_of`` to ``updated``, which re-arms the rising edge and mints
+        ``supersedes`` — so agreement was DELIVERED as a superseding correction, and
+        ``gate.superseding_revision`` counted a correction the claim ledger says never happened.
+
+        An act that wrote nothing is a re-statement, so it folds as one (``confirm`` -> ``confirmed``)
+        and takes the idempotency arm. Only the two acts that manufacture a correction are rewritten:
+        ``close`` is an episode-LIFECYCLE act ("this conversation is over"), legitimate against an
+        already-empty slot, and it neither re-arms nor supersedes — so it is left alone.
+        """
+        if outcome.applied:
+            return outcome.effective
+        if episode_mutation_of(outcome.effective) in _CORRECTING_MUTATIONS:
+            return "confirm"
+        return outcome.effective
 
     def episode_current(self, goal_id: str) -> "Episode | None":
         """The current authoritative episode for a claim-slot concern.
@@ -4637,6 +4779,13 @@ class Percept:
             satisfied=provider_verdict.satisfied,
             confidence=provider_verdict.confidence,
             **self._event_chain_provider_advisory(goal, provider_verdict),
+            # The split path's twin of the inline marker: `_verdict_from_cache` was set for this
+            # goal a few lines above (the cache-audit / cache-hit branches), and a direct hit is
+            # `route_inputs.direct_hit`. The async dispatch mode must report the SAME funnel as the
+            # inline one, so it must carry the same zero-spend marker.
+            **self._judge_served_trace(
+                goal.id, direct=bool(route_inputs.direct_hit)
+            ),
             **dict(job.trace_provenance),
         )
         self._queue_judgment_trace(
@@ -5294,6 +5443,13 @@ class Percept:
                         **self._event_chain_provider_advisory(
                             goal, provider_verdict
                         ),
+                        **self._judge_served_trace(
+                            goal.id,
+                            direct=(
+                                direct_result is not None
+                                and direct_result.outcome == "confident"
+                            ),
+                        ),
                         **judge_prov,
                     )
                     # AFTER both fire paths: label a FIRE whenever an incident was actually emitted this tick
@@ -5805,6 +5961,12 @@ class Percept:
                     judge_latency_s=0.0,
                     judge_started_ts=now,
                     judge_completed_ts=now,
+                    # No provider was called -- this verdict is built from the bundle's own coverage
+                    # uncertainty. Omitting this defaulted to True and made every locally-completed
+                    # fused bundle read as model SPEND: it inflated `actual_judge_calls` and entered
+                    # the provider-latency population as a 0.0 s sample. The sibling local completion
+                    # above already declares it; this one did not (FIND-REFLEX-06).
+                    provider_spent=False,
                 )
             ),
         )
@@ -6064,6 +6226,22 @@ class Percept:
                             "satisfied": provider_verdict.satisfied,
                             "confidence": provider_verdict.confidence,
                             "fused": True,
+                            # The THIRD zero-spend path. An incomplete bundle reaches a verdict via
+                            # `complete_fused_locally` with no provider call; unmarked, every one of
+                            # them counted as model spend and entered the provider-latency
+                            # population as a 0.0 s sample (FIND-REFLEX-06).
+                            # `_JudgmentCompletion.calls` normalises the three result shapes
+                            # (watch / process / transition), so this reads the declaration wherever
+                            # it lives rather than assuming a `_WatchJudgmentResult`. Served only if
+                            # NO call in the completion reached a provider.
+                            **self._judge_served_trace(
+                                goal.id,
+                                served_from=(
+                                    None
+                                    if any(c.provider_spent for c in completion.calls)
+                                    else "fused_local"
+                                ),
+                            ),
                             **self._event_chain_provider_advisory(
                                 goal, provider_verdict
                             ),
@@ -6780,6 +6958,21 @@ class Percept:
         )
         if len(self._gate_health_log) > _GATE_HEALTH_LOG_MAX:
             del self._gate_health_log[: len(self._gate_health_log) - _GATE_HEALTH_LOG_MAX]
+
+    def _note_identity_event(self, event: Any) -> None:
+        """Fold one :class:`~percept.entity.IdentityEvent` into the run's own metrics.
+
+        `EntityGraph` already counts these on itself and logs the loss-shaped ones. This hook is what
+        puts them on the SAME surface as every other lifecycle — ``episode.new``, ``gate.silent`` —
+        so a run's published signature distinguishes a scene whose subjects nearly merged from one
+        where they never met. Before this, identity was the only lifecycle in the runtime with no
+        observability at all (FIND-IDENTITY-OCCLUSION-02).
+
+        Counter-only, deliberately: ``mint`` is ordinary — a person walking into frame — and a 24/7
+        watch must not pay a health event per arrival. The graph already logs the three loss-shaped
+        kinds structurally, so the RATE is the signal a client reads, not any single event.
+        """
+        self.metrics.incr(f"identity.{event.kind}")
 
     def _note_judge_ok(self, key: Hashable) -> None:
         """A well-formed verdict for ``key`` resets its consecutive-degrade streak -- ANY
@@ -7700,13 +7893,40 @@ class Percept:
         # subject last seen before the restart will open a NEW episode afterwards. That is a decision, not
         # a bug, but it is a failure mode when it is SILENT: an operator watching a counting goal
         # under-counts after a redeploy with nothing saying why. Queue a single loud ``episode_memory_reset``
-        # health event whenever we restored active counting goals into an empty episode map, so the amnesia
-        # is observable. Queue-only — worker.py drains it into on_health (Percept never calls on_health).
+        # health event whenever we restored goals that USE the episode map into an empty one, so the
+        # amnesia is observable. Queue-only — worker.py drains it into on_health (Percept never calls
+        # on_health).
+        #
+        # Three goal shapes use it, and the announcement has to cover all three or it announces the
+        # amnesia everywhere EXCEPT where the amnesia changes what a subscriber receives:
+        #   * ``type='count'``     — the episode map IS the count; losing it under-counts.
+        #   * ``rearm='each_event'`` — one occurrence per episode; losing it re-reports.
+        #   * a concern that SELECTS an identity policy — the subject-bound shapes
+        #     (``_document_episode_fold`` / the scene fold / ``_claim_episode_fold``). This is the
+        #     idempotency layer: ``episode_fold`` refuses the gate to an already-emitted episode
+        #     restated unchanged, which is what stops a live occurrence being re-reported on every
+        #     judged frame. Losing it on a plain watch DUPLICATES an incident, and on a claim slot it
+        #     loses the value and the whole revision chain — the next correction is then delivered as
+        #     an original, superseding nothing. ``_resolved_identity_policy`` is the SAME resolution
+        #     those folds gate on, so this set is exactly "the concerns whose episode memory was in
+        #     use", never a broader guess.
+        # Still CONDITIONAL, deliberately: a concern that declared nothing and could never have built
+        # an episode has nothing to announce, and announcing it anyway trains an operator to ignore
+        # the event.
         counting = [g for g in self.goals.all() if g.state.get("type") == "count"]
         occurrence_watches = [
             g for g in self.goals.all() if g.state.get("rearm") == "each_event"
         ]
-        if (counting or occurrence_watches) and not self.episodes:
+        subject_bound = [
+            g for g in self.goals.all() if self._resolved_identity_policy(g) is not None
+        ]
+        affected: list[Goal] = []
+        named: set[str] = set()
+        for goal in (*counting, *occurrence_watches, *subject_bound):
+            if goal.id not in named:  # a goal may be in two sets; it is named once
+                named.add(goal.id)
+                affected.append(goal)
+        if affected and not self.episodes:
             self._restore_health_log.append(
                 (
                     "episode_memory_reset",
@@ -7714,13 +7934,13 @@ class Percept:
                         "reason": "session_only_v1.4",
                         "counting_goals": len(counting),
                         "occurrence_goals": len(occurrence_watches),
-                        "goal_ids": [
-                            g.id for g in (*counting, *occurrence_watches)
-                        ],
+                        "subject_bound_goals": len(subject_bound),
+                        "goal_ids": [g.id for g in affected],
                         "detail": (
-                            "episodes are session-only (ADR-006): counting/occurrence memory was "
-                            "NOT restored; these goals restart their episode lifecycle and may "
-                            "under-count or repeat an occurrence after recovery."
+                            "episodes are session-only (ADR-006): counting/occurrence/subject-bound "
+                            "episode memory was NOT restored; these goals restart their episode "
+                            "lifecycle and may under-count, repeat an occurrence, or lose a claim "
+                            "slot's value and revision chain after recovery."
                         ),
                     },
                 )

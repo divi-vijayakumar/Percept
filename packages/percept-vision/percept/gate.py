@@ -30,9 +30,11 @@ decision surface. Two things make that surface usable by an integrator rather th
    the typed :class:`GateOutcome` (action + reason); :meth:`Gate.evaluate` is unchanged and still
    returns the bare :data:`GateAction`, so every existing caller is byte-for-byte.
 2. **Suppression is observable.** :data:`SUPPRESSION_REASONS` names the codes where a fire the
-   BASELINE rising-edge gate would have emitted was deliberately withheld by an opt-in precision
-   guard (``require_false_first`` -> ``start_anchored``; ``refractory_s`` -> ``refractory``). Those
-   — and only those — invoke the optional ``on_suppress`` hook, which
+   BASELINE rising-edge gate would have emitted was deliberately withheld by a precision guard —
+   two of them gate-internal and opt-in (``require_false_first`` -> ``start_anchored``;
+   ``refractory_s`` -> ``refractory``), one of them at the DELIVERY seam
+   (:data:`percept.behavior.INCIDENT_MERGE_WINDOW_S` -> ``merged_duplicate``). Those — and only
+   those — invoke the optional ``on_suppress`` hook, which
    :meth:`percept.agent.Percept.create` wires into the runtime's health channel so the suppression
    surfaces as a ``RuntimeHealthEvent("gate_suppressed")`` instead of a silent non-event (ADR-001
    §9: a bound-driven drop is never silent). ``already_fired`` / ``dwell_pending`` /
@@ -103,11 +105,21 @@ GateReason = Literal[
     "already_fired",     # confident-true but the edge is spent (this episode already fired)
     "start_anchored",    # SUPPRESSION: already true on the FIRST observation (require_false_first)
     "refractory",        # SUPPRESSION: a fire was due but lands inside this key's refractory window
+    "merged_duplicate",  # SUPPRESSION: the DELIVERY seam merged it into this key's prior delivery
     "dwell_pending",     # true, but hasn't held for hold_s yet — a deferral, not a suppression
 ]
 
 #: The closed reason vocabulary. Stable, documented surface: a code is never renamed or repurposed;
 #: a new decision path adds a NEW code (and a new entry in :data:`REASON_ACTION`).
+#:
+#: Every code but one is produced by :meth:`Gate.decide`. ``merged_duplicate`` is produced at the
+#: DELIVERY seam instead (:meth:`percept.behavior.BehaviorExecutor.fire_judged`, which drops the
+#: second notification of an occurrence this key already delivered inside
+#: :data:`percept.behavior.INCIDENT_MERGE_WINDOW_S`) and announced through :meth:`Gate.note_suppressed`.
+#: ADR-006 open question 5 names that seam as "a second place where an event can be withheld" and
+#: says extending ADR-001 §9's never-silent rule to cover it needs a new reason code, deliberately
+#: added. Without one the merge borrowed the gate's own ``rising_edge`` and a trace read
+#: ``silent: rising_edge`` — the gate blamed for a drop the delivery layer made.
 GATE_REASONS: tuple[GateReason, ...] = (
     "rising_edge",
     "dwell_satisfied",
@@ -117,6 +129,7 @@ GATE_REASONS: tuple[GateReason, ...] = (
     "already_fired",
     "start_anchored",
     "refractory",
+    "merged_duplicate",
     "dwell_pending",
 )
 
@@ -131,16 +144,22 @@ REASON_ACTION: dict[GateReason, GateAction] = {
     "already_fired": SILENT,
     "start_anchored": SILENT,
     "refractory": SILENT,
+    "merged_duplicate": SILENT,
     "dwell_pending": SILENT,
 }
 
-#: The reasons that count as GATE SUPPRESSION: a fire the baseline rising-edge gate WOULD have
-#: emitted, withheld by an opt-in precision guard. Both are off by default, so a default-configured
-#: gate never suppresses and never emits a suppression health event. Deliberately excludes
-#: ``already_fired`` (the base re-fire contract, one per tick of any continuing true state),
-#: ``dwell_pending`` (a deferral — the same edge still fires once the dwell completes) and
-#: ``not_satisfied`` (no fire was ever due).
-SUPPRESSION_REASONS: tuple[GateReason, ...] = ("start_anchored", "refractory")
+#: The reasons that count as SUPPRESSION: a fire the baseline rising-edge gate WOULD have emitted,
+#: withheld by a precision guard. The first two are the gate's own opt-in guards and are off by
+#: default, so a default-configured gate never suppresses from inside ``decide``. The third is the
+#: DELIVERY merge (:data:`percept.behavior.INCIDENT_MERGE_WINDOW_S`), which withholds a decided FIRE
+#: one layer above the gate — it belongs here because the definition is about what the BASELINE gate
+#: would have delivered, not about which layer withheld it, and leaving it out is what let a merged
+#: delivery reach the trace as a plain silent carrying the gate's own ``rising_edge``. WHICH layer
+#: withheld it stays readable: the reason code names it. Deliberately excludes ``already_fired``
+#: (the base re-fire contract, one per tick of any continuing true state), ``dwell_pending`` (a
+#: deferral — the same edge still fires once the dwell completes) and ``not_satisfied`` (no fire was
+#: ever due).
+SUPPRESSION_REASONS: tuple[GateReason, ...] = ("start_anchored", "refractory", "merged_duplicate")
 
 # verdict -> coarse truth, before edge logic
 _Truth = Literal["yes", "no", "unknown"]
@@ -265,10 +284,20 @@ class _KeyState:
     touched: float | None = None         # `_touched`: eviction stamp, when it was last evaluated
     no_evict: bool = False               # `_no_evict`: exempt from TTL + LRU (never-once semantics)
     last_fire: float | None = None       # `_last_fire`: this key's last REAL fire (precision track)
+    # SESSION-LOCAL, never serialized: this record came back from a snapshot and no decision has been
+    # taken on it in THIS process yet. It is what lets :meth:`Gate.rearm` tell a caller that observed
+    # an episode boundary from one that merely cannot remember the episode — see `rearm`. Cleared by
+    # the first :meth:`Gate.decide` on the key, because a decision means the session now holds its own
+    # observation of this key and any re-arm after it is evidence-backed.
+    restored: bool = False
 
     def is_empty(self) -> bool:
         """True iff this record carries nothing — the gate then forgets the key entirely, so a
-        record can never linger as an invisible occupant of the ``max_keys`` ceiling."""
+        record can never linger as an invisible occupant of the ``max_keys`` ceiling.
+
+        ``restored`` is deliberately not counted: it qualifies the other fields rather than being one
+        of them, so a record left holding only that flag carries nothing to protect and is forgotten
+        like any other empty one."""
         return (
             self.armed is None
             and self.dwell_since is None
@@ -521,10 +550,12 @@ class Gate:
         charades-e2e track were RE-FIRES — the gate re-arming and firing again within one true episode
         because the judge briefly flickered to "no" mid-episode. A time-refractory is the fix: a
         genuine SECOND episode (a real absence, then a real return) still fires once refractory_s has
-        elapsed since the last fire; only fires closer together than that are suppressed. Falls back to
-        the gate-wide ``self.refractory_s`` (a WatchProfile ``gate.refractory_s`` knob) when not passed
-        per-call. Requires ``now``; ``None``/``0``/negative (the default either way) = byte-for-byte the
-        historical gate (no refractory).
+        elapsed since the last fire; only fires closer together than that are suppressed. An explicit
+        :meth:`rearm` does not erase the stamp either — an episode boundary the caller inferred from a
+        blip is the case this guard is bought for, so only a real fire ever moves ``last_fire``. Falls
+        back to the gate-wide ``self.refractory_s`` (a WatchProfile ``gate.refractory_s`` knob) when not
+        passed per-call. Requires ``now``; ``None``/``0``/negative (the default either way) =
+        byte-for-byte the historical gate (no refractory).
 
         The reason codes are the closed :data:`GATE_REASONS` vocabulary; the two SUPPRESSION
         codes (``start_anchored``, ``refractory``) additionally invoke ``on_suppress``. Neither the
@@ -546,6 +577,13 @@ class Gate:
             if ref is not None:
                 self._state(key).touched = ref
             self._bound(key, ref)
+        # One decision is all it takes for this session to own the key: from here on the caller has
+        # observed it directly, so a later :meth:`rearm` is backed by something this process saw and
+        # the restore guard lifts. Placed before every return path — an ASK or a dwell-pending tick
+        # counts, because it too means an observation was folded against this key in this session.
+        carried = self._keys.get(key)
+        if carried is not None and carried.restored:
+            carried.restored = False
         truth = classify(verdict, freshness, self.threshold, self.fresh_min)
         if truth == "unknown":
             if hold_s is not None and hold_s > 0:
@@ -631,14 +669,74 @@ class Gate:
             return _d(FIRE, "dwell_satisfied")
         return _d(SILENT, "dwell_pending")  # still accumulating dwell — true, but not long enough yet
 
-    def rearm(self, key: Hashable) -> None:
-        """Force a key back to armed (e.g. after a correction clears the edge). Also clears any
-        refractory memory — an explicit rearm is a fresh episode boundary, so a stale last-fire stamp
-        must not suppress the next legitimate fire."""
+    def rearm(self, key: Hashable, *, fact_changed: bool = False) -> None:
+        """Force a key back to armed (e.g. after a correction clears the edge, or when a caller has
+        OBSERVED an episode boundary the gate itself cannot see).
+
+        **A rearm asserts that the edge may fire again. It is never testimony that the previous fire
+        did not happen.** Those are different claims, and conflating them cost both of the gate's
+        suppression belts:
+
+        * It used to clear ``last_fire`` too, on the stated rationale that "an explicit rearm is a
+          fresh episode boundary, so a stale last-fire stamp must not suppress the next legitimate
+          fire". But ``refractory_s`` exists precisely to survive a boundary the judge invented —
+          :meth:`decide` names the case: "the gate re-arming and firing again within one true episode
+          because the judge briefly flickered to 'no' mid-episode". A confident-false is ALSO what
+          closes an episode, so the episode fold re-armed on exactly the blip the refractory was
+          bought to absorb, and the erased stamp suppressed nothing. ``last_fire`` is a record of
+          history, not a piece of edge state, so it now survives every rearm and only
+          :meth:`decide` — which sets it — ever moves it. The window then runs from the last REAL
+          fire, which is what both this method's caller and :meth:`decide`'s docstring always said.
+        * A ``restored`` key (one this process read back from a snapshot and has not yet decided on)
+          is REFUSED outright while its edge is spent, UNLESS ``fact_changed``. The episode map is
+          session-only by policy (ADR-006), so the first observation after a restore always folds as
+          a NEW episode — and the re-arm that fold asks for is justified by "a key another subject
+          left disarmed must not suppress this episode's first fire", a claim about a subject this
+          session cannot have seen. The gate is the one record of that occurrence that DID survive
+          the restart; letting the amnesia overwrite it re-reports an occurrence already delivered,
+          which is the double-fire the persistence path exists to prevent. The refusal is logged,
+          never silent, and lifts as soon as :meth:`decide` gives the session an observation of its
+          own.
+
+        ``fact_changed`` is the caller's testimony that WHAT WAS REPORTED NO LONGER STANDS — not that
+        an episode boundary was inferred. "This edge is already spent" and "this is the same fact
+        again" are different claims, and this key holds one bit and no value, so it cannot separate
+        them; the caller can. :class:`percept.behavior.EpisodeFoldResult` sets it for an
+        authority-gated ``replace``/``retract``/``close``, and only for those. Without the
+        distinction a restart traded a duplicate for a SILENCE: a correction spoken after a restart
+        ("actually it is $25K") moved the ledger and reached nobody, which is strictly worse than the
+        unlinked original it used to deliver. An inferred boundary is refused; an observed change is
+        honoured. Default ``False`` — every caller that does not speak a mutation channel is
+        byte-for-byte unchanged.
+        """
         state = self._state(key)
+        if state.restored and state.armed is False and not fact_changed:
+            log(
+                get_logger("percept.gate"), "gate.rearm_refused",
+                key=repr(key), reason="restored_edge_is_spent",
+            )
+            return
         state.armed = True
-        state.last_fire = None
         self.clear_pending_dwell(key)
+
+    def note_suppressed(self, decision: "GateOutcome") -> None:
+        """Announce a SUPPRESSION decided OUTSIDE :meth:`decide` — the delivery seam's entry point.
+
+        :meth:`decide` announces its own two guards inline. The delivery merge
+        (:data:`percept.behavior.INCIDENT_MERGE_WINDOW_S`) withholds a fire this gate has already
+        DECIDED, one layer up, so it has no way in without this. Same contract either way: the
+        structured log line always, ``on_suppress`` when wired, and a raising hook never breaks the
+        firing path.
+
+        Refuses a non-suppression outcome rather than widening what ``gate_suppressed`` means — the
+        health channel is for withheld fires, and letting an ``already_fired`` through it would
+        reintroduce the per-frame noise :data:`SUPPRESSION_REASONS` exists to keep out."""
+        if not decision.suppressed:
+            raise ValueError(
+                f"gate reason {decision.reason!r} is not a suppression; expected one of "
+                f"{SUPPRESSION_REASONS}"
+            )
+        self._note_suppressed(decision)
 
     def clear_pending_dwell(self, key: Hashable) -> None:
         """Drop only unproven duration support for ``key``; never re-arm or erase a prior fire."""
@@ -836,6 +934,15 @@ class Gate:
         re-notifies inside a window that had not expired. Losing exactly one belt is strictly worse
         than losing both.
 
+        Every rehydrated record is stamped ``restored``, which is what keeps that guarantee true
+        from the OUTSIDE as well. This method used to hand back a correct keyspace that the first
+        post-restore observation destroyed one layer up: the session-only episode map (ADR-006) is
+        empty, so that observation folds as a new episode and the fold asks for a
+        :meth:`rearm`, which used to reopen the latch and erase the stamp — reproducing, through the
+        front door, the exact both-belts-gone state the swap above makes unreachable through the
+        back. :meth:`rearm` reads the flag and refuses; the first :meth:`decide` clears it. The flag
+        is session-local and never serialized: a snapshot describes an edge, not who read it.
+
         Policy on bad input, matching the ledger's long-standing per-item behaviour: a bad ENTRY is
         skipped and logged; an unusable TOP-LEVEL payload is logged and the whole restore is declined,
         leaving the gate exactly as it was. ``restore`` never raises on a restart path — a snapshot a
@@ -858,6 +965,8 @@ class Gate:
         except SnapshotError as exc:
             reject(exc.field, str(exc), snap)
             return
+        for state in restored.values():
+            state.restored = True  # read back, not observed — see `rearm`
         self._keys = restored  # the swap: one statement, or nothing at all
 
 

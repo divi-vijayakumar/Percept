@@ -23,7 +23,7 @@
 - **Source (read for this ADR):** `percept/contracts/__init__.py` (`Observation` `:94-101`,
   `Subject` `:262-267`, `JudgmentEvent` `:514`, `IncidentSnippet` `:809`, `Incident` `:888`,
   `WatchAction`/`WatchEvent` `:1129-1156`), `percept/gate.py` (key shape `:13-16`, `GATE_REASONS`
-  `:111-121`, `Gate.decide` `:488-632`, `reset_entity` `:676`), `percept/agent.py`
+  `:123-134`, `Gate.decide` `:517-670`, `reset_entity` `:774`), `percept/agent.py`
   (`perceive_judged` `:1023-1248`, `detect`+`ingest` `:1090-1091`, `base_key` `:1135`),
   `percept/entity.py` (`EntityGraph.ingest` `:104-138`, `_predict_match` `:140-153`, `_mint`
   `:179-191`), `percept/identity.py` (`ContinuityIdentity.match` `:47-55`),
@@ -67,7 +67,7 @@ nothing about prior fires; the only cross-object thing it carries through is the
 per-`(goal_id, entity_or_episode_id)` key (`gate.py:13-16`,
 `agent.py:1135`) and holds one armed bit, a pending dwell start plus its last-supported stamp, and
 one last-fire stamp
-(`gate.py:262-267`) — state *about whether to fire*, discarded into a boolean, never a durable edge
+(`gate.py:281-286`) — state *about whether to fire*, discarded into a boolean, never a durable edge
 *between* the things it fired. So percept emits an unordered bag of point records and asks the
 consumer to reconstruct the relations itself.
 
@@ -81,13 +81,13 @@ than collapsing the four into a single tidy feature.
 ADR-004 §1 pins the delivery guarantee precisely: *at most one edge-consuming outward event per
 `(goal, entity)` per continuous true-episode*. That is exactly right for a **state-bearing**
 subject. "The door is open" becomes true, fires once, and stops being true when the door shuts —
-`Gate` re-arms on a confident-`false` (`gate.py:569`).
+`Gate` re-arms on a confident-`false` (`gate.py:607`).
 
 Speech is not state-bearing. It is **claim-bearing**: a speaker asserts something, and may retract
 or correct it later. "The invoice total is $4,200" does not become false the way a door closes; it
 gets *superseded* by "sorry, $4,800". Percept's gate has no representation of that, because a
 retraction is not a confident-`false` on the original condition — it is a *new claim about an old
-claim*. Nothing in `classify()` (`gate.py:220-236`) or `Gate.decide` (`gate.py:488`) can see it,
+claim*. Nothing in `classify()` (`gate.py:239-255`) or `Gate.decide` (`gate.py:517`) can see it,
 because both take only `(verdict, freshness, threshold, fresh_min)` and a key; neither takes, or
 could take, "the finding this one is about."
 
@@ -115,7 +115,7 @@ pure rising edge fired on the original claim; the correction either never fired,
 unrelated peer.
 
 **Mechanism, in code.** Suppose the correction *would* fire. `Gate.decide` reaches the refractory
-check only after the edge logic (`gate.py:594-600`):
+check only after the edge logic (`gate.py:632-638`):
 
 ```python
 if effective_refractory is not None and effective_refractory > 0 and now is not None:
@@ -130,14 +130,14 @@ if effective_refractory is not None and effective_refractory > 0 and now is not 
 is `(goal_id, entity_or_episode_id)` and carries nothing about claim content. So with
 `refractory_s` on, the correction is suppressed as `"refractory"` — the guard designed to stop
 duplicate noise silently eats the single most important event in the sequence. It is at least
-observable (`"refractory"` is in `SUPPRESSION_REASONS`, `gate.py:143`, and invokes `on_suppress`
+observable (`"refractory"` is in `SUPPRESSION_REASONS`, `gate.py:162`, and invokes `on_suppress`
 → `RuntimeHealthEvent("gate_suppressed")`), but observable-suppression of a correction is not a
 fix; it is a well-logged wrong answer.
 
 **Fix A — settle window.** Delay committing a finding for a bounded window after the rising edge,
 so a retraction arriving inside the window cancels the finding before it is ever emitted. Note this
 is *not* `hold_s` (dwell): dwell requires the condition to stay continuously true before firing
-(`gate.py` dwell path, `_dwell_since` `:263`), which is a **state** predicate. A settle window is a
+(`gate.py` dwell path, `_dwell_since` `:282`), which is a **state** predicate. A settle window is a
 *claim-revision* predicate: the claim was made, and we wait to see whether the speaker takes it
 back. Their trigger conditions are different even where their timers look similar.
 
@@ -189,10 +189,10 @@ assumption the *consumer* invents, not a measurement the *runtime* made. It is w
 three ways the runtime can see and the consumer cannot:
 
 - the gate stays armed-`False` for the whole continuing-true episode (`already_fired` is the base
-  contract, `gate.py:32-40` commentary), so "no further fire" means *nothing changed the edge* —
+  contract, `gate.py:32-42` commentary), so "no further fire" means *nothing changed the edge* —
   which is indistinguishable from "the state ended and nothing new started";
-- a key can be evicted by TTL/LRU (`_DEFAULT_MAX_KEYS`, `_DEFAULT_KEY_TTL_S`, `gate.py:77-78`) or
-  reset on entity death (`reset_entity`, `gate.py:676`), silently ending an interval the consumer
+- a key can be evicted by TTL/LRU (`_DEFAULT_MAX_KEYS`, `_DEFAULT_KEY_TTL_S`, `gate.py:79-80`) or
+  reset on entity death (`reset_entity`, `gate.py:774`), silently ending an interval the consumer
   believes is still open;
 - a degraded judge tick preserves armed/disarmed and last-fire/refractory state but clears pending
   positive-dwell and last-supported evidence (`agent.py:1995-2007,2561-2577`; ADR-004 §1,
@@ -301,12 +301,12 @@ change is a regenerate-and-review step, not a silent one. `percept/watch.py`'s p
 - Making a currently-optional field required, or removing `label_url`/`message`.
 - Changing the gate key tuple `(goal_id, entity_or_episode_id)` shape. This is not a wire contract
   but it is a *persistence* contract: `Gate.snapshot()`/`restore()` serialize keys as
-  `[list(k), ...]` (`gate.py:710-861`) and `Percept.snapshot()`/`restore()` round-trip them
+  `[list(k), ...]` (`gate.py:808-970`) and `Percept.snapshot()`/`restore()` round-trip them
   (`agent.py:2031,2077`). A widened key silently invalidates every stored snapshot, and a
   restored-but-mismatched key re-opens a fire-once goal — the exact trap `_no_evict`
-  (`gate.py:266`) exists to prevent (`gate.py:330-331` commentary).
+  (`gate.py:285`) exists to prevent (`gate.py:359-360` commentary).
 - Adding a new value to `WatchAction` / `GateAction`. Both are closed `Literal`s
-  (`contracts/__init__.py:1129`, `gate.py:80`) mirrored value-for-value by the JS edge; a fourth
+  (`contracts/__init__.py:1129`, `gate.py:82`) mirrored value-for-value by the JS edge; a fourth
   action is a major wire change. **A supersede relation must therefore be modelled as data on the
   event, never as a new action value** — this ADR states that constraint now, because it is the
   most likely accidental breakage in this area.
@@ -506,12 +506,12 @@ setting, will fail the 21.6 s / 22.6 s / 34.0 s test in §2.
    `signature=` precedent); or an out-of-band identity resolver. Each has a different blast radius
    on the frozen contract and on every existing `Vision` backend's `detect()`. Not decided here.
 5. **Should a settle window be a gate concept or a delivery concept?** Putting it in `Gate` reuses
-   the one firing path (`gate.py:289`, invariant 3) but makes the gate hold state about
+   the one firing path (`gate.py:318`, invariant 3) but makes the gate hold state about
    *un-emitted* findings, which it has never done. Putting it in delivery keeps the gate pure but
    creates a second place where an event can be withheld — and ADR-002/ADR-001 §9's "a
    bound-driven drop is never silent" rule would need extending to cover a settle-cancelled
    finding. Both need a new reason code; note `GATE_REASONS` is a closed vocabulary
-   (`gate.py:111-121`, with its `REASON_ACTION` map `:125-135` and `SUPPRESSION_REASONS` `:143`)
+   (`gate.py:123-134`, with its `REASON_ACTION` map `:138-149` and `SUPPRESSION_REASONS` `:162`)
    and adding to it is a deliberate act.
 6. **Does any of this reach `watch()`, or is it `run()`-only?** This is ADR-004 Open Question 4
    restated from the relations side and is explicitly *not* re-answered here. `watch()` yields
