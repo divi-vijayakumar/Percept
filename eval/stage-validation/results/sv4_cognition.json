@@ -1,12 +1,12 @@
 {
   "suite": "SV-4 COGNITION + DISPOSITION",
-  "generated_at": "2026-07-26T15:53:14-0700",
+  "generated_at": "2026-08-01T12:23:29-0700",
   "runtime": {
     "percept_version": "1.0.0",
-    "percept_path": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept",
+    "percept_path": "/private/tmp/percept-launch/eval-venv/lib/python3.12/site-packages/percept",
     "is_installed_wheel": true,
     "python": "3.12.8",
-    "executable": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python",
+    "executable": "/private/tmp/percept-launch/eval-venv/bin/python",
     "platform": "darwin"
   },
   "results": [
@@ -55,13 +55,13 @@
           "detail": "7 incidents; 7 distinct ids, 7 distinct judgment_event_ids, 7 distinct evidence_seqs, 7 distinct newest-evidence hashes",
           "data": {
             "ids": [
-              "inc-zone-1.000-733c3604",
-              "inc-zone-3.000-bb509277",
-              "inc-zone-5.000-33b54c4a",
-              "inc-zone-7.000-fbde784f",
-              "inc-zone-9.000-dfb52af3",
-              "inc-zone-11.000-cc647506",
-              "inc-zone-13.000-499cf711"
+              "inc-zone-1.000-ddb65e90",
+              "inc-zone-3.000-d69ea5c1",
+              "inc-zone-5.000-09b89afb",
+              "inc-zone-7.000-49607a42",
+              "inc-zone-9.000-70c76051",
+              "inc-zone-11.000-ffac6b2e",
+              "inc-zone-13.000-9e47e801"
             ],
             "judgment_event_ids": [
               "zone##1",
@@ -346,25 +346,25 @@
         {
           "name": "byte_bounded/the memory curve was actually sampled (guards against a vacuously flat result)",
           "passed": true,
-          "detail": "60 samples, 31 in the steady-state half; mean steady-state heap 0.81 MB",
+          "detail": "60 samples, 31 in the steady-state half; mean steady-state heap 0.82 MB",
           "data": {}
         },
         {
           "name": "byte_bounded/steady-state Python heap is FLAT (< 5% drift across the second half)",
           "passed": true,
-          "detail": "drift +0.51%; slope +5.4 bytes/frame (projected +0.02 MB over 3000 frames); mean steady-state heap 0.81 MB; peak 0.86 MB",
+          "detail": "drift +0.51%; slope +5.4 bytes/frame (projected +0.02 MB over 3000 frames); mean steady-state heap 0.82 MB; peak 0.86 MB",
           "data": {}
         },
         {
           "name": "count_only/the memory curve was actually sampled (guards against a vacuously flat result)",
           "passed": true,
-          "detail": "60 samples, 31 in the steady-state half; mean steady-state heap 1.39 MB",
+          "detail": "60 samples, 31 in the steady-state half; mean steady-state heap 1.38 MB",
           "data": {}
         },
         {
           "name": "count_only/steady-state Python heap is FLAT (< 5% drift across the second half)",
           "passed": true,
-          "detail": "drift +0.23%; slope +4.1 bytes/frame (projected +0.01 MB over 3000 frames); mean steady-state heap 1.39 MB; peak 1.43 MB",
+          "detail": "drift +0.23%; slope +4.0 bytes/frame (projected +0.01 MB over 3000 frames); mean steady-state heap 1.38 MB; peak 1.42 MB",
           "data": {}
         },
         {
@@ -418,18 +418,18 @@
             "frame_bytes": 16384,
             "snippet_size": 48,
             "snippet_max_bytes": 256000,
-            "elapsed_s": 6.2,
+            "elapsed_s": 7.46,
             "incidents": 15,
             "n_samples": 60,
             "n_steady_samples": 31,
-            "mean_steady_heap_bytes": 813291.7096774194,
-            "drift_pct_second_half": 0.5086117164381763,
+            "mean_steady_heap_bytes": 816865.7096774194,
+            "drift_pct_second_half": 0.5063805918397274,
             "slope_bytes_per_frame": 5.353338709677419,
             "linfit_r2": 0.9940044720005603,
             "projected_growth_bytes_over_run": 16060.016129032258,
-            "heap_end_bytes": 526672,
-            "heap_peak_bytes": 855947,
-            "rss_maxrss_bytes": 61784064,
+            "heap_end_bytes": 521766,
+            "heap_peak_bytes": 859169,
+            "rss_maxrss_bytes": 63275008,
             "preroll_frames_dropped": 2985,
             "preroll_capped_events": 2985,
             "max_held_frames": 15,
@@ -441,303 +441,303 @@
             "curve": [
               {
                 "frame": 50,
-                "heap_bytes": 357695,
-                "rss_bytes": 59162624
+                "heap_bytes": 367429,
+                "rss_bytes": 61112320
               },
               {
                 "frame": 100,
-                "heap_bytes": 382135,
-                "rss_bytes": 59457536
+                "heap_bytes": 391901,
+                "rss_bytes": 61145088
               },
               {
                 "frame": 150,
-                "heap_bytes": 404850,
-                "rss_bytes": 59539456
+                "heap_bytes": 414616,
+                "rss_bytes": 61177856
               },
               {
                 "frame": 200,
-                "heap_bytes": 430812,
-                "rss_bytes": 59801600
+                "heap_bytes": 440578,
+                "rss_bytes": 61227008
               },
               {
                 "frame": 250,
-                "heap_bytes": 664962,
-                "rss_bytes": 60014592
+                "heap_bytes": 668536,
+                "rss_bytes": 61489152
               },
               {
                 "frame": 300,
-                "heap_bytes": 671932,
-                "rss_bytes": 60030976
+                "heap_bytes": 675570,
+                "rss_bytes": 61767680
               },
               {
                 "frame": 350,
-                "heap_bytes": 684358,
-                "rss_bytes": 60047360
+                "heap_bytes": 687996,
+                "rss_bytes": 61800448
               },
               {
                 "frame": 400,
-                "heap_bytes": 690304,
-                "rss_bytes": 60047360
+                "heap_bytes": 693942,
+                "rss_bytes": 61849600
               },
               {
                 "frame": 450,
-                "heap_bytes": 696681,
-                "rss_bytes": 60112896
+                "heap_bytes": 700319,
+                "rss_bytes": 62128128
               },
               {
                 "frame": 500,
-                "heap_bytes": 702691,
-                "rss_bytes": 60112896
+                "heap_bytes": 706329,
+                "rss_bytes": 62144512
               },
               {
                 "frame": 550,
-                "heap_bytes": 708637,
-                "rss_bytes": 60178432
+                "heap_bytes": 712275,
+                "rss_bytes": 62144512
               },
               {
                 "frame": 600,
-                "heap_bytes": 714583,
-                "rss_bytes": 60178432
+                "heap_bytes": 718221,
+                "rss_bytes": 62177280
               },
               {
                 "frame": 650,
-                "heap_bytes": 720917,
-                "rss_bytes": 60194816
+                "heap_bytes": 724555,
+                "rss_bytes": 62373888
               },
               {
                 "frame": 700,
-                "heap_bytes": 739839,
-                "rss_bytes": 60227584
+                "heap_bytes": 743477,
+                "rss_bytes": 62373888
               },
               {
                 "frame": 750,
-                "heap_bytes": 745785,
-                "rss_bytes": 60276736
+                "heap_bytes": 749423,
+                "rss_bytes": 62570496
               },
               {
                 "frame": 800,
-                "heap_bytes": 751731,
-                "rss_bytes": 60293120
+                "heap_bytes": 755369,
+                "rss_bytes": 62570496
               },
               {
                 "frame": 850,
-                "heap_bytes": 758153,
-                "rss_bytes": 60375040
+                "heap_bytes": 761791,
+                "rss_bytes": 62619648
               },
               {
                 "frame": 900,
-                "heap_bytes": 764163,
-                "rss_bytes": 60375040
+                "heap_bytes": 767801,
+                "rss_bytes": 62717952
               },
               {
                 "frame": 950,
-                "heap_bytes": 770109,
-                "rss_bytes": 60391424
+                "heap_bytes": 773747,
+                "rss_bytes": 62750720
               },
               {
                 "frame": 1000,
-                "heap_bytes": 776055,
-                "rss_bytes": 60391424
+                "heap_bytes": 779693,
+                "rss_bytes": 62767104
               },
               {
                 "frame": 1050,
-                "heap_bytes": 779674,
-                "rss_bytes": 60391424
+                "heap_bytes": 783312,
+                "rss_bytes": 62767104
               },
               {
                 "frame": 1100,
-                "heap_bytes": 779870,
-                "rss_bytes": 60538880
+                "heap_bytes": 783508,
+                "rss_bytes": 62767104
               },
               {
                 "frame": 1150,
-                "heap_bytes": 780105,
-                "rss_bytes": 60538880
+                "heap_bytes": 783679,
+                "rss_bytes": 62767104
               },
               {
                 "frame": 1200,
-                "heap_bytes": 780315,
-                "rss_bytes": 60538880
+                "heap_bytes": 783889,
+                "rss_bytes": 62767104
               },
               {
                 "frame": 1250,
-                "heap_bytes": 781553,
-                "rss_bytes": 60538880
+                "heap_bytes": 785127,
+                "rss_bytes": 62914560
               },
               {
                 "frame": 1300,
-                "heap_bytes": 781827,
-                "rss_bytes": 60538880
+                "heap_bytes": 785401,
+                "rss_bytes": 62914560
               },
               {
                 "frame": 1350,
-                "heap_bytes": 782037,
-                "rss_bytes": 60538880
+                "heap_bytes": 785611,
+                "rss_bytes": 62914560
               },
               {
                 "frame": 1400,
-                "heap_bytes": 808183,
-                "rss_bytes": 60538880
+                "heap_bytes": 811757,
+                "rss_bytes": 62914560
               },
               {
                 "frame": 1450,
-                "heap_bytes": 808741,
-                "rss_bytes": 60538880
+                "heap_bytes": 812315,
+                "rss_bytes": 62914560
               },
               {
                 "frame": 1500,
-                "heap_bytes": 808951,
-                "rss_bytes": 60538880
+                "heap_bytes": 812525,
+                "rss_bytes": 62914560
               },
               {
                 "frame": 1550,
-                "heap_bytes": 809161,
-                "rss_bytes": 60538880
+                "heap_bytes": 812735,
+                "rss_bytes": 62914560
               },
               {
                 "frame": 1600,
-                "heap_bytes": 809371,
-                "rss_bytes": 60538880
+                "heap_bytes": 812945,
+                "rss_bytes": 62930944
               },
               {
                 "frame": 1650,
-                "heap_bytes": 810121,
-                "rss_bytes": 60538880
+                "heap_bytes": 813695,
+                "rss_bytes": 62930944
               },
               {
                 "frame": 1700,
-                "heap_bytes": 810395,
-                "rss_bytes": 60538880
+                "heap_bytes": 813969,
+                "rss_bytes": 62930944
               },
               {
                 "frame": 1750,
-                "heap_bytes": 810605,
-                "rss_bytes": 60571648
+                "heap_bytes": 814179,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 1800,
-                "heap_bytes": 810815,
-                "rss_bytes": 60571648
+                "heap_bytes": 814389,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 1850,
-                "heap_bytes": 811365,
-                "rss_bytes": 60571648
+                "heap_bytes": 814939,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 1900,
-                "heap_bytes": 811575,
-                "rss_bytes": 60604416
+                "heap_bytes": 815149,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 1950,
-                "heap_bytes": 811785,
-                "rss_bytes": 60604416
+                "heap_bytes": 815359,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 2000,
-                "heap_bytes": 811995,
-                "rss_bytes": 60604416
+                "heap_bytes": 815569,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 2050,
-                "heap_bytes": 812512,
-                "rss_bytes": 60620800
+                "heap_bytes": 816086,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 2100,
-                "heap_bytes": 812768,
-                "rss_bytes": 60620800
+                "heap_bytes": 816342,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 2150,
-                "heap_bytes": 812928,
-                "rss_bytes": 60620800
+                "heap_bytes": 816502,
+                "rss_bytes": 62980096
               },
               {
                 "frame": 2200,
-                "heap_bytes": 813088,
-                "rss_bytes": 60620800
+                "heap_bytes": 816662,
+                "rss_bytes": 62996480
               },
               {
                 "frame": 2250,
-                "heap_bytes": 813572,
-                "rss_bytes": 60784640
+                "heap_bytes": 817146,
+                "rss_bytes": 62996480
               },
               {
                 "frame": 2300,
-                "heap_bytes": 813732,
-                "rss_bytes": 61505536
+                "heap_bytes": 817306,
+                "rss_bytes": 62996480
               },
               {
                 "frame": 2350,
-                "heap_bytes": 813892,
-                "rss_bytes": 61521920
+                "heap_bytes": 817466,
+                "rss_bytes": 63029248
               },
               {
                 "frame": 2400,
-                "heap_bytes": 814052,
-                "rss_bytes": 61521920
+                "heap_bytes": 817626,
+                "rss_bytes": 63029248
               },
               {
                 "frame": 2450,
-                "heap_bytes": 814528,
-                "rss_bytes": 61587456
+                "heap_bytes": 818102,
+                "rss_bytes": 63029248
               },
               {
                 "frame": 2500,
-                "heap_bytes": 814688,
-                "rss_bytes": 61587456
+                "heap_bytes": 818262,
+                "rss_bytes": 63029248
               },
               {
                 "frame": 2550,
-                "heap_bytes": 814848,
-                "rss_bytes": 61620224
+                "heap_bytes": 818422,
+                "rss_bytes": 63029248
               },
               {
                 "frame": 2600,
-                "heap_bytes": 815008,
-                "rss_bytes": 61620224
+                "heap_bytes": 818582,
+                "rss_bytes": 63029248
               },
               {
                 "frame": 2650,
-                "heap_bytes": 815484,
-                "rss_bytes": 61702144
+                "heap_bytes": 819058,
+                "rss_bytes": 63275008
               },
               {
                 "frame": 2700,
-                "heap_bytes": 815740,
-                "rss_bytes": 61751296
+                "heap_bytes": 819314,
+                "rss_bytes": 63275008
               },
               {
                 "frame": 2750,
-                "heap_bytes": 815900,
-                "rss_bytes": 61751296
+                "heap_bytes": 819474,
+                "rss_bytes": 63275008
               },
               {
                 "frame": 2800,
-                "heap_bytes": 816060,
-                "rss_bytes": 61767680
+                "heap_bytes": 819634,
+                "rss_bytes": 63275008
               },
               {
                 "frame": 2850,
-                "heap_bytes": 816536,
-                "rss_bytes": 61767680
+                "heap_bytes": 820110,
+                "rss_bytes": 63275008
               },
               {
                 "frame": 2900,
-                "heap_bytes": 816696,
-                "rss_bytes": 61767680
+                "heap_bytes": 820270,
+                "rss_bytes": 63275008
               },
               {
                 "frame": 2950,
-                "heap_bytes": 816856,
-                "rss_bytes": 61784064
+                "heap_bytes": 820430,
+                "rss_bytes": 63275008
               },
               {
                 "frame": 3000,
-                "heap_bytes": 817016,
-                "rss_bytes": 61784064
+                "heap_bytes": 820590,
+                "rss_bytes": 63275008
               }
             ]
           },
@@ -747,18 +747,18 @@
             "frame_bytes": 16384,
             "snippet_size": 48,
             "snippet_max_bytes": 0,
-            "elapsed_s": 6.26,
+            "elapsed_s": 7.14,
             "incidents": 15,
             "n_samples": 60,
             "n_steady_samples": 31,
-            "mean_steady_heap_bytes": 1387094.064516129,
-            "drift_pct_second_half": 0.23015896082539125,
-            "slope_bytes_per_frame": 4.143532258064516,
-            "linfit_r2": 0.9913808149526158,
-            "projected_growth_bytes_over_run": 12430.596774193547,
-            "heap_end_bytes": 408829,
-            "heap_peak_bytes": 1428858,
-            "rss_maxrss_bytes": 64520192,
+            "mean_steady_heap_bytes": 1377098.7741935484,
+            "drift_pct_second_half": 0.22510591294999413,
+            "slope_bytes_per_frame": 4.024306451612903,
+            "linfit_r2": 0.9908012156123984,
+            "projected_growth_bytes_over_run": 12072.919354838708,
+            "heap_end_bytes": 389899,
+            "heap_peak_bytes": 1418424,
+            "rss_maxrss_bytes": 67043328,
             "preroll_frames_dropped": 0,
             "preroll_capped_events": 0,
             "max_held_frames": 0,
@@ -770,303 +770,303 @@
             "curve": [
               {
                 "frame": 50,
-                "heap_bytes": 898984,
-                "rss_bytes": 61833216
-              },
-              {
-                "frame": 100,
-                "heap_bytes": 906648,
-                "rss_bytes": 61849600
-              },
-              {
-                "frame": 150,
-                "heap_bytes": 912563,
-                "rss_bytes": 62291968
-              },
-              {
-                "frame": 200,
-                "heap_bytes": 921725,
-                "rss_bytes": 62291968
-              },
-              {
-                "frame": 250,
-                "heap_bytes": 1240121,
-                "rss_bytes": 62291968
-              },
-              {
-                "frame": 300,
-                "heap_bytes": 1247019,
-                "rss_bytes": 62308352
-              },
-              {
-                "frame": 350,
-                "heap_bytes": 1259445,
-                "rss_bytes": 62455808
-              },
-              {
-                "frame": 400,
-                "heap_bytes": 1265391,
-                "rss_bytes": 62455808
-              },
-              {
-                "frame": 450,
-                "heap_bytes": 1271688,
-                "rss_bytes": 62537728
-              },
-              {
-                "frame": 500,
-                "heap_bytes": 1277722,
-                "rss_bytes": 62816256
-              },
-              {
-                "frame": 550,
-                "heap_bytes": 1283668,
-                "rss_bytes": 63127552
-              },
-              {
-                "frame": 600,
-                "heap_bytes": 1289614,
-                "rss_bytes": 63389696
-              },
-              {
-                "frame": 650,
-                "heap_bytes": 1295876,
-                "rss_bytes": 63389696
-              },
-              {
-                "frame": 700,
-                "heap_bytes": 1314822,
-                "rss_bytes": 63406080
-              },
-              {
-                "frame": 750,
-                "heap_bytes": 1320768,
+                "heap_bytes": 910390,
                 "rss_bytes": 63930368
               },
               {
-                "frame": 800,
-                "heap_bytes": 1326714,
-                "rss_bytes": 63946752
+                "frame": 100,
+                "heap_bytes": 918054,
+                "rss_bytes": 63963136
               },
               {
-                "frame": 850,
-                "heap_bytes": 1333072,
-                "rss_bytes": 64110592
+                "frame": 150,
+                "heap_bytes": 924001,
+                "rss_bytes": 63963136
               },
               {
-                "frame": 900,
-                "heap_bytes": 1339106,
-                "rss_bytes": 64176128
+                "frame": 200,
+                "heap_bytes": 933163,
+                "rss_bytes": 63979520
               },
               {
-                "frame": 950,
-                "heap_bytes": 1345052,
-                "rss_bytes": 64192512
-              },
-              {
-                "frame": 1000,
-                "heap_bytes": 1350998,
-                "rss_bytes": 64192512
-              },
-              {
-                "frame": 1050,
-                "heap_bytes": 1354593,
-                "rss_bytes": 64192512
-              },
-              {
-                "frame": 1100,
-                "heap_bytes": 1354813,
-                "rss_bytes": 64225280
-              },
-              {
-                "frame": 1150,
-                "heap_bytes": 1354984,
-                "rss_bytes": 64225280
-              },
-              {
-                "frame": 1200,
-                "heap_bytes": 1355130,
-                "rss_bytes": 64225280
-              },
-              {
-                "frame": 1250,
-                "heap_bytes": 1356600,
-                "rss_bytes": 64241664
-              },
-              {
-                "frame": 1300,
-                "heap_bytes": 1356834,
-                "rss_bytes": 64241664
-              },
-              {
-                "frame": 1350,
-                "heap_bytes": 1356980,
-                "rss_bytes": 64241664
-              },
-              {
-                "frame": 1400,
-                "heap_bytes": 1383062,
-                "rss_bytes": 64241664
-              },
-              {
-                "frame": 1450,
-                "heap_bytes": 1383524,
-                "rss_bytes": 64241664
-              },
-              {
-                "frame": 1500,
-                "heap_bytes": 1383694,
-                "rss_bytes": 64241664
-              },
-              {
-                "frame": 1550,
-                "heap_bytes": 1383840,
-                "rss_bytes": 64241664
-              },
-              {
-                "frame": 1600,
-                "heap_bytes": 1383986,
-                "rss_bytes": 64241664
-              },
-              {
-                "frame": 1650,
-                "heap_bytes": 1384640,
-                "rss_bytes": 64258048
-              },
-              {
-                "frame": 1700,
-                "heap_bytes": 1384874,
+                "frame": 250,
+                "heap_bytes": 1251559,
                 "rss_bytes": 64274432
               },
               {
-                "frame": 1750,
-                "heap_bytes": 1385020,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 1800,
-                "heap_bytes": 1385166,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 1850,
-                "heap_bytes": 1385628,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 1900,
-                "heap_bytes": 1385798,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 1950,
-                "heap_bytes": 1385944,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 2000,
-                "heap_bytes": 1386090,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 2050,
-                "heap_bytes": 1386527,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 2100,
-                "heap_bytes": 1386743,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 2150,
-                "heap_bytes": 1386839,
-                "rss_bytes": 64274432
-              },
-              {
-                "frame": 2200,
-                "heap_bytes": 1386935,
+                "frame": 300,
+                "heap_bytes": 1258521,
                 "rss_bytes": 64307200
               },
               {
-                "frame": 2250,
-                "heap_bytes": 1387347,
+                "frame": 350,
+                "heap_bytes": 1270947,
                 "rss_bytes": 64323584
               },
               {
-                "frame": 2300,
-                "heap_bytes": 1387467,
-                "rss_bytes": 64323584
-              },
-              {
-                "frame": 2350,
-                "heap_bytes": 1387563,
-                "rss_bytes": 64323584
-              },
-              {
-                "frame": 2400,
-                "heap_bytes": 1387659,
-                "rss_bytes": 64323584
-              },
-              {
-                "frame": 2450,
-                "heap_bytes": 1388071,
-                "rss_bytes": 64323584
-              },
-              {
-                "frame": 2500,
-                "heap_bytes": 1388191,
-                "rss_bytes": 64323584
-              },
-              {
-                "frame": 2550,
-                "heap_bytes": 1388287,
-                "rss_bytes": 64323584
-              },
-              {
-                "frame": 2600,
-                "heap_bytes": 1388383,
+                "frame": 400,
+                "heap_bytes": 1276893,
                 "rss_bytes": 64339968
               },
               {
+                "frame": 450,
+                "heap_bytes": 1283190,
+                "rss_bytes": 64405504
+              },
+              {
+                "frame": 500,
+                "heap_bytes": 1289224,
+                "rss_bytes": 64405504
+              },
+              {
+                "frame": 550,
+                "heap_bytes": 1295170,
+                "rss_bytes": 64438272
+              },
+              {
+                "frame": 600,
+                "heap_bytes": 1301116,
+                "rss_bytes": 64454656
+              },
+              {
+                "frame": 650,
+                "heap_bytes": 1307378,
+                "rss_bytes": 64454656
+              },
+              {
+                "frame": 700,
+                "heap_bytes": 1324348,
+                "rss_bytes": 64454656
+              },
+              {
+                "frame": 750,
+                "heap_bytes": 1327494,
+                "rss_bytes": 64471040
+              },
+              {
+                "frame": 800,
+                "heap_bytes": 1330640,
+                "rss_bytes": 64471040
+              },
+              {
+                "frame": 850,
+                "heap_bytes": 1334174,
+                "rss_bytes": 64471040
+              },
+              {
+                "frame": 900,
+                "heap_bytes": 1337384,
+                "rss_bytes": 64471040
+              },
+              {
+                "frame": 950,
+                "heap_bytes": 1340530,
+                "rss_bytes": 64471040
+              },
+              {
+                "frame": 1000,
+                "heap_bytes": 1343676,
+                "rss_bytes": 64471040
+              },
+              {
+                "frame": 1050,
+                "heap_bytes": 1345759,
+                "rss_bytes": 64471040
+              },
+              {
+                "frame": 1100,
+                "heap_bytes": 1345955,
+                "rss_bytes": 64733184
+              },
+              {
+                "frame": 1150,
+                "heap_bytes": 1346126,
+                "rss_bytes": 64946176
+              },
+              {
+                "frame": 1200,
+                "heap_bytes": 1346272,
+                "rss_bytes": 65306624
+              },
+              {
+                "frame": 1250,
+                "heap_bytes": 1346734,
+                "rss_bytes": 65634304
+              },
+              {
+                "frame": 1300,
+                "heap_bytes": 1346944,
+                "rss_bytes": 65667072
+              },
+              {
+                "frame": 1350,
+                "heap_bytes": 1347090,
+                "rss_bytes": 65667072
+              },
+              {
+                "frame": 1400,
+                "heap_bytes": 1373172,
+                "rss_bytes": 65667072
+              },
+              {
+                "frame": 1450,
+                "heap_bytes": 1373634,
+                "rss_bytes": 65667072
+              },
+              {
+                "frame": 1500,
+                "heap_bytes": 1373780,
+                "rss_bytes": 65748992
+              },
+              {
+                "frame": 1550,
+                "heap_bytes": 1373926,
+                "rss_bytes": 65748992
+              },
+              {
+                "frame": 1600,
+                "heap_bytes": 1374072,
+                "rss_bytes": 65748992
+              },
+              {
+                "frame": 1650,
+                "heap_bytes": 1374726,
+                "rss_bytes": 66076672
+              },
+              {
+                "frame": 1700,
+                "heap_bytes": 1374936,
+                "rss_bytes": 66109440
+              },
+              {
+                "frame": 1750,
+                "heap_bytes": 1375082,
+                "rss_bytes": 66338816
+              },
+              {
+                "frame": 1800,
+                "heap_bytes": 1375228,
+                "rss_bytes": 66338816
+              },
+              {
+                "frame": 1850,
+                "heap_bytes": 1375690,
+                "rss_bytes": 66912256
+              },
+              {
+                "frame": 1900,
+                "heap_bytes": 1375836,
+                "rss_bytes": 66977792
+              },
+              {
+                "frame": 1950,
+                "heap_bytes": 1375982,
+                "rss_bytes": 66977792
+              },
+              {
+                "frame": 2000,
+                "heap_bytes": 1376128,
+                "rss_bytes": 66977792
+              },
+              {
+                "frame": 2050,
+                "heap_bytes": 1376565,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2100,
+                "heap_bytes": 1376757,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2150,
+                "heap_bytes": 1376853,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2200,
+                "heap_bytes": 1376949,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2250,
+                "heap_bytes": 1377361,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2300,
+                "heap_bytes": 1377457,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2350,
+                "heap_bytes": 1377553,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2400,
+                "heap_bytes": 1377649,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2450,
+                "heap_bytes": 1378061,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2500,
+                "heap_bytes": 1378157,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2550,
+                "heap_bytes": 1378253,
+                "rss_bytes": 66994176
+              },
+              {
+                "frame": 2600,
+                "heap_bytes": 1378349,
+                "rss_bytes": 67026944
+              },
+              {
                 "frame": 2650,
-                "heap_bytes": 1388795,
-                "rss_bytes": 64356352
+                "heap_bytes": 1378761,
+                "rss_bytes": 67026944
               },
               {
                 "frame": 2700,
-                "heap_bytes": 1389011,
-                "rss_bytes": 64372736
+                "heap_bytes": 1378953,
+                "rss_bytes": 67026944
               },
               {
                 "frame": 2750,
-                "heap_bytes": 1389107,
-                "rss_bytes": 64421888
+                "heap_bytes": 1379049,
+                "rss_bytes": 67026944
               },
               {
                 "frame": 2800,
-                "heap_bytes": 1389203,
-                "rss_bytes": 64503808
+                "heap_bytes": 1379145,
+                "rss_bytes": 67026944
               },
               {
                 "frame": 2850,
-                "heap_bytes": 1389615,
-                "rss_bytes": 64503808
+                "heap_bytes": 1379557,
+                "rss_bytes": 67026944
               },
               {
                 "frame": 2900,
-                "heap_bytes": 1389735,
-                "rss_bytes": 64503808
+                "heap_bytes": 1379653,
+                "rss_bytes": 67043328
               },
               {
                 "frame": 2950,
-                "heap_bytes": 1389831,
-                "rss_bytes": 64520192
+                "heap_bytes": 1379749,
+                "rss_bytes": 67043328
               },
               {
                 "frame": 3000,
-                "heap_bytes": 1389927,
-                "rss_bytes": 64520192
+                "heap_bytes": 1379845,
+                "rss_bytes": 67043328
               }
             ]
           }
@@ -1153,7 +1153,7 @@
           "data": {
             "offenders": [
               {
-                "incident": "inc-zone-3.000-f480422c",
+                "incident": "inc-zone-3.000-a411dcd1",
                 "ts": 3.0,
                 "sha256": "cc7fe40d0291d3cdce54d909a809383781247d60a8e4d856b174dbdc3f4dfd29"
               }
@@ -1213,61 +1213,33 @@
         {
           "name": "F1/clip-kind evidence for a bytes frame is byte-recoverable",
           "passed": true,
-          "detail": "4/4 clip entries recover the exact media bytes (0 as base64 'data', 4 as a Python 'repr' string \u2014 recoverable, but NOT the documented base64 media field a sink reads)",
+          "detail": "4/4 clip entries recover the exact media bytes (4 as base64 'data', 0 as a Python 'repr' string \u2014 recoverable, but NOT the documented base64 media field a sink reads)",
           "data": {
             "bytes_frames": {
               "incidents": 1,
-              "entries": [
-                {
-                  "keys": [
-                    "repr"
-                  ],
-                  "truncated": false,
-                  "byte_recoverable": true
-                },
-                {
-                  "keys": [
-                    "repr"
-                  ],
-                  "truncated": false,
-                  "byte_recoverable": true
-                },
-                {
-                  "keys": [
-                    "repr"
-                  ],
-                  "truncated": false,
-                  "byte_recoverable": true
-                },
-                {
-                  "keys": [
-                    "repr"
-                  ],
-                  "truncated": false,
-                  "byte_recoverable": true
-                }
-              ],
-              "base64_data": 0,
-              "repr_only": 4,
+              "entries": [],
+              "base64_data": 4,
+              "repr_only": 0,
               "byte_recoverable": 4
             }
           }
         },
         {
           "name": "F2/clip-kind evidence for a DECODED frame is not silently truncated",
-          "passed": false,
-          "detail": "decoded ndarray frame -> keys=['repr'], TRUNCATED=True (12288 pixel bytes replaced by a 1034-char string, unrecoverable)",
+          "passed": true,
+          "detail": "decoded ndarray frame -> keys=['data', 'mime'], TRUNCATED=False (12288 pixel bytes replaced by a 0-char string, unrecoverable)",
           "data": {
             "ndarray_frame": {
               "mime": "application/x-percept-frame-bundle+json",
               "keys": [
-                "repr"
+                "data",
+                "mime"
               ],
-              "repr_only": 1,
-              "truncated": true,
-              "repr_len": 1034,
+              "repr_only": 0,
+              "truncated": false,
+              "repr_len": 0,
               "source_bytes": 12288,
-              "media_bytes": 1152
+              "media_bytes": 723
             }
           }
         }
@@ -1304,7 +1276,7 @@
           "snippets_after_fire": [],
           "newest_frame_never_judged": [
             {
-              "incident": "inc-zone-3.000-f480422c",
+              "incident": "inc-zone-3.000-a411dcd1",
               "ts": 3.0,
               "sha256": "cc7fe40d0291d3cdce54d909a809383781247d60a8e4d856b174dbdc3f4dfd29"
             }
@@ -1315,50 +1287,22 @@
         "cache_hit_provenance": "observed",
         "clip_bytes_frames": {
           "incidents": 1,
-          "entries": [
-            {
-              "keys": [
-                "repr"
-              ],
-              "truncated": false,
-              "byte_recoverable": true
-            },
-            {
-              "keys": [
-                "repr"
-              ],
-              "truncated": false,
-              "byte_recoverable": true
-            },
-            {
-              "keys": [
-                "repr"
-              ],
-              "truncated": false,
-              "byte_recoverable": true
-            },
-            {
-              "keys": [
-                "repr"
-              ],
-              "truncated": false,
-              "byte_recoverable": true
-            }
-          ],
-          "base64_data": 0,
-          "repr_only": 4,
+          "entries": [],
+          "base64_data": 4,
+          "repr_only": 0,
           "byte_recoverable": 4
         },
         "clip_ndarray_probe": {
           "mime": "application/x-percept-frame-bundle+json",
           "keys": [
-            "repr"
+            "data",
+            "mime"
           ],
-          "repr_only": 1,
-          "truncated": true,
-          "repr_len": 1034,
+          "repr_only": 0,
+          "truncated": false,
+          "repr_len": 0,
           "source_bytes": 12288,
-          "media_bytes": 1152
+          "media_bytes": 723
         },
         "evidence_store_round_trip": true,
         "evidence_store_tamper_detected": true,
@@ -1385,13 +1329,6 @@
         "cache_near_match_hamming": 0
       },
       "defects": [
-        {
-          "id": "SV-4.7-D1",
-          "severity": "blocker",
-          "where": "percept/incidents.py:165-179 (_encode_frame_bundle), reached from percept/incidents.py:203 (snippet_from_window kind='clip')",
-          "summary": "With snippet_kind='clip', any frame that is not a literal ``(mime, bytes)`` 2-tuple falls into the else branch and is serialized as ``{'repr': repr(frame)}``. A decoded frame from the shipped camera source is a numpy ndarray, whose repr is TRUNCATED with '...' above 1000 elements. The delivered IncidentSnippet therefore advertises media_type 'application/x-percept-frame-bundle+json' while carrying a lossy, irreversible ASCII summary in place of the pixels the judge saw. It is silent: no health event, no error, no counter. This is SUBSTITUTED evidence.",
-          "repro": "import numpy as np, json\nfrom percept.incidents import _encode_frame_bundle\na = (np.arange(64*64*3, dtype=np.uint8) % 251).reshape(64, 64, 3)  # 12288 px bytes\nmime, media = _encode_frame_bundle([a], t_start=0.0, t_end=1.0)\ne = json.loads(media)['frames'][0]\nassert list(e) == ['repr'] and '...' in e['repr']\n# repr length 1034 chars for 12288 bytes of pixels \u2014 unrecoverable.\n# End-to-end: percept.run(core, source=[(t, gate_frame, ndarray)], snippet_kind='clip')\n#             -> incident.snippet.media carries the same truncated reprs."
-        },
         {
           "id": "SV-4.7-D3",
           "severity": "high",
@@ -1476,14 +1413,14 @@
         },
         {
           "name": "funnel.refused mirrors the gate's ASK decisions",
-          "passed": false,
-          "detail": "clean:gate.funnel_refused_agrees",
+          "passed": true,
+          "detail": "balances in every scenario",
           "data": {}
         },
         {
           "name": "funnel mirror balances: judged == funnel.fired + funnel.refused + silent",
-          "passed": false,
-          "detail": "clean:gate.funnel_mirror_balances",
+          "passed": true,
+          "detail": "balances in every scenario",
           "data": {}
         },
         {
@@ -1571,11 +1508,11 @@
               "balances": true,
               "every_silent_has_a_reason": true,
               "funnel_fired": 6,
-              "funnel_refused": 2,
+              "funnel_refused": 1,
               "delivered_asks": 1,
               "funnel_fired_agrees": true,
-              "funnel_refused_agrees": false,
-              "funnel_mirror_balances": false
+              "funnel_refused_agrees": true,
+              "funnel_mirror_balances": true
             },
             "delivery": {
               "fires": 6,
@@ -1736,13 +1673,6 @@
       },
       "defects": [
         {
-          "id": "SV-4.8-D2",
-          "severity": "high",
-          "where": "percept/agent.py:3777 and percept/agent.py:3828 (both bump Funnel.refused for the SAME judged unit)",
-          "summary": "One ASK is counted twice in funnel.refused. agent.py:3777 bumps it when ``classify`` returns 'unknown'; agent.py:3828 bumps it again when the executor emits the resulting non-FIRE event for the same unit. The funnel identity ``judged == fired + refused + silent`` therefore cannot hold on any run containing an ASK \u2014 the funnel over-reports refusals by exactly the number of delivered ASKs, which is also the refusal rate a deployment tunes fresh_min / the confidence threshold against.",
-          "repro": "One scripted low-confidence verdict (satisfied=True, confidence=0.20) in a 13-unit run:\n  gate.classified ASK decisions = 1\n  stats.asks (delivered)        = 1\n  funnel.refused                = 2   <- 2x\n  funnel.judged=13 vs funnel.fired=6 + funnel.refused=2 + silent=6 = 14"
-        },
-        {
           "id": "SV-4.8-D1",
           "severity": "high",
           "where": "percept/runtime/worker.py:1417 (class _JudgeScheduler \u2014 no `funnel` reference anywhere in 1417-2239), vs percept/runtime/worker.py:793 in _LegacyJudgeScheduler",
@@ -1759,13 +1689,5 @@
     "SV-4.7": "FAIL",
     "SV-4.8": "FAIL"
   },
-  "release_blockers": [
-    {
-      "id": "SV-4.7-D1",
-      "severity": "blocker",
-      "where": "percept/incidents.py:165-179 (_encode_frame_bundle), reached from percept/incidents.py:203 (snippet_from_window kind='clip')",
-      "summary": "With snippet_kind='clip', any frame that is not a literal ``(mime, bytes)`` 2-tuple falls into the else branch and is serialized as ``{'repr': repr(frame)}``. A decoded frame from the shipped camera source is a numpy ndarray, whose repr is TRUNCATED with '...' above 1000 elements. The delivered IncidentSnippet therefore advertises media_type 'application/x-percept-frame-bundle+json' while carrying a lossy, irreversible ASCII summary in place of the pixels the judge saw. It is silent: no health event, no error, no counter. This is SUBSTITUTED evidence.",
-      "repro": "import numpy as np, json\nfrom percept.incidents import _encode_frame_bundle\na = (np.arange(64*64*3, dtype=np.uint8) % 251).reshape(64, 64, 3)  # 12288 px bytes\nmime, media = _encode_frame_bundle([a], t_start=0.0, t_end=1.0)\ne = json.loads(media)['frames'][0]\nassert list(e) == ['repr'] and '...' in e['repr']\n# repr length 1034 chars for 12288 bytes of pixels \u2014 unrecoverable.\n# End-to-end: percept.run(core, source=[(t, gate_frame, ndarray)], snippet_kind='clip')\n#             -> incident.snippet.media carries the same truncated reprs."
-    }
-  ]
+  "release_blockers": []
 }

@@ -586,6 +586,25 @@ describe("egoResidualScore — ego-motion compensation (Mode B)", () => {
     const cur = { width: w, height: h, data: panned };
     expect(motionScore(prev, cur)).toBeGreaterThan(0.1); // a pan looks like heavy motion...
     expect(egoResidualScore(prev, cur, { k: 4 })).toBeLessThan(0.1); // ...but the residual is ~0
+    expect(egoResidualScore(prev, cur, { k: 4, stat: "block_max" })).toBeLessThan(0.1);
+  });
+
+  it("estimates the shift globally, then applies block_max to the aligned residual", () => {
+    const w = 16, h = 16;
+    const base = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) base[y * w + x] = (x * 17 + y * 31) % 256;
+    const a = new Uint8Array(base);
+    const b = new Uint8Array(base);
+    for (let y = 0; y < 2; y++)
+      for (let x = 0; x < 2; x++) {
+        a[y * w + x] = 0;
+        b[y * w + x] = 255;
+      }
+    const prev = { width: w, height: h, data: a };
+    const cur = { width: w, height: h, data: b };
+    expect(egoResidualScore(prev, cur)).toBe(0.015625);
+    expect(egoResidualScore(prev, cur, { stat: "block_max" })).toBe(1);
   });
 });
 

@@ -136,6 +136,54 @@ class DeliveryIsProvisionalPlusSupersede(unittest.TestCase):
                 self.assertIn("not a wide settle window", text.replace("**", ""))
 
 
+class TransactionalWebhookDeliveryIsNarrow(unittest.TestCase):
+    """The public durability claim must stay no broader than the shipped runtime intersection."""
+
+    def test_scope_doc_states_the_exact_delivery_boundary(self):
+        text = _doc(_SCOPE_DOC)
+        for required in (
+            "bare",
+            "webhooksink",
+            "sqlitepersistence",
+            "before the",
+            "webhook request can begin",
+            "startup",
+            "at-least-once",
+            "stable incident `id`",
+            "legacy delivery path",
+            "not persist `percept.episodes`",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+
+    def test_watchdog_guide_points_to_the_narrow_contract(self):
+        watchdog = _doc(_REPO / "docs" / "sources" / "voice-and-watchdog.md")
+        self.assertIn("bare `webhooksink` and `sqlitepersistence`", watchdog)
+        self.assertIn("at-least-once", watchdog)
+        self.assertIn("scope-and-persistence.md#crash-safe-webhook-handoff", watchdog)
+
+
+class StandaloneAuditArchiveIsNotRuntimeContinuity(unittest.TestCase):
+    """Archive storage must never be documented as already-wired episode persistence."""
+
+    def test_scope_doc_states_capability_and_every_remaining_integration_boundary(self):
+        text = _doc(_SCOPE_DOC)
+        for required in (
+            "sqliteauditarchive",
+            "eventlog` history/count checkpoints",
+            "actionlog` records",
+            "enforcement=\"metadata_only\"",
+            "not wired into `percept.run`",
+            "stable ids",
+            "write-through seam",
+            "clock-rebase rules",
+            "qualify each crash boundary",
+            "does not change the session-only episode semantics",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+
+
 class TheDocIsReachable(unittest.TestCase):
     """A policy nobody can find is a policy nobody reads."""
 

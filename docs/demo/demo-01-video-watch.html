@@ -735,7 +735,7 @@ confidence: —</pre>
       if(r.stage==='gate.classified'&&r.data&&r.data.action==='fire')put(r.source_ts,'fired'); });
     const nFrames=frameRecs.length, nAdm=frameRecs.filter(admitted).length;
     const nJudge=recs.filter(r=>r.stage==='judge.finished').length;
-    const nEp=recs.filter(r=>r.stage==='shadow.fold'&&r.data&&r.data.fold&&r.data.fold.episode_id).length;
+    const nEp=recs.filter(r=>r.stage==='shadow.fold'&&r.data&&r.data.fold_episode_id).length;
     const nEvt=recs.filter(r=>r.stage==='gate.classified'&&r.data&&r.data.action==='fire').length;
     $('#attentionLane').style.width=nFrames?Math.min(100,nAdm/nFrames*100||2)+'%':'0';
     $('#episodeLane').style.width=nFrames?Math.min(100,nEp/nFrames*100)+'%':'0';
@@ -754,13 +754,16 @@ confidence: —</pre>
     const lastGate=gates[gates.length-1];
     $('#ledgerVersion').textContent=`revision · ${folds.length}`;
     if(lastFold&&lastFold.data){
-      const su=lastFold.data.subject, fo=lastFold.data.fold||{};
-      const unwired = !su && (!fo.episode_id);
+      const su=lastFold.data.subject, shadow=lastFold.data.fold||{};
+      const governingEpisodeId=lastFold.data.fold_episode_id;
+      const governingMatch=lastFold.data.fold_match;
+      const unwired = !su && !governingEpisodeId && !governingMatch;
       $('#entityLedger').textContent = su
         ? `subject: ${su.key||'—'}\nresolution: ${su.resolution||'—'}\nstrategy: ${su.strategy||'—'}`
         : `subject: null\nresolution: unbound\n(no subject or document resolver wired)`;
-      $('#episodeLedger').textContent = `episode: ${fo.episode_id||'null'}\nmatch: ${fo.match||'—'}\nmutation: ${fo.mutation||'—'}`;
-      $('#entityRev').textContent=$('#episodeRev').textContent = unwired ? 'shadow · not wired' : 'shadow · advisory';
+      $('#episodeLedger').textContent = `episode: ${governingEpisodeId||'null'}\nmatch: ${governingMatch||'—'}\nshadow mutation: ${shadow.mutation||'—'}`;
+      $('#entityRev').textContent = su ? 'shadow · advisory' : 'shadow · not wired';
+      $('#episodeRev').textContent = unwired ? 'governing · not wired' : 'governing fold';
     }
     if(lastGate&&lastGate.data){
       const gd=lastGate.data;

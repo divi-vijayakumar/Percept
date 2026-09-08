@@ -2,12 +2,12 @@
   "suite": "sv0_ingest",
   "stage": "STAGE 0",
   "title": "Ingest + normalize",
-  "generated_at": "2026-07-26T22:45:24+00:00",
+  "generated_at": "2026-08-01T19:22:52+00:00",
   "runtime": {
     "percept_version": "1.0.0",
-    "percept_path": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept/__init__.py",
+    "percept_path": "/private/tmp/percept-launch/eval-venv/lib/python3.12/site-packages/percept/__init__.py",
     "python": "3.12.8",
-    "executable": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python"
+    "executable": "/private/tmp/percept-launch/eval-venv/bin/python"
   },
   "counts": {
     "PASS": 6
@@ -94,9 +94,9 @@
           ],
           "dropped_plus_delivered": 40,
           "peak_queue_size": 4,
-          "saturated_wall_s": 3.751,
-          "ms_per_eviction": 104.2,
-          "effective_capture_fps_under_saturation": 10.7
+          "saturated_wall_s": 3.82,
+          "ms_per_eviction": 106.1,
+          "effective_capture_fps_under_saturation": 10.5
         },
         "fixture_differential": {
           "decoded_frames": 20,
@@ -134,7 +134,7 @@
           "delivered": 20,
           "dropped_counter": 0,
           "contiguous_backlog": true,
-          "wall_s": 1.03
+          "wall_s": 1.05
         },
         "unknown_policy_rejected": {
           "'drop'": "unknown source queue policy: 'drop'",
@@ -145,8 +145,8 @@
       },
       "failures": [],
       "notes": [
-        "MEASURED: under a saturated consumer the 'latest' policy cost 104 ms of CAPTURE-THREAD stall per eviction (40 frames took 3.75 s -> 10.7 effective fps). percept/runtime/source.py:77 puts with timeout=0.1 and only evicts on the resulting queue.Full, so the drop trigger is 'full for 100 ms', not 'full'. Memory stays bounded and every queue-level drop IS counted, so the SV-0.2 bar holds \u2014 but on a live 30 fps camera this throttles cap.read() to ~10 Hz under backpressure, and frames the driver discards while the capture thread is parked are invisible to the `dropped` counter.",
-        "MEASURED (corollary): with a 50 ms/frame consumer \u2014 slower than the producer but faster than the 100 ms put timeout \u2014 queue_policy='latest' evicted NOTHING and delivered the entire 20-frame backlog in arrival order over 1.03 s. Below the timeout the freshness policy is inert: the consumer receives the oldest queued frame, which is the opposite of the documented 'live streams prefer fresh evidence over stale backlog' (percept/runtime/source.py:51).",
+        "MEASURED: under a saturated consumer the 'latest' policy cost 106 ms of CAPTURE-THREAD stall per eviction (40 frames took 3.82 s -> 10.5 effective fps). percept/runtime/source.py:77 puts with timeout=0.1 and only evicts on the resulting queue.Full, so the drop trigger is 'full for 100 ms', not 'full'. Memory stays bounded and every queue-level drop IS counted, so the SV-0.2 bar holds \u2014 but on a live 30 fps camera this throttles cap.read() to ~10 Hz under backpressure, and frames the driver discards while the capture thread is parked are invisible to the `dropped` counter.",
+        "MEASURED (corollary): with a 50 ms/frame consumer \u2014 slower than the producer but faster than the 100 ms put timeout \u2014 queue_policy='latest' evicted NOTHING and delivered the entire 20-frame backlog in arrival order over 1.05 s. Below the timeout the freshness policy is inert: the consumer receives the oldest queued frame, which is the opposite of the documented 'live streams prefer fresh evidence over stale backlog' (percept/runtime/source.py:51).",
         "percept.run()/_run_worker exposes source_queue_size but NOT queue_policy, so the lossless 'block' mode is unreachable from the public front door \u2014 a finite-file replay through percept.run() always uses drop-oldest 'latest'. (percept/runtime/worker.py:4301 builds source_kwargs without queue_policy; percept/runtime/source.py:302 defaults it to 'latest'.) Drops are still counted in RuntimeStats.frames_dropped, so this is lossy-but-honest, not silent."
       ],
       "error": null

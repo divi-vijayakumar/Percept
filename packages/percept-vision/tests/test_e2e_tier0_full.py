@@ -42,12 +42,12 @@ Pins, and what a fixer does with each
   own docstring says it counts each ``(frame x goal)`` that reached a provider; it was incremented
   once per admitted FRAME. Measured at the provider seam: three goals on one admitted frame invoked
   ``vision.judge()`` three times and were reported as one.
-* ``test_the_funnel_is_monotone_from_admitted_to_judged`` — **strict xfail**. ``admitted`` is a
-  per-unit-of-evidence count and ``judge_started`` is a per-``(evidence x goal)`` count, so on any
-  multi-goal watch the funnel's ``seen >= gated >= judged`` spine inverts and ``FunnelStep.dropped``
-  goes negative — the value its own docstring calls a signal that the trace lost records. This is
-  the same defect the load lane filed as FIND-LOADSTAGE-02, reached from the tier-0 side; the two
-  pins flip together and a fixer should delete both markers in one change.
+* ``test_the_funnel_is_monotone_from_admitted_to_judged`` — **FIXED**. ``admitted`` remains the
+  evidence-unit count used by the tier-0 economy claim. Each admission now also declares its exact
+  ``judge_dispatch_opportunities`` in ``(evidence, goal)`` units; dispatch compares that population
+  with the per-goal ``judge_started`` count. Multi-goal fan-out is explicit, heterogeneous per-frame
+  routing is measured rather than multiplied by a run-global goal count, and a real missing start
+  still produces a signed positive drop without clamping.
 * ``test_localized_event_arms_the_saccade`` — **FIXED** (was a characterization of the opposite
   behaviour; FIND-TIERZERO-02). The fovea's saccade was armed from the mean gauge and therefore
   could not see the localized events the shipped ``block_max`` gate exists to catch: the localized
@@ -79,8 +79,6 @@ import asyncio
 import struct
 import unittest
 from typing import Any
-
-import pytest
 
 from percept import Goal, Percept
 from percept.adapters import Verdict
@@ -1038,27 +1036,23 @@ class CompositionTests(unittest.TestCase):
         self.assertLessEqual(funnel.counts["admitted"], funnel.counts["observed"])
         self.assertEqual(funnel.step("admission").dropped, 40 - self.run.stats.escalations)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "PIN (defect, measured): the funnel's `seen >= gated >= judged >= fired` spine inverts "
-            "on any multi-goal watch. `admitted` counts UNITS OF EVIDENCE (source.frame, "
-            "deduplicated by trace_id) while `judge_started` counts (evidence x goal), so three "
-            "goals admitted on one frame read admitted=1 -> judge_started=3, a dispatch ratio of "
-            "300%, and FunnelStep.dropped = -2 — the value that field's own docstring calls "
-            "something 'a well-formed trace cannot do' and 'a real signal' of record loss. Every "
-            "bar written on the dispatch step therefore misreads a normal multi-goal run. Fix by "
-            "making the two points share a unit (or by declaring the unit on each point); do NOT "
-            "clamp `dropped`."
-        ),
-    )
     def test_the_funnel_is_monotone_from_admitted_to_judged(self) -> None:
         funnel = self.run.funnel()
+        # Economy retains its evidence-unit population.
+        self.assertEqual(
+            funnel.counts["admitted_evidence_units"], self.run.stats.escalations
+        )
+        self.assertEqual(funnel.units["admitted_evidence_units"], "evidence_units")
+        # Dispatch has its own exact per-goal population. No global multiplier and no clamp.
+        self.assertEqual(funnel.units["judge_dispatch_opportunities"], "evidence_goal_pairs")
+        self.assertEqual(funnel.units["judge_started"], "evidence_goal_pairs")
         self.assertGreaterEqual(
-            funnel.counts["admitted"],
+            funnel.counts["judge_dispatch_opportunities"],
             funnel.counts["judge_started"],
             f"funnel inverted: {funnel.describe()}",
         )
+        self.assertGreaterEqual(funnel.step("dispatch").dropped, 0)
+        self.assertLessEqual(funnel.ratio("dispatch"), 1.0)
 
     def test_the_composed_run_is_deterministic(self) -> None:
         # Two independent pumps (video, audio) share one worker. If the interleaving were not

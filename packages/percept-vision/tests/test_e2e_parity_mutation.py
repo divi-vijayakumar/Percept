@@ -1444,7 +1444,10 @@ class SameMediaSameAdmissionDecisionTests(unittest.TestCase):
         funnel = _funnel_of(decisions, run_id="meas-only")
         self.assertEqual(funnel.counts["judge_started"], 0)
         self.assertIsNone(funnel.ratio("judge"))
-        self.assertEqual(funnel.ratio("dispatch"), 0.0)
+        self.assertIsNone(
+            funnel.ratio("dispatch"),
+            "measurement-only admissions declare no per-goal dispatch population",
+        )
         self.assertGreater(funnel.counts["admitted"], 0)
 
     def test_the_funnel_comparison_can_fail(self):

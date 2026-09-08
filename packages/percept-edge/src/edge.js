@@ -304,15 +304,10 @@ export class Edge {
 
 // The escalate-comparison motion for one condition, honoring its salience MODE. Twin of Python
 // `percept.harness.tier0._condition_motion`: default (mean, no region, no ego) returns the precomputed
-// full-frame `fullMotion`; ego compensation takes precedence, else the localized block statistic
-// (optionally masked to region_hint).
-//
-// EGO COMPOSES WITH THE ZONE, not with the block statistic. The ego branch passes `region_hint`
-// through, because a watch-out zone is a promise that movement elsewhere is ignored, and turning on
-// ego compensation must not quietly convert the goal back into a whole-frame watch (it used to: the
-// residual was always whole-frame while the condition still carried and reported its zone). Ego +
-// block_max/p95 composition stays deferred — an ego goal gets the region-masked residual, not the
-// localized block statistic.
+// full-frame `fullMotion`; ego compensation aligns the frames before applying the same selected
+// statistic (optionally masked to region_hint), while the non-ego path applies it directly. Keeping
+// alignment separate from residual summarization ensures block_max@0.20 and p95@0.15 are compared
+// to values on the scales those compiled thresholds actually name.
 //
 // The result is clamped like every OTHER channel. The structural and semantic adapters are clamped
 // where they are read (processFrame), but this one was compared `>= c.threshold` raw — so the one
@@ -323,10 +318,10 @@ function conditionMotion(prevFrame, frame, c, fullMotion) {
 }
 
 function rawConditionMotion(prevFrame, frame, c, fullMotion) {
-  if (c.ego_compensate) {
-    return egoResidualScore(prevFrame, frame, { region: c.region_hint ?? null });
-  }
   const stat = c.salience_stat ?? "mean";
+  if (c.ego_compensate) {
+    return egoResidualScore(prevFrame, frame, { region: c.region_hint ?? null, stat });
+  }
   if (stat !== "mean" || c.region_hint != null) {
     return motionScore(prevFrame, frame, { region: c.region_hint ?? null, stat });
   }

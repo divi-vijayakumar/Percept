@@ -1,5 +1,5 @@
-"""SLO CI asserts: tier-0 gate p95, $/stream-hour, fovea call-reduction — plus the MEASURED
-judge round-trip latency distribution (§5), which is the only latency figure Percept publishes.
+"""SLO CI asserts: tier-0 gate p95, $/stream-hour, fovea call-reduction — plus the
+release-time judge round-trip latency gate.
 
 Three pre-registered budget constants, each computed from telemetry the ALREADY-LANDED runtime/
 harness pieces produce — this module adds no new production instrumentation. It wraps:
@@ -61,15 +61,17 @@ already committed to elsewhere in the tree (never invented fresh to make a parti
    tree carries one "how long may a judgment take" figure and the gate differs from the §5 bar only
    in WHICH percentile and WHICH span it reads. It is not the tier-0 ``REFLEX_P95_THRESHOLD_S``
    above and must never be conflated with it: that one is a 10ms LOCAL in-process gate decision with
-   no provider anywhere near it. Unlike §1-§3 this gate is RELEASE-TIME, and it does not pass today
-   — see §6 for the measurement it is evaluated against and why the number is not moved to suit it.
+   no provider anywhere near it. Unlike §1-§3 this gate is RELEASE-TIME. It remains NOT MEASURED
+   until a current-build production-worker trace passes §6's provenance and completeness preflight;
+   missing or retracted evidence cannot pass, and the ceiling is not moved to suit a run.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .harness.metrics import CostSample, CostSummary, PercentileSummary, percentile
 from .harness.tier0 import LoopReport, MotionGate
@@ -112,6 +114,9 @@ __all__ = [
     "JudgeLatencyGate",
     "judge_p99_gate_from_samples",
     "judge_p99_gate_from_distribution",
+    "JudgeLatencyEvidenceError",
+    "QualifiedJudgeLatencyEvidence",
+    "qualify_judge_latency_trace",
     "MEASURED_JUDGE_ROUND_TRIP",
     "LAUNCH_GATE_JUDGE_P99",
 ]
@@ -623,7 +628,7 @@ def judge_latency_promise() -> str:
 
 
 # ---------------------------------------------------------------------------
-# 6. LAUNCH GATE — per-goal judge round-trip p99 <= 2.5s (RELEASE-TIME, and RED today)
+# 6. LAUNCH GATE — per-goal judge round-trip p99 <= 2.5s (RELEASE-TIME)
 # ---------------------------------------------------------------------------
 #
 # WHAT THIS GATE MEASURES, AND WHY NOT THE OTHER THING. The measurand is the wall time between an
@@ -647,16 +652,14 @@ def judge_latency_promise() -> str:
 # percentile, and ``tests/test_slo_asserts.py`` pins the difference on a mixture where the two
 # readings disagree by three orders of magnitude.
 #
-# THIS GATE DOES NOT PASS. The recorded measurement below has a per-goal round-trip MEDIAN of 7.34s
-# (across goals: 7.34s-9.10s) and a maximum of 16.93s. Percentiles are monotone, so a median of 7.34s
-# puts p99 at 7.34s or above — three times the ceiling — without needing a p99 that was never
-# reported. The ceiling is NOT moved to accommodate that, and the assertion is NOT marked xfail: the
-# number is the pre-registered §5 figure, and a gate quietly retuned to the measurement it is
-# supposed to police stops being a gate. The gate is wired RELEASE-TIME (see
-# ``tests/test_slo_asserts.py``) so the gap is a release decision rather than a permanently red
-# per-merge build — the same shape the other release criteria in this tree use, where the suite
-# asserts the pass-condition MECHANICS deterministically and the for-record evaluation happens
-# against a real run.
+# THE HISTORICAL 7.34s READING IS RETRACTED AS RELEASE EVIDENCE. Its surviving source is an internal
+# 2026-07-29 probe against build ``7ced546``. That probe later proved async lifecycle rows were
+# stamped when the owner loop DRAINED them, not when the lifecycle transition happened; even an
+# immediate ``source.frame`` reached 16.93s. The embedded constant also omitted model/profile/
+# transport/sample count. It remains documented in the internal probe record, but is not an
+# authoritative input here. The standing release state is therefore NOT MEASURED, which still cannot
+# pass. A replacement must go through :func:`qualify_judge_latency_trace` with current-build,
+# production-worker, producer-clock and completeness provenance. The ceiling remains exactly 2.5s.
 
 #: The launch gate. Deliberately the SAME 2.5s as §5's p95 bar rather than a second figure — see the
 #: module docstring §4. Raising it would assert nothing; the lever is the queueing the span exposes.
@@ -874,27 +877,279 @@ def judge_p99_gate_from_distribution(
     )
 
 
-#: The measurement the launch gate is evaluated against: per-goal judge round-trip, admitted frame
-#: to that goal's verdict, taken from judge-stage records on a multi-goal watch. ``p50_s`` is the
-#: FASTEST goal's median of the observed 7.34s-9.10s spread, so the gate's failure cannot be blamed
-#: on having picked the worst goal; ``max_s`` is the slowest single wait seen. p25/p95/n were not
-#: reported and are not invented — this module never emits a percentile it did not observe.
+class JudgeLatencyEvidenceError(ValueError):
+    """A trace cannot serve as for-record evidence for the judge-latency release gate."""
+
+
+@dataclass(frozen=True)
+class QualifiedJudgeLatencyEvidence:
+    """A fail-closed release-gate reading plus the provenance that makes it interpretable."""
+
+    gate: JudgeLatencyGate
+    run_id: str
+    build: str
+    model: str
+    profile: str
+    transport: str
+    started_wall_ts: float
+    completed: int
+    degraded: int
+
+
+def qualify_judge_latency_trace(
+    manifest: Any,
+    records: Iterable[Any],
+    *,
+    expected_build: str,
+    expected_model: str,
+    expected_profile: str,
+    expected_transport: str,
+    min_samples: int = 100,
+    max_age_s: float | None = None,
+    now_wall_ts: float | None = None,
+) -> QualifiedJudgeLatencyEvidence:
+    """Preflight and evaluate one production-worker trace without weakening the 2.5 s bar.
+
+    A release number must be tied to the exact build/model/profile/transport frozen before spend.
+    It must come from ``percept.run``'s production worker, retain producer-side monotonic stamps,
+    contain every opened judgment through a terminal close, and declare that no deadline censored
+    the population. Missing metadata is an error, never a wildcard. ``max_age_s`` is optional
+    because no freshness duration has been product-approved; callers may pre-register one without
+    this module inventing it.
+    """
+    expected = {
+        "build": expected_build,
+        "model": expected_model,
+        "profile": expected_profile,
+        "transport": expected_transport,
+    }
+    missing_expected = [name for name, value in expected.items() if not str(value).strip()]
+    if missing_expected:
+        raise JudgeLatencyEvidenceError(
+            "expected provenance must be frozen before the run; missing "
+            + ", ".join(missing_expected)
+        )
+    if type(min_samples) is not int or min_samples < 100:
+        raise JudgeLatencyEvidenceError(
+            "min_samples must be an exact integer of at least 100 so nearest-rank p99 has a "
+            "p99 order statistic"
+        )
+
+    run_id = str(getattr(manifest, "run_id", "") or "").strip()
+    if not run_id:
+        raise JudgeLatencyEvidenceError("artifact has no run_id")
+    driver = str(getattr(manifest, "driver", "") or "")
+    if driver != "run":
+        raise JudgeLatencyEvidenceError(
+            f"driver={driver or '<missing>'!r}; for-record latency must run through percept.run"
+        )
+    build = str(getattr(manifest, "build_commit", "") or "")
+    if build in ("", "unreleased") or build != expected_build:
+        raise JudgeLatencyEvidenceError(
+            f"build mismatch: artifact={build or '<missing>'!r}, expected={expected_build!r}"
+        )
+    build_timestamp = str(getattr(manifest, "build_timestamp", "") or "")
+    if build_timestamp in ("", "unreleased"):
+        raise JudgeLatencyEvidenceError("artifact has no wheel build timestamp")
+
+    components = tuple(getattr(manifest, "components", ()) or ())
+    judge_components = tuple(
+        component
+        for component in components
+        if getattr(component, "role", None) == "judge"
+        and getattr(component, "model", None)
+    )
+    # Older trace producers called the VLM itself ``vision``. Use that compatibility path only when
+    # there is no explicitly named judge. An explicit judge always wins over a distinct detector /
+    # specialist vision component, while multiple candidate judge components are ambiguous and fail.
+    selected_components = judge_components or tuple(
+        component
+        for component in components
+        if getattr(component, "role", None) == "vision"
+        and getattr(component, "model", None)
+    )
+    if len(selected_components) != 1:
+        raise JudgeLatencyEvidenceError(
+            "artifact must identify exactly one judge model; candidates="
+            f"{[(getattr(c, 'role', None), getattr(c, 'model', None)) for c in selected_components]!r}"
+        )
+    model = str(getattr(selected_components[0], "model", "") or "")
+    if model != expected_model:
+        raise JudgeLatencyEvidenceError(
+            f"model mismatch: artifact={model!r}, expected={expected_model!r}"
+        )
+    profile = str(
+        getattr(manifest, "source_profile_id", None)
+        or getattr(manifest, "profile_hash", None)
+        or ""
+    )
+    if profile != expected_profile:
+        raise JudgeLatencyEvidenceError(
+            f"profile mismatch: artifact={profile or '<missing>'!r}, expected={expected_profile!r}"
+        )
+    labels: Mapping[str, Any] = dict(getattr(manifest, "labels", None) or {})
+    transport = str(labels.get("judge_transport") or "")
+    if transport != expected_transport:
+        raise JudgeLatencyEvidenceError(
+            f"transport mismatch: artifact={transport or '<missing>'!r}, "
+            f"expected={expected_transport!r}"
+        )
+    if labels.get("judge_dispatch") != "async":
+        raise JudgeLatencyEvidenceError("artifact did not declare the production async judge lane")
+    if labels.get("judge_latency_censoring") != "none":
+        raise JudgeLatencyEvidenceError(
+            "artifact does not declare an uncensored judge population"
+        )
+    if labels.get("judge_latency_clock") != "producer_monotonic_v1":
+        raise JudgeLatencyEvidenceError(
+            "artifact does not declare producer-side monotonic judgment lifecycle timestamps"
+        )
+
+    raw_started_wall_ts = getattr(manifest, "started_wall_ts", None)
+    if (
+        isinstance(raw_started_wall_ts, bool)
+        or not isinstance(raw_started_wall_ts, (int, float))
+        or not math.isfinite(float(raw_started_wall_ts))
+        or float(raw_started_wall_ts) <= 0.0
+    ):
+        raise JudgeLatencyEvidenceError("artifact has no finite positive run start wall timestamp")
+    started_wall_ts = float(raw_started_wall_ts)
+    if now_wall_ts is not None and (
+        isinstance(now_wall_ts, bool)
+        or not isinstance(now_wall_ts, (int, float))
+        or not math.isfinite(float(now_wall_ts))
+    ):
+        raise JudgeLatencyEvidenceError("now_wall_ts must be a finite number when declared")
+    if max_age_s is not None:
+        if (
+            isinstance(max_age_s, bool)
+            or not isinstance(max_age_s, (int, float))
+            or not math.isfinite(float(max_age_s))
+            or float(max_age_s) <= 0.0
+        ):
+            raise JudgeLatencyEvidenceError(
+                "max_age_s must be a finite positive number when declared"
+            )
+        now = time.time() if now_wall_ts is None else float(now_wall_ts)
+        age = now - started_wall_ts
+        if age < 0.0 or age > max_age_s:
+            raise JudgeLatencyEvidenceError(
+                f"artifact age {age:g}s is outside the pre-registered {max_age_s:g}s window"
+            )
+
+    seq = tuple(records)
+    if any(getattr(record, "stage", None) == "trace_dropped" for record in seq):
+        raise JudgeLatencyEvidenceError("trace reports lost records")
+    dropped = [record for record in seq if getattr(record, "stage", None) == "judge.dropped"]
+    if dropped:
+        raise JudgeLatencyEvidenceError(
+            f"trace contains {len(dropped)} receipted judgment drops; a missing verdict cannot "
+            "leave the latency denominator"
+        )
+
+    starts: dict[tuple[str, str], Any] = {}
+    closes: dict[tuple[str, str], Any] = {}
+    completed = degraded = 0
+    for record in seq:
+        stage = getattr(record, "stage", None)
+        if stage not in JUDGE_LATENCY_STAGES:
+            continue
+        goal_id = getattr(record, "goal_id", None)
+        trace_id = getattr(record, "trace_id", None)
+        if not trace_id or not goal_id:
+            raise JudgeLatencyEvidenceError(f"{stage} record lacks trace_id/goal_id")
+        data = dict(getattr(record, "data", None) or {})
+        if data.get("latency_clock") != "producer_monotonic_v1":
+            raise JudgeLatencyEvidenceError(
+                f"{stage} record {trace_id}/{goal_id} lacks a producer-clock marker"
+            )
+        key = (str(trace_id), str(goal_id))
+        bucket = starts if stage == JUDGE_LATENCY_START_STAGE else closes
+        if key in bucket:
+            raise JudgeLatencyEvidenceError(f"duplicate {stage} record for {key!r}")
+        bucket[key] = record
+        if stage == "judge.finished":
+            completed += 1
+        elif stage == "judge.degraded":
+            degraded += 1
+    orphan = sorted(set(closes) - set(starts))
+    unclosed = sorted(set(starts) - set(closes))
+    if orphan or unclosed:
+        raise JudgeLatencyEvidenceError(
+            f"judge lifecycle is incomplete: orphan_closes={len(orphan)}, unclosed={len(unclosed)}"
+        )
+
+    samples: list[float] = []
+    for key in starts:
+        close = closes[key]
+        observed = getattr(close, "observed_wall_ts", None)
+        emitted = getattr(close, "emitted_wall_ts", None)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in (observed, emitted)
+        ):
+            raise JudgeLatencyEvidenceError(
+                f"closing record {key!r} lacks finite monotonic stamps"
+            )
+        latency = float(emitted) - float(observed)
+        if latency < 0.0:
+            raise JudgeLatencyEvidenceError(f"closing record {key!r} has a negative latency")
+        samples.append(latency)
+    if len(samples) < int(min_samples):
+        raise JudgeLatencyEvidenceError(
+            f"only {len(samples)} complete per-goal judgments; require {int(min_samples)}"
+        )
+
+    conditions = LatencyConditions(
+        model=expected_model,
+        transport=expected_transport,
+        frames=None,
+        corpus=str(labels.get("corpus") or "unstated"),
+        build=expected_build,
+    )
+    gate = judge_p99_gate_from_samples(
+        samples,
+        conditions=conditions,
+        note=(
+            f"profile={expected_profile}; production worker; producer monotonic clocks; "
+            f"completed={completed}; degraded={degraded}"
+        ),
+    )
+    return QualifiedJudgeLatencyEvidence(
+        gate=gate,
+        run_id=run_id,
+        build=expected_build,
+        model=expected_model,
+        profile=expected_profile,
+        transport=expected_transport,
+        started_wall_ts=started_wall_ts,
+        completed=completed,
+        degraded=degraded,
+    )
+
+
+#: No release-eligible measurement is embedded in source. The former 7.34s/16.93s constants came
+#: from callback-drain timestamps on an old, incompletely identified build and were retracted by the
+#: probe that produced them. Keeping explicit ``None`` fields makes ``LAUNCH_GATE_JUDGE_P99`` red/
+#: undecided without laundering that diagnostic into current-build evidence.
 MEASURED_JUDGE_ROUND_TRIP = LatencyDistribution(
     p25_s=None,
-    p50_s=7.34,
+    p50_s=None,
     p95_s=None,
-    max_s=16.93,
+    max_s=None,
     n=None,
     conditions=LatencyConditions(
-        model="unspecified",
-        transport="admitted frame -> per-goal verdict (judge-stage trace records)",
+        model="not measured on a release-eligible artifact",
+        transport="production percept.run worker required",
         frames=None,
-        corpus="multi-goal watch, judge-stage trace records",
-        build="pre-launch measurement",
+        corpus="not measured",
+        build="current release build required",
     ),
     note=(
-        "per-goal medians spanned 7.34s-9.10s; this is the fastest goal's. Uncensored — no judge "
-        "deadline was in force, so the tail is real and not a deadline's shadow"
+        "historical 2026-07-29 7.34s/16.93s diagnostic retracted: async trace rows carried "
+        "callback-drain time and omitted release provenance"
     ),
 )
 

@@ -82,6 +82,7 @@ from percept.tracing import (
     BaselineAssumption,
     RunTraceManifest,
     TracePolicy,
+    TraceRecord,
     TraceRecorder,
     TraceSummary,
     judge_call_was_served,
@@ -267,6 +268,7 @@ def _project_trace(
                 source_ts=now,
                 observed_wall_ts=now,
                 emitted_wall_ts=t_admitted,
+                goal_ids=tuple(f"watch-{g}" for g in range(fan_out)),
             )
             t_started = t_admitted + costs.dispatch
             for g in range(fan_out):
@@ -1101,6 +1103,8 @@ class TestTheCacheMustNotSilentlyRescueALatencyMiss(unittest.TestCase):
         self.assertEqual({judge_served_from(r.data) for r in served}, {"cache"})
         self.assertEqual(rec.summary().judge_completed, 6)
         self.assertEqual(rec.summary().judge_cache_hits, 5)
+        self.assertEqual(rec.summary().provider_calls, vision.calls)
+        self.assertEqual(rec.summary().provider_calls_unit, "provider_calls")
 
 
 # ---------------------------------------------------------------------------
@@ -1142,6 +1146,7 @@ class TestFanOutIsNotADrop(unittest.TestCase):
         records, manifest = self._two_watch_records()
         funnel = stage_funnel(records, manifest=manifest)
         self.assertEqual(funnel.counts["admitted"], 3)
+        self.assertEqual(funnel.counts["judge_dispatch_opportunities"], 6)
         self.assertEqual(funnel.counts["judge_started"], 6)
         self.assertEqual(funnel.summary.records_dropped, 0)
         self.assertEqual(funnel.concerns, 2, "the trace names both watches")
@@ -1155,15 +1160,14 @@ class TestFanOutIsNotADrop(unittest.TestCase):
         dispatch = funnel.step("dispatch")
         self.assertEqual(dispatch.dropped, 0)
         self.assertEqual(dispatch.ratio, 1.0)
-        self.assertEqual(dispatch.upstream_count, 3, "the raw admitted count is not restated away")
-        self.assertEqual(dispatch.upstream_dispatches, 6, "3 units offered to 2 concerns")
+        self.assertEqual(dispatch.upstream_count, 6, "3 evidence units offered to 2 concerns")
+        self.assertEqual(dispatch.upstream_dispatches, 6)
+        self.assertEqual(dispatch.upstream_unit, "evidence_goal_pairs")
+        self.assertEqual(dispatch.downstream_unit, "evidence_goal_pairs")
 
-        # and ONLY that step. The other three compare two counts already in the same unit, so
-        # multiplying them by the concern count would invent a drop where the trace shows none —
-        # the mirror-image error of the one being fixed.
+        # No step multiplies by the run-global concern count. The exact expansion is a measured
+        # point before dispatch, not an arithmetic repair applied afterwards.
         for step in funnel.steps:
-            if step.name == "dispatch":
-                continue
             with self.subTest(step=step.name):
                 self.assertEqual(step.fan_out, 1, step.describe())
                 self.assertEqual(step.upstream_dispatches, step.upstream_count)
@@ -1176,8 +1180,51 @@ class TestFanOutIsNotADrop(unittest.TestCase):
         lossy = [r for r in records if not (r.stage == STAGE_JUDGE_STARTED and r.goal_id == "cup")]
         funnel = stage_funnel(lossy, manifest=manifest)
         self.assertEqual(funnel.concerns, 2, "the lost stage is still named by the goal's others")
+        self.assertEqual(funnel.counts["judge_dispatch_opportunities"], 6)
         self.assertEqual(funnel.step("dispatch").dropped, 3)
         self.assertAlmostEqual(funnel.step("dispatch").ratio, 0.5, places=9)
+
+    def test_heterogeneous_per_frame_routing_uses_declared_opportunities(self):
+        """Two admitted frames select 2 then 1 goals: the denominator is 3, never 2x2."""
+        vision = _SlowVision(0.0)
+        agent = Percept.create(vision=vision, discover_plugins=False)
+        agent.add_goal(Goal(id="cup", condition="a cup is on the table", say="cup"))
+        agent.add_goal(Goal(id="person", condition="a person is present", say="person"))
+        manifest = RunTraceManifest.create(
+            run_id="heterogeneous-routing",
+            policy=TracePolicy(level="full"),
+            wall_clock=lambda: 0.0,
+        )
+        rec = TraceRecorder(manifest)
+        agent.on_trace = rec.tracer()
+
+        async def go():
+            await agent.perceive_judged(
+                "frame-0", t=0.0, goal_ids=("cup", "person")
+            )
+            await agent.perceive_judged("frame-1", t=1.0, goal_ids=("cup",))
+
+        asyncio.run(go())
+        funnel = stage_funnel(rec.records, manifest=manifest)
+        self.assertEqual(funnel.counts["admitted_evidence_units"], 2)
+        self.assertEqual(funnel.counts["judge_dispatch_opportunities"], 3)
+        self.assertEqual(funnel.counts["judge_started"], 3)
+        self.assertEqual(funnel.step("dispatch").ratio, 1.0)
+        self.assertEqual(funnel.step("dispatch").dropped, 0)
+
+    def test_legacy_trace_without_goal_metadata_refuses_dispatch_ratio(self):
+        """Unknown is not one concern and not the run-global distinct concern count."""
+        records, manifest = self._two_watch_records()
+        legacy = []
+        for record in records:
+            payload = record.to_dict()
+            if record.stage == ADMISSION_STAGE:
+                payload["data"].pop("goal_ids", None)
+            legacy.append(TraceRecord.from_dict(payload))
+        funnel = stage_funnel(legacy, manifest=manifest)
+        self.assertIsNone(funnel.counts["judge_dispatch_opportunities"])
+        self.assertIsNone(funnel.step("dispatch").ratio)
+        self.assertIsNone(funnel.step("dispatch").dropped)
 
     def test_the_fanned_out_load_profile_agrees(self):
         """REWRITTEN (was ``test_the_fanned_out_load_profile_shows_the_same_shape``, a
@@ -1188,6 +1235,9 @@ class TestFanOutIsNotADrop(unittest.TestCase):
         run = held_run(profile=LoadProfile(n=2, m=2, e_per_stream_min=120.0, f=2))
         funnel = stage_funnel(run.records, manifest=run.manifest)
         self.assertEqual(funnel.counts["judge_started"], funnel.counts["admitted"] * 2)
+        self.assertEqual(
+            funnel.counts["judge_dispatch_opportunities"], funnel.counts["judge_started"]
+        )
         self.assertEqual(funnel.concerns, 2)
         self.assertEqual(funnel.step("dispatch").dropped, 0)
         self.assertAlmostEqual(funnel.step("dispatch").ratio, 1.0, places=9)

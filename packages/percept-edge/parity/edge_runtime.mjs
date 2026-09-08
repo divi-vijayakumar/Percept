@@ -6,6 +6,7 @@
 //          framePairs: [{w,h,a:number[],b:number[]}],
 //          saliencePairs: [{w,h,a,b,stat?,region?,blockGrid?}],   // blockGrid defaults to [8,6]
 //          egoPairs: [{w,h,a,b,k?,region?}],                        // region defaults to null
+//          egoStatPairs: [{w,h,a,b,k?,region?,stat,blockGrid?}],
 //          wakeCases: [{signals:object, policy?:object|null}],       // policy defaults to null
 //          gateCases: [{name,w,h,frames:number[][],ts:number[],spec}],  // one Edge per case
 //          latency?: {width,height,frames} }
@@ -56,6 +57,13 @@ const result = {
       { width: w, height: h, data: a },
       { width: w, height: h, data: b },
       { k: k ?? 4, region: region ?? null }
+    )
+  ),
+  egoStatScores: (cases.egoStatPairs || []).map(({ w, h, a, b, k, region, stat, blockGrid }) =>
+    egoResidualScore(
+      { width: w, height: h, data: a },
+      { width: w, height: h, data: b },
+      { k: k ?? 4, region: region ?? null, stat, blockGrid: blockGrid ?? [8, 6] }
     )
   ),
   // The wake fusion. `wakeScore` and `shouldWake` are compared separately on purpose: the score and

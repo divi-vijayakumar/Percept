@@ -48,11 +48,13 @@ H0_PROVENANCE = (
 #: eval run's ego-motion arm.
 EGO_COMPENSATION_NOTE = (
     "environment=\"handheld\" additionally implies percept.config.EdgeSettings.ego_compensate=True "
-    "(PERCEPT_EGO_COMPENSATE=1): measured that a moving camera WITHOUT ego-compensation escalates the "
-    "tier-0 sampler on ~98% of frames (global camera motion never lets cheap-motion settle below the "
-    "escalate threshold), vs. ~30% with it. WatchProfile has no typed ego_compensate field yet -- "
-    "that binding lives here as a note until a follow-up change promotes it to a schema field the runtime "
-    "reads directly."
+    "(PERCEPT_EGO_COMPENSATE=1): without compensation, global camera motion can keep cheap-motion above "
+    "the escalation threshold even when the scene has no semantic event. WatchProfile has no typed "
+    "ego_compensate field; the situation resolver emits "
+    "the SourceProfile-owned Settings.edge.ego_compensate binding from the camera_mount axis. Callers "
+    "must pass situation=(goal_temporality, 'handheld', start_state) (or the equivalent deployment "
+    "setting) rather than assuming the profile name alone flips the runtime bit. A three-clip EGO "
+    "replay preserved event-window reachability but did not prove a universal admission-rate claim."
 )
 
 

@@ -1,13 +1,13 @@
 {
   "suite": "sv_audio",
   "title": "Audio stage validation (Stage 1 admission, Stage 2 senses, Stage 4 cognition)",
-  "generated": "2026-07-27T02:56:31Z",
+  "generated": "2026-08-01T19:23:00Z",
   "runtime": {
     "percept_version": "1.0.0",
-    "percept_path": "/private/tmp/claude-501/-Users-dhivyavijayakumar-git-Percept-sdk/3d8c8120-cb64-4426-8af7-8eb60fc4a085/scratchpad/audiovenv/lib/python3.12/site-packages/percept/__init__.py",
+    "percept_path": "/private/tmp/percept-launch/eval-venv/lib/python3.12/site-packages/percept/__init__.py",
     "in_site_packages": true,
     "python": "3.12.8",
-    "executable": "/private/tmp/claude-501/-Users-dhivyavijayakumar-git-Percept-sdk/3d8c8120-cb64-4426-8af7-8eb60fc4a085/scratchpad/audiovenv/bin/python"
+    "executable": "/private/tmp/percept-launch/eval-venv/bin/python"
   },
   "totals": {
     "FAIL": 3,
@@ -3552,20 +3552,6 @@
   },
   "defects": [
     {
-      "id": "GOLDEN-ACOUSTIC-MUTED-ANCHOR",
-      "severity": "high",
-      "where": "packages/percept-vision/eval/bench/perception_test.py:197",
-      "summary": "golden_sound_events() takes segments[0] (_event_from_row, perception_test.py:172-190) as each acoustic row's ground-truth event. For both rows in the golden `perception-test-acoustic` track (video_8241, video_9253) segment 0 is labelled 'Muted' \u2014 the annotators' marker for a stretch with NO audible source. label_phrase then renders it as 'right now there is an audible muted sound or event', so the track's recall / fusion_fp / recall_flip metrics would be scored against SILENCE. The valid-split annotations carry no 'Muted' label, so only the checked-in train-split sample.json rows are affected \u2014 which is exactly what the golden manifest pins. This corpus filters NON_SOUND_LABELS instead.",
-      "repro": "python -c \"import importlib.util,sys;s=importlib.util.spec_from_file_location('pt','packages/percept-vision/eval/bench/perception_test.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print([(e['video_id'],e['label']) for e in m.golden_sound_events()])\""
-    },
-    {
-      "id": "AUDIO-GATE-DEAF",
-      "severity": "blocker",
-      "where": "percept/harness/detectors.py:233",
-      "summary": "AcousticOnset's shipped thresholds (high=0.09, low=0.0225) are mean-square ENERGY, and no capture chunk in 40 annotated clips (3973 chunks, 987s) reaches 0.09: corpus max energy is 0.0277. run(audio_gate='acoustic-onset') with default audio_wake therefore NEVER admits on this material \u2014 an audio Watch is silently deaf, with no health event to say so.",
-      "repro": "eval/stage-validation/sv_audio.py --only SV-A1.6R (check: 'the SHIPPED audio gate admits at least one annotated sound event')"
-    },
-    {
       "id": "AUDIO-VAD-HANGOVER-UNITS",
       "severity": "high",
       "where": "percept/runtime/_vad.py:54",
@@ -3576,7 +3562,7 @@
       "id": "AUDIO-SUPPRESSED-NO-RECEIPT",
       "severity": "high",
       "where": "percept/runtime/worker.py:2760",
-      "summary": "In the compiled audio-only path, a unit arriving while muted()/paused() is `continue`d with no counter increment and no RuntimeHealthEvent. 5 of 14 units offered in this run are therefore invisible: RuntimeStats has no audio-suppressed field (only frames_dropped, which is the video path), SourceTracker never sees them (runtime_ended source_coverage reports excluded=0), and no health event names them. Units in != admitted + suppressed + dropped-with-receipt: the suppressed term has no term.",
+      "summary": "In the compiled audio-only path, a unit arriving while muted()/paused() is `continue`d with no counter increment and no RuntimeHealthEvent. 5 of 14 units offered in this run are therefore invisible: RuntimeStats has no audio-suppressed field (only frames_dropped, which is the video path), SourceTracker never sees them (runtime_ended source_coverage reports excluded=7), and no health event names them. Units in != admitted + suppressed + dropped-with-receipt: the suppressed term has no term.",
       "repro": "eval/stage-validation/sv_audio.py --only SV-A4.8 (check: 'the end-of-run coverage report accounts for every unit offered')"
     },
     {
@@ -3630,42 +3616,33 @@
         },
         {
           "name": "the golden `perception-test-acoustic` track's case anchors are SOUND events, not silence",
-          "passed": false,
-          "detail": "golden_sound_events() returned 2 anchor(s); 2 carry a non-sound label: [('video_8241', 'Muted'), ('video_9253', 'Muted')]",
+          "passed": true,
+          "detail": "golden_sound_events() returned 2 anchor(s); 0 carry a non-sound label: []",
           "data": {
             "golden_anchors": [
               [
                 "video_8241",
-                "Muted"
+                "Object:sound"
               ],
               [
                 "video_9253",
-                "Muted"
+                "Object:sound"
               ]
             ],
-            "silent_anchors": [
-              [
-                "video_8241",
-                "Muted"
-              ],
-              [
-                "video_9253",
-                "Muted"
-              ]
-            ]
+            "silent_anchors": []
           }
         },
         {
           "name": "the SHIPPED audio gate admits at least one annotated sound event",
-          "passed": false,
-          "detail": "AcousticOnset(high=0.09, low=0.0225) woke 0 time(s) across 3973 capture chunks and matched 0/204 annotated sound events (recall 0.0); corpus energy p99=0.00974, max=0.0277",
+          "passed": true,
+          "detail": "AcousticOnset(high=0.001, low=0.00025) woke 72 time(s) across 3973 capture chunks and matched 60/204 annotated sound events (recall 0.29411764705882354); corpus energy p99=0.00974, max=0.0277",
           "data": {
-            "recall": 0.0,
-            "hits": 0,
+            "recall": 0.29411764705882354,
+            "hits": 60,
             "positives": 204,
-            "admissions": 0,
+            "admissions": 72,
             "chunks": 3973,
-            "economy": 0.0,
+            "economy": 0.018122325698464635,
             "corpus_energy_p50": 3.9821488317102195e-06,
             "corpus_energy_p99": 0.009737278114072979,
             "corpus_energy_max": 0.02772681163973175
@@ -3756,14 +3733,14 @@
         "admission_tolerance_s": 0.25,
         "capture_chunk_s": 0.25,
         "shipped_operating_point": {
-          "high": 0.09,
-          "low": 0.0225,
-          "recall": 0.0,
-          "hits": 0,
+          "high": 0.001,
+          "low": 0.00025,
+          "recall": 0.29411764705882354,
+          "hits": 60,
           "positives": 204,
-          "admissions": 0,
+          "admissions": 72,
           "chunks": 3973,
-          "economy": 0.0
+          "economy": 0.018122325698464635
         },
         "onset_frontier": [
           {
@@ -4123,20 +4100,6 @@
       },
       "defects": [
         {
-          "id": "GOLDEN-ACOUSTIC-MUTED-ANCHOR",
-          "severity": "high",
-          "where": "packages/percept-vision/eval/bench/perception_test.py:197",
-          "summary": "golden_sound_events() takes segments[0] (_event_from_row, perception_test.py:172-190) as each acoustic row's ground-truth event. For both rows in the golden `perception-test-acoustic` track (video_8241, video_9253) segment 0 is labelled 'Muted' \u2014 the annotators' marker for a stretch with NO audible source. label_phrase then renders it as 'right now there is an audible muted sound or event', so the track's recall / fusion_fp / recall_flip metrics would be scored against SILENCE. The valid-split annotations carry no 'Muted' label, so only the checked-in train-split sample.json rows are affected \u2014 which is exactly what the golden manifest pins. This corpus filters NON_SOUND_LABELS instead.",
-          "repro": "python -c \"import importlib.util,sys;s=importlib.util.spec_from_file_location('pt','packages/percept-vision/eval/bench/perception_test.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print([(e['video_id'],e['label']) for e in m.golden_sound_events()])\""
-        },
-        {
-          "id": "AUDIO-GATE-DEAF",
-          "severity": "blocker",
-          "where": "percept/harness/detectors.py:233",
-          "summary": "AcousticOnset's shipped thresholds (high=0.09, low=0.0225) are mean-square ENERGY, and no capture chunk in 40 annotated clips (3973 chunks, 987s) reaches 0.09: corpus max energy is 0.0277. run(audio_gate='acoustic-onset') with default audio_wake therefore NEVER admits on this material \u2014 an audio Watch is silently deaf, with no health event to say so.",
-          "repro": "eval/stage-validation/sv_audio.py --only SV-A1.6R (check: 'the SHIPPED audio gate admits at least one annotated sound event')"
-        },
-        {
           "id": "AUDIO-VAD-HANGOVER-UNITS",
           "severity": "high",
           "where": "percept/runtime/_vad.py:54",
@@ -4292,14 +4255,14 @@
         {
           "name": "capture keeps up with real time by a wide margin (>= 20x)",
           "passed": true,
-          "detail": "slowest observed 468x realtime across 5 files",
+          "detail": "slowest observed 485x realtime across 5 files",
           "data": {
             "realtime_factors": [
-              524.9,
-              738.8,
-              694.8,
-              559.4,
-              468.1
+              547.1,
+              774.3,
+              728.6,
+              603.1,
+              485.1
             ]
           }
         },
@@ -4320,8 +4283,8 @@
             "chunks": 66,
             "media_s": 16.324,
             "pcm_bytes": 522356,
-            "wall_s": 0.0311,
-            "realtime_factor": 524.9,
+            "wall_s": 0.0298,
+            "realtime_factor": 547.1,
             "bytes_per_media_s": 32000,
             "chunks_per_media_s": 4.043,
             "pcm_sha256": "2e5e3a8d4aaae6d9ecf040b4665035979ef4c4589c5f74a93d9708f85daf3533"
@@ -4331,8 +4294,8 @@
             "chunks": 139,
             "media_s": 34.644,
             "pcm_bytes": 1108614,
-            "wall_s": 0.0469,
-            "realtime_factor": 738.8,
+            "wall_s": 0.0447,
+            "realtime_factor": 774.3,
             "bytes_per_media_s": 32000,
             "chunks_per_media_s": 4.012,
             "pcm_sha256": "571244a7f3e9f4a16277a32a75d79d093ec7914d5c75fff2f84e1cf9ad9fdffd"
@@ -4342,8 +4305,8 @@
             "chunks": 104,
             "media_s": 25.963,
             "pcm_bytes": 830806,
-            "wall_s": 0.0374,
-            "realtime_factor": 694.8,
+            "wall_s": 0.0356,
+            "realtime_factor": 728.6,
             "bytes_per_media_s": 32000,
             "chunks_per_media_s": 4.006,
             "pcm_sha256": "1f9207b4463c3af61b05dcdfd1e309d9d6a10ff5a7e615f6ef9434c6e2c57536"
@@ -4353,8 +4316,8 @@
             "chunks": 86,
             "media_s": 21.312,
             "pcm_bytes": 681984,
-            "wall_s": 0.0381,
-            "realtime_factor": 559.4,
+            "wall_s": 0.0353,
+            "realtime_factor": 603.1,
             "bytes_per_media_s": 32000,
             "chunks_per_media_s": 4.035,
             "pcm_sha256": "cc01ce6eb34498245770c4485ecb61fe71d3ca6ed4c6efea3cbe468506ca949c"
@@ -4364,8 +4327,8 @@
             "chunks": 88,
             "media_s": 21.803,
             "pcm_bytes": 697686,
-            "wall_s": 0.0466,
-            "realtime_factor": 468.1,
+            "wall_s": 0.0449,
+            "realtime_factor": 485.1,
             "bytes_per_media_s": 32000,
             "chunks_per_media_s": 4.036,
             "pcm_sha256": "b1c8a8ee354183f060f0233c8dd756eb1afc4ace928c1ee5ae36053e7f78c41b"
@@ -4430,8 +4393,8 @@
           "detail": "2 incidents; 2 distinct ids, 2 distinct judgment_event_ids, 2 distinct evidence_seqs, 2 distinct evidence hashes",
           "data": {
             "ids": [
-              "inc-audio-0.750-634368ed",
-              "inc-audio-2.750-e0d24691"
+              "inc-audio-0.750-e403766f",
+              "inc-audio-2.750-65a09476"
             ],
             "judgment_event_ids": [
               "audio##1",
@@ -4630,7 +4593,7 @@
         {
           "name": "the end-of-run coverage report accounts for every unit offered to the runtime",
           "passed": false,
-          "detail": "14 units offered; audio_chunks=7 + receipts=2 = 9; 5 unit(s) vanished with no counter and no health event. runtime_ended reports {'observed': 7, 'excluded': 0, 'discontinuities': 0, 'missing_sequences': 0}",
+          "detail": "14 units offered; audio_chunks=7 + receipts=2 = 9; 5 unit(s) vanished with no counter and no health event. runtime_ended reports {'observed': 7, 'excluded': 7, 'discontinuities': 0, 'missing_sequences': 0}",
           "data": {
             "offered": 14,
             "audio_chunks": 7,
@@ -4639,7 +4602,7 @@
             "unaccounted": 5,
             "source_coverage": {
               "observed": 7,
-              "excluded": 0,
+              "excluded": 7,
               "discontinuities": 0,
               "missing_sequences": 0
             }
@@ -4648,9 +4611,11 @@
         {
           "name": "mute/pause suppression emits a receipt naming how many units it swallowed",
           "passed": false,
-          "detail": "health kinds observed: ['audio_unit_rejected', 'judge_dispatch', 'runtime_ended', 'runtime_started']",
+          "detail": "health kinds observed: ['audio_suppression_ended', 'audio_suppression_started', 'audio_unit_rejected', 'judge_dispatch', 'runtime_ended', 'runtime_started']",
           "data": {
             "health_kinds": [
+              "audio_suppression_ended",
+              "audio_suppression_started",
               "audio_unit_rejected",
               "judge_dispatch",
               "runtime_ended",
@@ -4686,11 +4651,13 @@
         "judge_calls": 2,
         "runtime_ended_source_coverage": {
           "observed": 7,
-          "excluded": 0,
+          "excluded": 7,
           "discontinuities": 0,
           "missing_sequences": 0
         },
         "health_kinds": [
+          "audio_suppression_ended",
+          "audio_suppression_started",
           "audio_unit_rejected",
           "judge_dispatch",
           "runtime_ended",
@@ -4702,7 +4669,7 @@
           "id": "AUDIO-SUPPRESSED-NO-RECEIPT",
           "severity": "high",
           "where": "percept/runtime/worker.py:2760",
-          "summary": "In the compiled audio-only path, a unit arriving while muted()/paused() is `continue`d with no counter increment and no RuntimeHealthEvent. 5 of 14 units offered in this run are therefore invisible: RuntimeStats has no audio-suppressed field (only frames_dropped, which is the video path), SourceTracker never sees them (runtime_ended source_coverage reports excluded=0), and no health event names them. Units in != admitted + suppressed + dropped-with-receipt: the suppressed term has no term.",
+          "summary": "In the compiled audio-only path, a unit arriving while muted()/paused() is `continue`d with no counter increment and no RuntimeHealthEvent. 5 of 14 units offered in this run are therefore invisible: RuntimeStats has no audio-suppressed field (only frames_dropped, which is the video path), SourceTracker never sees them (runtime_ended source_coverage reports excluded=7), and no health event names them. Units in != admitted + suppressed + dropped-with-receipt: the suppressed term has no term.",
           "repro": "eval/stage-validation/sv_audio.py --only SV-A4.8 (check: 'the end-of-run coverage report accounts for every unit offered')"
         }
       ],
@@ -4717,9 +4684,9 @@
         {
           "name": "a JudgePool that DECLARES the 'audio' evidence shape can back a compiled audio Watch",
           "passed": false,
-          "detail": "JudgePool declares evidence_shapes=['audio', 'fused', 'single_image'] yet prepare_audio_judge_binding raised [ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter] and apply_watch_plan returned 'rejected'; the compiled audio path accepts only ['FakeVision', 'GeminiVision']",
+          "detail": "JudgePool declares evidence_shapes=['audio', 'fused', 'single_image'] yet prepare_audio_judge_binding raised [ValueError: compiled audio requires an exact SDK-owned FakeVision, GeminiVision, or fused HostedByokVision adapter] and apply_watch_plan returned 'rejected'; the compiled audio path accepts only ['FakeVision', 'GeminiVision', 'HostedByokVision']",
           "data": {
-            "pool_error": "ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter",
+            "pool_error": "ValueError: compiled audio requires an exact SDK-owned FakeVision, GeminiVision, or fused HostedByokVision adapter",
             "apply_status": "rejected",
             "declared_shapes": [
               "audio",
@@ -4759,18 +4726,19 @@
         {
           "name": "judge_dispatch='inline' makes the audio capture loop WAIT on cognition (documented, not a bug)",
           "passed": true,
-          "detail": "2 admissions x 0.25s judge latency stalled the pump for 0.50s \u2014 the inline path has no deadline; the bound comes only from judge_dispatch='async'",
+          "detail": "2 admissions x 0.25s judge latency stalled the pump for 0.51s \u2014 the inline path has no deadline; the bound comes only from judge_dispatch='async'",
           "data": {
-            "inline_elapsed_s": 0.504
+            "inline_elapsed_s": 0.513
           }
         }
       ],
       "measurements": {
-        "judgepool_error": "ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter",
+        "judgepool_error": "ValueError: compiled audio requires an exact SDK-owned FakeVision, GeminiVision, or fused HostedByokVision adapter",
         "judgepool_apply_status": "rejected",
         "trusted_audio_judges": [
           "percept.backends.fake.FakeVision",
-          "percept.backends.gemini.GeminiVision"
+          "percept.backends.gemini.GeminiVision",
+          "percept.hosted_byok.HostedByokVision"
         ],
         "max_input_bytes": 16777216,
         "max_provider_bytes": 16777216,
@@ -4780,7 +4748,7 @@
           "backpressure_after": 3,
           "decision_deadline_s": null
         },
-        "inline_stall_s": 0.504,
+        "inline_stall_s": 0.513,
         "bounds": [
           "AudioInputCapability.max_input_bytes / max_provider_bytes (16 MiB each)",
           "AudioWindow seconds + max_units(4096) + max_bytes(16 MiB)",

@@ -12,6 +12,7 @@ policy source does not become a match merely by documenting what it rejects.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -224,11 +225,21 @@ def _hits(path: Path, content: bytes) -> list[tuple[int, str]]:
 _SOURCE_FILES = _iter_source_files()
 
 
+def _git_environment(repo_root: Path) -> dict[str, str]:
+    """Keep the release-scan index global, but isolate nested fixture repositories."""
+
+    environment = os.environ.copy()
+    if repo_root != _REPO_ROOT:
+        environment.pop("GIT_INDEX_FILE", None)
+    return environment
+
+
 def _index_paths(repo_root: Path = _REPO_ROOT) -> list[Path] | None:
     completed = subprocess.run(
         ["git", "-C", str(repo_root), "ls-files", "-z"],
         check=False,
         capture_output=True,
+        env=_git_environment(repo_root),
     )
     if completed.returncode != 0:
         return None
@@ -266,6 +277,7 @@ def _read_public_blob(path: Path, repo_root: Path = _REPO_ROOT) -> bytes:
         ["git", "-C", str(repo_root), "show", f":{relative}"],
         check=False,
         capture_output=True,
+        env=_git_environment(repo_root),
     )
     if completed.returncode != 0:
         raise AssertionError(f"could not read indexed blob {relative}: {completed.stderr!r}")
@@ -311,6 +323,7 @@ def test_public_tree_scope_is_the_git_index():
         ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"],
         check=False,
         capture_output=True,
+        env=_git_environment(_REPO_ROOT),
     )
     if completed.returncode != 0:
         pytest.skip("Git index is unavailable in the installed artifact")
@@ -425,10 +438,19 @@ def test_legitimate_public_object_language_is_allowed(text: str, tmp_path: Path)
 def test_policy_reads_staged_blob_instead_of_divergent_worktree(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    fixture_environment = _git_environment(repo)
+    subprocess.run(
+        ["git", "init", "-q", str(repo)],
+        check=True,
+        env=fixture_environment,
+    )
     path = repo / "public.md"
     path.write_text("implement this in a later " + "ca" + "rd", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "public.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "public.md"],
+        check=True,
+        env=fixture_environment,
+    )
     path.write_text("a benchmark " + "ca" + "rd", encoding="utf-8")
 
     indexed = _read_public_blob(path, repo)

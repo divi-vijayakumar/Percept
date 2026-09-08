@@ -221,3 +221,13 @@ eval/stage-validation/results/*.checkpoint.jsonl
 eval/stage-validation/results/*.json
 eval/stage-validation/results/*.md
 eval/stage-validation/sweep/results/
+
+# Local Netlify folder
+.netlify
+eval/dashboard/.site-password
+
+# Local tool and dashboard runtime state
+.pnpm-store/
+.ski/
+eval/dashboard/logs/
+eval/dashboard/run-state.json

@@ -166,15 +166,16 @@ async def test_async_worker_emits_every_event_reported_in_one_window():
     # Every event the FIRST window reported is emitted: one look enumerating three separate
     # occurrences 0.3s apart is the provider's explicit testimony that they ARE separate, and the
     # delivery merge never applies within a single enumeration (behavior.INCIDENT_MERGE_WINDOW_S).
-    # The SECOND window's "fourth" is a CROSS-judgment delivery landing 0.3s after the third
-    # incident for the same watch — inside the merge window, so it is dropped as a re-report.
-    assert len(incidents) == 3
-    assert len({incident.revision_id for incident in incidents}) == 3
+    # The SECOND window re-identifies the first three and appends a fourth.  That shared history is
+    # semantic continuity evidence: the fourth is a distinct rapid occurrence, so the coarse
+    # delivery timer must not merge it merely because it lands 0.3s later.
+    assert len(incidents) == 4
+    assert len({incident.revision_id for incident in incidents}) == 4
     assert [incident.ts for incident in incidents] == pytest.approx(
-        [0.2, 0.5, 0.8]
+        [0.2, 0.5, 0.8, 1.1]
     )
     incident_links = [incident.judgment_event_id for incident in incidents]
-    assert len(set(incident_links)) == 3
+    assert len(set(incident_links)) == 4
     judgment_links = [
         trace.data["judgment_event_id"]
         for trace in traces
@@ -265,12 +266,193 @@ async def test_public_manual_path_deduplicates_overlapping_windows():
 
     assert provider.calls == 2
     assert len(first) == 3  # one look, three enumerated occurrences -> never merged against itself
-    # The second window's three restatements are overlap-suppressed as before; its genuinely new
-    # "fourth" lands 0.4s after the third delivery for the same watch, so the delivery merge
-    # (behavior.INCIDENT_MERGE_WINDOW_S) drops it as a re-report rather than a second notification.
-    assert len(second) == 0
+    # The second window's three restatements are overlap-suppressed; because they anchor the
+    # timeline, its appended fourth remains observable as a genuinely distinct rapid occurrence.
+    assert len(second) == 1
     all_fires = [*first, *second]
-    assert len({fire.revision_id for fire in all_fires}) == 3
+    assert len({fire.revision_id for fire in all_fires}) == 4
     assert [
         fire.judgment.timing.source_media_ts for fire in all_fires
-    ] == pytest.approx([0.2, 0.5, 0.8])
+    ] == pytest.approx([0.2, 0.5, 0.8, 1.2])
+
+
+@pytest.mark.asyncio
+async def test_unanchored_timestamp_drift_stays_in_the_open_occurrence():
+    """One moving point per sliding look is one ambiguous continuation, not a firehose."""
+
+    class DriftingSingleEventJudge:
+        SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def judge(self, _condition, _frame, **_kwargs):
+            self.calls += 1
+            at = 0.2 if self.calls == 1 else 1.8
+            return Verdict(
+                True,
+                0.96,
+                "same continuing action, timestamp moved with the window",
+                phase="post",
+                action_present=False,
+                events=[ClipEvent(at, at, "action")],
+            )
+
+    provider = DriftingSingleEventJudge()
+    core = Percept.create(
+        vision=NativeVideoVision(
+            provider,
+            encoder=lambda frames, **_kwargs: b"mp4",
+            require_native_transport=True,
+        ),
+        discover_plugins=False,
+    )
+    core.add_goal(
+        Goal(
+            id="action",
+            condition="someone performs the action",
+            say="action",
+            state={
+                "type": "watch",
+                "rearm": "each_event",
+                "perception": {
+                    "temporal": "strip",
+                    "n_frames": 5,
+                    "sampling": "recent",
+                    "window_s": 2.0,
+                },
+            },
+        )
+    )
+
+    initial = await core.perceive_judged(b"f0", t=0.0)
+    assert [event for event in initial if event.action == "fire"] == []
+    first = await core.perceive_judged(b"f1", t=1.0)
+    drift = []
+    for index in range(2, 7):
+        drift.extend(
+            await core.perceive_judged(f"f{index}".encode(), t=float(index))
+        )
+
+    assert [event.action for event in first] == ["fire"]
+    assert [event for event in drift if event.action == "fire"] == []
+    assert core.metrics.get("gate.event_chain_unanchored_continuation_suppressed") == 5
+
+
+@pytest.mark.asyncio
+async def test_sustained_pre_boundary_releases_a_later_unanchored_event():
+    """The containment does not become a rate limit: a proven lifecycle boundary re-arms it."""
+
+    class BoundaryJudge:
+        SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def judge(self, _condition, _frame, **_kwargs):
+            self.calls += 1
+            if self.calls in {2, 3}:
+                return Verdict(
+                    False,
+                    0.96,
+                    "action absent",
+                    phase="pre",
+                    action_present=False,
+                )
+            return Verdict(
+                True,
+                0.96,
+                "one completed action",
+                phase="post",
+                action_present=False,
+                events=[ClipEvent(0.2, 0.2, "action")],
+            )
+
+    provider = BoundaryJudge()
+    core = Percept.create(
+        vision=NativeVideoVision(
+            provider,
+            encoder=lambda frames, **_kwargs: b"mp4",
+            require_native_transport=True,
+        ),
+        discover_plugins=False,
+    )
+    core.add_goal(
+        Goal(
+            id="action",
+            condition="someone performs the action",
+            say="action",
+            state={
+                "type": "watch",
+                "rearm": "each_event",
+                "perception": {
+                    "temporal": "strip",
+                    "n_frames": 5,
+                    "sampling": "recent",
+                    "window_s": 2.0,
+                },
+            },
+        )
+    )
+
+    initial = await core.perceive_judged(b"f0", t=0.0)
+    assert [event for event in initial if event.action == "fire"] == []
+    first = await core.perceive_judged(b"f1", t=1.0)
+    assert await core.perceive_judged(b"f2", t=2.0) == []
+    assert await core.perceive_judged(b"f3", t=4.0) == []
+    second = await core.perceive_judged(b"f4", t=5.0)
+
+    assert [event.action for event in [*first, *second]] == ["fire", "fire"]
+    assert core.metrics.get("gate.event_chain_closed") == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_enumeration_overflow_fails_closed_and_is_observable():
+    class OverflowJudge:
+        SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
+
+        async def judge(self, _condition, _frame, **_kwargs):
+            return Verdict(
+                True,
+                0.96,
+                "too many claimed events",
+                phase="post",
+                action_present=False,
+                events=[
+                    ClipEvent(0.1, 0.1, "one"),
+                    ClipEvent(0.2, 0.2, "two"),
+                    ClipEvent(0.3, 0.3, "three"),
+                ],
+            )
+
+    core = Percept.create(
+        vision=NativeVideoVision(
+            OverflowJudge(),
+            encoder=lambda frames, **_kwargs: b"mp4",
+            require_native_transport=True,
+        ),
+        discover_plugins=False,
+    )
+    core.add_goal(
+        Goal(
+            id="action",
+            condition="someone performs the action",
+            say="action",
+            state={
+                "type": "watch",
+                "rearm": "each_event",
+                "each_event_max_events_per_window": 2,
+                "perception": {
+                    "temporal": "strip",
+                    "n_frames": 5,
+                    "sampling": "recent",
+                    "window_s": 2.0,
+                },
+            },
+        )
+    )
+
+    initial = await core.perceive_judged(b"f0", t=0.0)
+    assert [event for event in initial if event.action == "fire"] == []
+    assert await core.perceive_judged(b"f1", t=1.0) == []
+    assert core.metrics.get("gate.event_chain_window_overflow") == 1

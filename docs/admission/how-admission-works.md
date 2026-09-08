@@ -62,8 +62,15 @@ every frame — the whole scene shifts even when nothing in it happened. `ego_co
 integer-pixel shift search and gates on the **residual** motion — the part that is not explained by the
 camera moving. A pan or a head turn no longer escalates; a hand entering the frame still does.
 
+Ego compensation changes the pixels being scored, not the score's unit. The global shift is estimated
+from whole-frame mean error; after alignment, the selected `salience_stat` summarizes the residual.
+`block_max@0.20` therefore remains block-max-scaled on a moving camera, and `mean@0.10` remains
+mean-scaled. Never pair an ego residual with a threshold from a different statistic.
+
 Set `ego_compensate` once for a moving-camera build. Leave it off for a fixed mount, where there is no
-ego-motion to subtract.
+ego-motion to subtract. Prefer resolving the camera mount through `Percept.configure(...,
+situation=(goal_temporality, "handheld", start_state))`; the low-level equivalents are the
+`PERCEPT_EGO_COMPENSATE=true` deployment setting or `goal.state["ego_compensate"] = True`.
 
 ## Selection: deployment default, per-goal override
 

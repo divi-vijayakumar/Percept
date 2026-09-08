@@ -336,9 +336,9 @@ playback — is in [command-seam.md](driving-a-live-watch.md).
 
 > **Which gate for your camera? (the decision that sinks realtime demos)**
 >
-> The default tier-0 gate is a **whole-frame motion** gate. On a **static or low-motion** subject it
-> will **never escalate** — the whole-frame mean stays ~0 and no judge call is ever spent, so the agent
-> looks broken. Pick one:
+> The default tier-0 gate is `block_max@0.20`, not a whole-frame mean. It catches localized motion,
+> but a condition with essentially no pixel change still needs a cadence. Pick the source contract
+> explicitly:
 > - **A still / content scene** (a screenshare, a dashboard, a stove that isn't moving) → `gate_on="fixed"`
 >   + `min_judge_interval` so it escalates on a **cadence** regardless of motion.
 > - **A localized event on an otherwise-still frame** (a coffee sip, a shelf grab, a terminal error on a
@@ -352,17 +352,33 @@ playback — is in [command-seam.md](driving-a-live-watch.md).
 ### Moving cameras — glasses, body-cam, phone ⚠️
 
 If your camera **moves**, a plain motion gate escalates on *every* frame — the whole scene shifts each
-time your head does. Measured on real first-person footage: `block_max` alone calls the VLM on **98%**
-of frames. The fix is **ego-motion compensation**: subtract the global camera shift before measuring
-motion.
+time your head does. The fix is **ego-motion compensation**: estimate and subtract the global camera
+shift, then measure the aligned residual with the selected statistic. Keep `block_max@0.20`; changing
+only the threshold to the mean cutoff would mix score units.
 
 ```bash
 export PERCEPT_EGO_COMPENSATE=true     # ← subtract head/camera motion
 export PERCEPT_SALIENCE_STAT=block_max
 ```
 
-That drops escalation to **~30%**, and object detection still works (verified: containers, hands and
-people read correctly on head-mounted frames). The CLI has a flag:
+For an embedded agent, prefer the typed configuration boundary so the mount choice is recorded in
+the resolution receipt instead of living only in process environment:
+
+```python
+from percept import Percept
+from percept.source_profiles_default import PHYSICAL_SCENE
+
+agent = Percept.configure(
+    vision="gemini",
+    source_profile=PHYSICAL_SCENE,
+    situation=("dynamic", "handheld", "transition"),
+)
+```
+
+The tuple is `(goal_temporality, camera_mount, start_state)`. `camera_mount="handheld"` resolves
+`Settings.edge.ego_compensate=True`; the physical-scene/default profile keeps
+`salience_stat="block_max"` and its `0.20` cutoff. On the direct low-level goal path, the equivalent
+state is `{"ego_compensate": True, "salience_stat": "block_max"}`. The CLI has a flag:
 
 ```bash
 percept-watch --egomotion --goal "my keys are visible" --goal "a person is nearby"
@@ -372,11 +388,17 @@ percept-watch --egomotion --goal "my keys are visible" --goal "a person is nearb
 
 - Ego-compensation makes the *gate* economical, but detection is still frame-by-frame VLM — on very
   fast or blurry head motion, frames can be too smeared to judge. Raising `--fps` helps catch a clean one.
+- The reference estimator searches only ±4 pixels on the 48×36 gate raster. Motion beyond that search
+  window remains residual scene change and may legitimately admit.
 - **Detecting** an object ("keys visible") is solid. **Tracking a specific instance** across occlusion
   and glances ("that's *my* keys, still the same ones") is the entity layer — weaker, and not
   battle-tested on egomotion.
-- These thresholds were validated on the ProactiveQA EGO set, not tuned for your rig. Treat them as a
-  starting point and adjust `--refractory` / `--fps` on your own footage.
+- A three-clip ProactiveQA EGO replay at the native 6 fps preserved a tier-0 hit in every annotated
+  event window, but admitted 20.51%, 72.18%, and 69.63% of frames. Pooled admission fell only 7.1%
+  versus uncompensated `block_max`. The highest global threshold that preserved all three event-window
+  hits (`0.214815`) still admitted 48.3% pooled. This validates reachability and score-unit correctness,
+  **not** the previous universal ~30% economy claim; moving-camera economy remains unresolved. Measure
+  admission and cost on the target mount before launch.
 
 ### `on_trace` — why a frame stayed silent
 

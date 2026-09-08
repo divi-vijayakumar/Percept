@@ -2615,7 +2615,20 @@ class Percept:
         if cb is None:
             return
         try:
-            result = cb(TraceEvent(trace_id=trace_id, stage=stage, t=t, goal_id=goal_id, data=data))
+            # Shared async lanes queue trace rows synchronously at the actual lifecycle transition,
+            # then the runtime owner drains them later. Carry the producer stamps outside ``data``
+            # so a TraceRecorder never mistakes drain time for admission/dispatch/verdict time.
+            observed_wall_ts = data.pop("_trace_observed_wall_ts", None)
+            emitted_wall_ts = data.pop("_trace_emitted_wall_ts", None)
+            result = cb(TraceEvent(
+                trace_id=trace_id,
+                stage=stage,
+                t=t,
+                goal_id=goal_id,
+                data=data,
+                observed_wall_ts=observed_wall_ts,
+                emitted_wall_ts=emitted_wall_ts,
+            ))
             if inspect.isawaitable(result):
                 await result
         except Exception:  # noqa: BLE001 — a tracer is observability; swallow its failures
@@ -3463,7 +3476,16 @@ class Percept:
                     token.parent_source_trace_id,
                     candidate.source_t,
                     "source.frame",
-                    {},
+                    {
+                        "latency_clock": "producer_monotonic_v1",
+                        "_trace_observed_wall_ts": candidate.ingest_observed_ts,
+                        "_trace_emitted_wall_ts": self.clock(),
+                        "goal_ids": tuple(
+                            goal_id
+                            for goal_id, goal in token.goal_object_tokens
+                            if goal_behavior_route(goal) is BehaviorRoute.FRAME_WATCH
+                        )
+                    },
                 )
             )
         return True
@@ -4267,27 +4289,69 @@ class Percept:
         if queue is None:
             queue = []
             self._judgment_trace_queue = queue
+        payload = dict(data)
+        payload.setdefault("latency_clock", "producer_monotonic_v1")
+        payload["_trace_observed_wall_ts"] = job.ingest_observed_ts
+        payload["_trace_emitted_wall_ts"] = self.clock()
         queue.append(
             (
                 job.token.judgment_trace_id,
                 job.source_t,
                 stage,
-                data,
+                payload,
             )
         )
         if len(queue) > 1024:
-            del queue[: len(queue) - 1024]
+            overflow = len(queue) - 1024
+            del queue[:overflow]
+            # This queue is only a callback hand-off, but losing both ends of an old lifecycle pair
+            # would otherwise leave a retained trace looking complete. Preserve the bounded queue
+            # and carry an explicit loss marker to the next owner drain so for-record preflight can
+            # fail closed instead of evaluating a selected tail.
+            self._judgment_trace_dropped = int(
+                getattr(self, "_judgment_trace_dropped", 0)
+            ) + overflow
+            self._judgment_trace_drop_context = (
+                job.token.judgment_trace_id,
+                job.source_t,
+                job.ingest_observed_ts,
+                self.clock(),
+            )
 
     def drain_judgment_trace_rows(
         self,
     ) -> tuple[tuple[str, float, str, dict[str, Any]], ...]:
         """Owner-only transfer of already-materialized shared-pipeline traces."""
         queue = getattr(self, "_judgment_trace_queue", None)
-        if not queue:
+        dropped = int(getattr(self, "_judgment_trace_dropped", 0))
+        if not queue and not dropped:
             return ()
-        rows = tuple(queue)
-        queue.clear()
-        return rows
+        rows = list(queue or ())
+        if dropped:
+            trace_id, source_t, observed, emitted = getattr(
+                self,
+                "_judgment_trace_drop_context",
+                ("judgment-trace-queue", None, self.clock(), self.clock()),
+            )
+            rows.insert(
+                0,
+                (
+                    trace_id,
+                    source_t,
+                    "trace_dropped",
+                    {
+                        "dropped": dropped,
+                        "reason": "judgment_trace_queue_overflow",
+                        "latency_clock": "producer_monotonic_v1",
+                        "_trace_observed_wall_ts": observed,
+                        "_trace_emitted_wall_ts": emitted,
+                    },
+                ),
+            )
+            self._judgment_trace_dropped = 0
+        if queue:
+            queue.clear()
+        return tuple(rows)
 
     def _record_completed_provider_calls(
         self,
@@ -4929,6 +4993,18 @@ class Percept:
             # legitimate driver, so refuse before frame buffering, detection, or provider calls.
             require_worker_routes(unsupported_goals, driver="Percept.perceive_judged")
 
+        # The admission record counts ONE unit of evidence; this tuple declares how many
+        # (evidence, goal) judgment opportunities that unit creates.  Keep the populations apart:
+        # source.frame/source.audio remain evidence-unit records, while judge.started remains one
+        # record per Watch.  Stage attribution uses this declaration as the exact dispatch
+        # denominator instead of multiplying by the run's global number of goals (which is wrong
+        # when per-Watch tier-0 routing admits different subsets on different frames).
+        dispatch_goal_ids = tuple(
+            goal.id
+            for goal in active_goals
+            if goal_behavior_route(goal) is BehaviorRoute.FRAME_WATCH
+        )
+
         def _stale() -> bool:
             return (
                 bool(
@@ -4999,6 +5075,7 @@ class Percept:
                     trace_id,
                     now,
                     "source.audio",
+                    goal_ids=dispatch_goal_ids,
                     units={
                         goal_id: tuple(
                             (
@@ -5020,7 +5097,9 @@ class Percept:
             focus = None
         else:
             if tracing:
-                await self._emit_trace(trace_id, now, "source.frame")
+                await self._emit_trace(
+                    trace_id, now, "source.frame", goal_ids=dispatch_goal_ids
+                )
             self._window(source).push(now, frame)
             if _stale():
                 return []
@@ -5344,7 +5423,18 @@ class Percept:
                                        action="degrading this tick to ASK/SILENT")
                     if tracing:
                         await self._emit_trace(
-                            trace_id, now, "judge.degraded", goal_id=goal.id, cause=repr(degraded.cause),
+                            trace_id,
+                            now,
+                            "judge.degraded",
+                            goal_id=goal.id,
+                            cause=repr(degraded.cause),
+                            **self._judge_served_trace(
+                                goal.id,
+                                direct=(
+                                    direct_result is not None
+                                    and direct_result.outcome == "confident"
+                                ),
+                            ),
                         )
                         await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
                                                truth="unknown", action="ask",
@@ -5963,7 +6053,7 @@ class Percept:
                     judge_completed_ts=now,
                     # No provider was called -- this verdict is built from the bundle's own coverage
                     # uncertainty. Omitting this defaulted to True and made every locally-completed
-                    # fused bundle read as model SPEND: it inflated `actual_judge_calls` and entered
+                    # fused bundle read as model SPEND: it inflated trace `provider_calls` and entered
                     # the provider-latency population as a 0.0 s sample. The sibling local completion
                     # above already declares it; this one did not (FIND-REFLEX-06).
                     provider_spent=False,
@@ -7826,127 +7916,159 @@ class Percept:
         validate-then-swap (``GoalRegistry.restore``, ``EntityGraph.restore``, ``Gate.restore``), but
         three atomic steps in sequence are not an atomic sequence: a snapshot with good goals and a
         truncated entity list used to leave the core holding the NEW goals against the OLD entities,
-        a combination no snapshot ever described. So the pre-restore state of all four stores is
-        captured first and reinstated if any step raises, and the exception is re-raised for the
-        caller to see. The failure is then all-or-nothing, and always loud."""
+        a combination no snapshot ever described. So the pre-restore state of every durable store
+        and restore-owned session table is captured first and reinstated if any step raises, and the
+        exception is re-raised for the caller to see. The failure is then all-or-nothing, and always
+        loud."""
         # v1 vs v2 is detected structurally (a v2 goal carries deadline_at_epoch; a v1 goal a legacy
         # deadline_s), so a missing/renumbered version field can never silently mis-route a deadline.
-        # Compiled Watch snapshots are refused by snapshot(); restore therefore only accepts the
-        # plain-goal durability contract and starts with no session-local runtime/judge bindings.
-        self._watch_runtime_bindings.clear()
-        self._watch_runtime_keys.clear()
-        self._judge_bindings.clear()
-        self._judge_binding_tokens.clear()
-        self._judge_requesting_goal_ids.clear()
-        self._audio_judge_bindings.clear()
-        self._audio_judge_binding_tokens.clear()
-        ledger = getattr(self, "_watchplan_applied_hashes", None)
-        if isinstance(ledger, dict):
-            ledger.clear()
         # The rollback staging area: what this core holds RIGHT NOW, in the same wire shapes the
         # sub-restores read, so reinstating it is the identical code path and cannot itself be novel.
+        # GoalRegistry.restore invokes the owner's cleanup hook, so its session-local bindings and
+        # apply ledger are part of the transaction too even though a successful plain-goal restore
+        # deliberately clears them.
         prior_goals = self.goals.snapshot()
         prior_entities = self.graph.snapshot()
         prior_gate = self.gate.snapshot()
         prior_action_log = self.action_log
+        prior_watch_runtime_bindings = dict(self._watch_runtime_bindings)
+        prior_watch_runtime_keys = dict(self._watch_runtime_keys)
+        prior_judge_bindings = dict(self._judge_bindings)
+        prior_judge_binding_tokens = dict(self._judge_binding_tokens)
+        prior_judge_requesting_goal_ids = set(self._judge_requesting_goal_ids)
+        prior_audio_judge_bindings = dict(self._audio_judge_bindings)
+        prior_audio_judge_binding_tokens = dict(self._audio_judge_binding_tokens)
+        prior_restore_health_log = list(self._restore_health_log)
+        ledger = getattr(self, "_watchplan_applied_hashes", None)
+        prior_ledger = dict(ledger) if isinstance(ledger, dict) else None
         try:
+            # Compiled Watch snapshots are refused by snapshot(); restore therefore only accepts the
+            # plain-goal durability contract and starts with no session-local runtime/judge bindings.
+            self._watch_runtime_bindings.clear()
+            self._watch_runtime_keys.clear()
+            self._judge_bindings.clear()
+            self._judge_binding_tokens.clear()
+            self._judge_requesting_goal_ids.clear()
+            self._audio_judge_bindings.clear()
+            self._audio_judge_binding_tokens.clear()
+            if isinstance(ledger, dict):
+                ledger.clear()
+
             self.goals.restore(snap.get("goals", []))
             self.graph.restore(snap.get("entities", []))
             restored_log = ActionLog()
             for rd in snap.get("action_log", []):
                 restored_log.record(ActionRecord(**rd))
             self.action_log = restored_log
+
+            now_mono = self.clock()
+            now_epoch = time.time()
+            for goal in self.goals.all():
+                st = goal.state
+                if st.get("rearm") != "deadline":
+                    continue
+                if "deadline_at_epoch" in st:  # v2: rebase epoch -> the fresh monotonic frame
+                    remaining = st.pop("deadline_at_epoch") - now_epoch
+                    st["deadline_at"] = now_mono + remaining
+                elif "deadline_at" not in st and "deadline_after_s" not in st and "deadline_s" in st:
+                    legacy = st.pop("deadline_s")  # v1 legacy absolute — LOUD, never silent
+                    try:
+                        st["deadline_at"] = now_mono + float(legacy)
+                    except (TypeError, ValueError):
+                        st["deadline_at"] = now_mono
+                    self.metrics.incr("snapshot.deadline_unmigratable")
+                    warnings.warn(
+                        f"restore(): goal {goal.id!r} carried a legacy absolute 'deadline_s' from a v1 "
+                        f"snapshot that cannot be rebased (no duration base). Re-resolved as a duration from "
+                        f"restore-time so it still fires — verify the new deadline. Re-author with "
+                        f"'deadline_after_s' to remove this warning.",
+                        stacklevel=2,
+                    )
+
+            # Episode memory is SESSION-ONLY (ADR-006) — snapshot() never carried the
+            # ``episodes`` map, so every counting goal we just rehydrated will restart at zero episodes and a
+            # subject last seen before the restart will open a NEW episode afterwards. That is a decision, not
+            # a bug, but it is a failure mode when it is SILENT: an operator watching a counting goal
+            # under-counts after a redeploy with nothing saying why. Queue a single loud ``episode_memory_reset``
+            # health event whenever we restored goals that USE the episode map into an empty one, so the
+            # amnesia is observable. Queue-only — worker.py drains it into on_health (Percept never calls
+            # on_health).
+            #
+            # Three goal shapes use it, and the announcement has to cover all three or it announces the
+            # amnesia everywhere EXCEPT where the amnesia changes what a subscriber receives:
+            #   * ``type='count'``     — the episode map IS the count; losing it under-counts.
+            #   * ``rearm='each_event'`` — one occurrence per episode; losing it re-reports.
+            #   * a concern that SELECTS an identity policy — the subject-bound shapes
+            #     (``_document_episode_fold`` / the scene fold / ``_claim_episode_fold``). This is the
+            #     idempotency layer: ``episode_fold`` refuses the gate to an already-emitted episode
+            #     restated unchanged, which is what stops a live occurrence being re-reported on every
+            #     judged frame. Losing it on a plain watch DUPLICATES an incident, and on a claim slot it
+            #     loses the value and the whole revision chain — the next correction is then delivered as
+            #     an original, superseding nothing. ``_resolved_identity_policy`` is the SAME resolution
+            #     those folds gate on, so this set is exactly "the concerns whose episode memory was in
+            #     use", never a broader guess.
+            # Still CONDITIONAL, deliberately: a concern that declared nothing and could never have built
+            # an episode has nothing to announce, and announcing it anyway trains an operator to ignore
+            # the event.
+            counting = [g for g in self.goals.all() if g.state.get("type") == "count"]
+            occurrence_watches = [
+                g for g in self.goals.all() if g.state.get("rearm") == "each_event"
+            ]
+            subject_bound = [
+                g for g in self.goals.all() if self._resolved_identity_policy(g) is not None
+            ]
+            affected: list[Goal] = []
+            named: set[str] = set()
+            for goal in (*counting, *occurrence_watches, *subject_bound):
+                if goal.id not in named:  # a goal may be in two sets; it is named once
+                    named.add(goal.id)
+                    affected.append(goal)
+            if affected and not self.episodes:
+                self._restore_health_log.append(
+                    (
+                        "episode_memory_reset",
+                        {
+                            "reason": "session_only_v1.4",
+                            "counting_goals": len(counting),
+                            "occurrence_goals": len(occurrence_watches),
+                            "subject_bound_goals": len(subject_bound),
+                            "goal_ids": [g.id for g in affected],
+                            "detail": (
+                                "episodes are session-only (ADR-006): counting/occurrence/subject-bound "
+                                "episode memory was NOT restored; these goals restart their episode "
+                                "lifecycle and may under-count, repeat an occurrence, or lose a claim "
+                                "slot's value and revision chain after recovery."
+                            ),
+                        },
+                    )
+                )
+
+            self.gate.restore(snap.get("gate"))
         except Exception:
             self.goals.restore(prior_goals)
             self.graph.restore(prior_entities)
             self.gate.restore(prior_gate)
             self.action_log = prior_action_log
+            self._watch_runtime_bindings.clear()
+            self._watch_runtime_bindings.update(prior_watch_runtime_bindings)
+            self._watch_runtime_keys.clear()
+            self._watch_runtime_keys.update(prior_watch_runtime_keys)
+            self._judge_bindings.clear()
+            self._judge_bindings.update(prior_judge_bindings)
+            self._judge_binding_tokens.clear()
+            self._judge_binding_tokens.update(prior_judge_binding_tokens)
+            self._judge_requesting_goal_ids.clear()
+            self._judge_requesting_goal_ids.update(prior_judge_requesting_goal_ids)
+            self._audio_judge_bindings.clear()
+            self._audio_judge_bindings.update(prior_audio_judge_bindings)
+            self._audio_judge_binding_tokens.clear()
+            self._audio_judge_binding_tokens.update(prior_audio_judge_binding_tokens)
+            self._restore_health_log[:] = prior_restore_health_log
+            if isinstance(ledger, dict) and prior_ledger is not None:
+                ledger.clear()
+                ledger.update(prior_ledger)
             self.metrics.incr("snapshot.restore_rolled_back")
             raise
-
-        now_mono = self.clock()
-        now_epoch = time.time()
-        for goal in self.goals.all():
-            st = goal.state
-            if st.get("rearm") != "deadline":
-                continue
-            if "deadline_at_epoch" in st:  # v2: rebase epoch -> the fresh monotonic frame
-                remaining = st.pop("deadline_at_epoch") - now_epoch
-                st["deadline_at"] = now_mono + remaining
-            elif "deadline_at" not in st and "deadline_after_s" not in st and "deadline_s" in st:
-                legacy = st.pop("deadline_s")  # v1 legacy absolute — LOUD, never silent
-                try:
-                    st["deadline_at"] = now_mono + float(legacy)
-                except (TypeError, ValueError):
-                    st["deadline_at"] = now_mono
-                self.metrics.incr("snapshot.deadline_unmigratable")
-                warnings.warn(
-                    f"restore(): goal {goal.id!r} carried a legacy absolute 'deadline_s' from a v1 "
-                    f"snapshot that cannot be rebased (no duration base). Re-resolved as a duration from "
-                    f"restore-time so it still fires — verify the new deadline. Re-author with "
-                    f"'deadline_after_s' to remove this warning.",
-                    stacklevel=2,
-                )
-
-        # Episode memory is SESSION-ONLY (ADR-006) — snapshot() never carried the
-        # ``episodes`` map, so every counting goal we just rehydrated will restart at zero episodes and a
-        # subject last seen before the restart will open a NEW episode afterwards. That is a decision, not
-        # a bug, but it is a failure mode when it is SILENT: an operator watching a counting goal
-        # under-counts after a redeploy with nothing saying why. Queue a single loud ``episode_memory_reset``
-        # health event whenever we restored goals that USE the episode map into an empty one, so the
-        # amnesia is observable. Queue-only — worker.py drains it into on_health (Percept never calls
-        # on_health).
-        #
-        # Three goal shapes use it, and the announcement has to cover all three or it announces the
-        # amnesia everywhere EXCEPT where the amnesia changes what a subscriber receives:
-        #   * ``type='count'``     — the episode map IS the count; losing it under-counts.
-        #   * ``rearm='each_event'`` — one occurrence per episode; losing it re-reports.
-        #   * a concern that SELECTS an identity policy — the subject-bound shapes
-        #     (``_document_episode_fold`` / the scene fold / ``_claim_episode_fold``). This is the
-        #     idempotency layer: ``episode_fold`` refuses the gate to an already-emitted episode
-        #     restated unchanged, which is what stops a live occurrence being re-reported on every
-        #     judged frame. Losing it on a plain watch DUPLICATES an incident, and on a claim slot it
-        #     loses the value and the whole revision chain — the next correction is then delivered as
-        #     an original, superseding nothing. ``_resolved_identity_policy`` is the SAME resolution
-        #     those folds gate on, so this set is exactly "the concerns whose episode memory was in
-        #     use", never a broader guess.
-        # Still CONDITIONAL, deliberately: a concern that declared nothing and could never have built
-        # an episode has nothing to announce, and announcing it anyway trains an operator to ignore
-        # the event.
-        counting = [g for g in self.goals.all() if g.state.get("type") == "count"]
-        occurrence_watches = [
-            g for g in self.goals.all() if g.state.get("rearm") == "each_event"
-        ]
-        subject_bound = [
-            g for g in self.goals.all() if self._resolved_identity_policy(g) is not None
-        ]
-        affected: list[Goal] = []
-        named: set[str] = set()
-        for goal in (*counting, *occurrence_watches, *subject_bound):
-            if goal.id not in named:  # a goal may be in two sets; it is named once
-                named.add(goal.id)
-                affected.append(goal)
-        if affected and not self.episodes:
-            self._restore_health_log.append(
-                (
-                    "episode_memory_reset",
-                    {
-                        "reason": "session_only_v1.4",
-                        "counting_goals": len(counting),
-                        "occurrence_goals": len(occurrence_watches),
-                        "subject_bound_goals": len(subject_bound),
-                        "goal_ids": [g.id for g in affected],
-                        "detail": (
-                            "episodes are session-only (ADR-006): counting/occurrence/subject-bound "
-                            "episode memory was NOT restored; these goals restart their episode "
-                            "lifecycle and may under-count, repeat an occurrence, or lose a claim "
-                            "slot's value and revision chain after recovery."
-                        ),
-                    },
-                )
-            )
-
-        self.gate.restore(snap.get("gate"))
         return self
 
     def save_state(self, persistence: Any, key: str = "percept") -> None:

@@ -1500,7 +1500,7 @@
       "choices": null,
       "default": false,
       "env_var": "PERCEPT_EGO_COMPENSATE",
-      "note": "remove global camera motion before diffing.",
+      "note": "moving cameras only: estimate and remove global translation, then summarize the aligned residual with salience_stat so its per-stat threshold remains in the correct unit.",
       "owner": "SourceProfile",
       "path": "Settings.edge.ego_compensate",
       "requires_recompile": true,

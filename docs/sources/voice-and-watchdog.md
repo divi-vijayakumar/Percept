@@ -1,6 +1,6 @@
 ---
 title: Two apps on one command seam — a silent watchdog and a voice assistant
-updated: 2026-07-16
+updated: 2026-08-01
 applies_to: percept-vision 1.0.0
 status: stable
 ---
@@ -52,6 +52,15 @@ asyncio.run(main())
 
 That's it — no capture loop, no frame encoding, no HTTP plumbing. For a purely local sink, log the
 `incident_payload(incident)` dict to a file instead of (or alongside) the webhook.
+
+The example above has no durable store. The shipped crash-safe handoff requires the exact
+combination of a bare `WebhookSink` and `SqlitePersistence`, passed to `percept.run` as
+`persistence=store` (use `restore=True` when resuming the core). It commits core state and the stable-
+ID webhook payload before sending, then replays pending payloads on startup. Delivery remains
+at-least-once, so the receiver must deduplicate by Incident `id`. Wrappers, arbitrary sinks, and
+other stores retain the legacy path, and episode continuity is still session-only. See
+[Scope and persistence](../incidents/scope-and-persistence.md#crash-safe-webhook-handoff-is-a-separate-narrow-contract)
+for the exact boundary.
 
 ---
 

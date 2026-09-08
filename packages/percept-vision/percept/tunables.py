@@ -396,7 +396,9 @@ _SETTINGS: tuple[TunableSpec, ...] = (
     TunableSpec(
         path="Settings.edge.ego_compensate", owner="SourceProfile", visibility="public",
         safe_to_optimize=False, default=False, value_type="bool", env_var="PERCEPT_EGO_COMPENSATE",
-        requires_recompile=True, risk="medium", note="remove global camera motion before diffing.",
+        requires_recompile=True, risk="medium",
+        note="moving cameras only: estimate and remove global translation, then summarize the aligned "
+             "residual with salience_stat so its per-stat threshold remains in the correct unit.",
     ),
     TunableSpec(
         path="Settings.edge.motion_gate_block_max", owner="SourceProfile", visibility="public",

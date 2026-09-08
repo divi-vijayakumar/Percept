@@ -496,15 +496,21 @@ class Episode:
     # Persistence is SESSION-ONLY today (ADR-006): ``Percept.snapshot()`` does not carry the
     # episode map and ``Percept.restore()`` emits an ``episode_memory_reset`` health event instead of
     # rehydrating one. These two methods exist so a LATER phase can turn persistence ON without reshaping
-    # the type. The design point that makes that safe: every field here is either an identifier or a
-    # STREAM-TIME instant (``started_at`` / ``last_seen`` are frame timestamps on the same clock a
-    # snapshot's deadlines are), so they rebase cleanly the way ``deadline_at`` already does — UNLIKE a
-    # wall-vs-monotonic ``_dwell_since``-style base, which has no recoverable duration after a reboot and
-    # is exactly why the naive snapshot was refused. ``exemplar`` / ``representative`` are opaque payloads
-    # the caller owns; a persistence phase must supply their (de)serialization, so they are carried as-is
-    # here and a non-JSON-able payload is that phase's problem to solve, not silently dropped.
+    # the type. Every temporal field is a STREAM-TIME instant (``started_at`` / ``last_seen`` / ``t_end``
+    # and revision ``t`` use the same clock as the evidence), so a persistence phase can rebase them the
+    # way ``deadline_at`` already does — UNLIKE a wall-vs-monotonic ``_dwell_since``-style base, which has
+    # no recoverable duration after a reboot and is exactly why the naive snapshot was refused.
+    # ``exemplar`` / ``representative`` and values are opaque payloads the caller owns; a persistence
+    # phase must supply their (de)serialization, so they are carried as-is here and a non-JSON-able
+    # payload is that phase's problem to solve, not silently dropped.
     def to_dict(self) -> dict:
-        """JSON-able view of the episode (forward seam — see the class note). Not called in v1.4."""
+        """JSON-structural view of the episode (forward seam — see the class note).
+
+        Every SDK-owned value is represented by JSON primitives, including each :class:`Revision`.
+        The two opaque evidence payloads and caller-owned ``value`` fields are carried losslessly, so
+        they must themselves be JSON-encodable when a caller writes this dict as JSON. Not called by
+        the v1.4 snapshot path.
+        """
         return {
             "id": self.id,
             "goal_id": self.goal_id,
@@ -516,8 +522,19 @@ class Episode:
             "subject_key": self.subject_key,
             "observations": self.observations,
             "judged_observations": self.judged_observations,
+            "t_end": self.t_end,
+            "value": self.value,
+            "incident_id": self.incident_id,
             "last_confirmed": self.last_confirmed,
-            "revisions": list(self.revisions),
+            "revisions": [
+                {
+                    "kind": revision.kind,
+                    "t": revision.t,
+                    "value": revision.value,
+                    "incident_id": revision.incident_id,
+                }
+                for revision in self.revisions
+            ],
         }
 
     def to_judge_dict(
@@ -584,7 +601,31 @@ class Episode:
         """Rebuild an :class:`Episode` from :meth:`to_dict` (forward seam). Not called in v1.4.
 
         Stream-time fields (``started_at`` / ``last_seen``) are stored as-taken; a persistence phase
-        rebases them into the fresh monotonic frame at restore, the same way deadlines are rebased."""
+        rebases them into the fresh monotonic frame at restore, the same way deadlines are rebased.
+
+        Payloads produced before the full-state seam omit ``t_end`` / ``value`` / ``incident_id`` and
+        may carry live :class:`Revision` objects rather than JSON dictionaries. Both shapes remain
+        readable: omitted fields take their historical ``None`` default and live revisions pass
+        through unchanged, while JSON revision rows are rehydrated to the typed object.
+        """
+        revisions: list[Revision] = []
+        for raw in d.get("revisions", []) or []:
+            if isinstance(raw, Revision):
+                revisions.append(raw)
+                continue
+            if not isinstance(raw, dict):
+                raise TypeError(
+                    "episode revision must be a Revision or a JSON object, "
+                    f"got {type(raw).__name__}"
+                )
+            revisions.append(
+                Revision(
+                    kind=raw["kind"],
+                    t=raw["t"],
+                    value=raw.get("value"),
+                    incident_id=raw.get("incident_id"),
+                )
+            )
         return cls(
             id=d["id"],
             goal_id=d["goal_id"],
@@ -598,8 +639,11 @@ class Episode:
             # A payload written before the judged/served split existed carries only one count; read
             # it as fully judged, which is what it was (nothing was ever served without a judge call).
             judged_observations=d.get("judged_observations", d.get("observations", 1)),
+            t_end=d.get("t_end"),
+            value=d.get("value"),
+            incident_id=d.get("incident_id"),
             last_confirmed=d.get("last_confirmed"),
-            revisions=list(d.get("revisions", [])),
+            revisions=revisions,
         )
 
 

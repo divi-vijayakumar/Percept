@@ -1143,7 +1143,7 @@ class InterestProjectionSharingTests(unittest.TestCase):
         )
 
     def test_a_worker_owned_route_relabels_the_detector_on_both_recorders(self) -> None:
-        # coast/audio are worker routes, not gate detectors, so the gate's detector identity must not
+        # coast/audio/candidate are worker routes, not gate detectors, so the gate's identity must not
         # be borrowed for them. One function decides that, so replay cannot disagree.
         outcome = _Outcome(goal_id="w", score=0.9, detector_id="motion_score.block_max")
         gate_owned = interest_admission_from_outcome(outcome, evidence_id="ev", cause="motion")
@@ -1152,6 +1152,11 @@ class InterestProjectionSharingTests(unittest.TestCase):
         routed = interest_admission_from_outcome(outcome, evidence_id="ev", cause="coast")
         self.assertEqual(routed.detector_id, "runtime.coast")
         self.assertEqual(routed.admission_id, "runtime.admission.coast")
+        candidate = interest_admission_from_outcome(
+            outcome, evidence_id="ev", cause="candidate"
+        )
+        self.assertEqual(candidate.detector_id, "runtime.candidate")
+        self.assertEqual(candidate.admission_id, "runtime.admission.candidate")
         dropped = interest_admission_from_outcome(outcome, evidence_id="ev", cause=None)
         self.assertFalse(dropped.admitted)
         # The gate admitted this Watch and the caller then dropped it: there is no gate reason to
@@ -1342,7 +1347,9 @@ class LiveInterestVocabularyTests(unittest.TestCase):
     """The three closed live frozensets have no single source of truth — pin the relationship."""
 
     def test_live_causes_are_exactly_the_gate_causes_plus_the_worker_owned_routes(self) -> None:
-        self.assertEqual(set(_LIVE_CAUSES), set(ADMISSION_CAUSES) | {"coast", "audio"})
+        self.assertEqual(
+            set(_LIVE_CAUSES), set(ADMISSION_CAUSES) | {"coast", "audio", "candidate"}
+        )
 
     def test_live_non_admission_reasons_are_exactly_the_gate_reasons_plus_the_catch_all(
         self,

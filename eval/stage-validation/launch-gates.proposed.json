@@ -1,0 +1,58 @@
+{
+  "kind": "percept-launch-qualification-contract",
+  "version": 1,
+  "status": "proposed",
+  "approved_by": null,
+  "approved_at": null,
+  "quality": {
+    "recall_target": 0.99,
+    "recall_confidence": 0.95,
+    "recall_unit": "independent_ground_truth_occurrence",
+    "precision_target_recommendation": 0.99,
+    "precision_target": null,
+    "precision_confidence": 0.95,
+    "precision_unit": "receiver_observed_logical_notification",
+    "false_alerts_per_fully_labelled_negative_source_hour_recommendation": 0.01,
+    "false_alerts_per_fully_labelled_negative_source_hour": null,
+    "misses_include": [
+      "no_sdk_incident",
+      "no_receiver_arrival",
+      "no_successful_receiver_ack",
+      "budget_suppressed_judgment"
+    ]
+  },
+  "latency": {
+    "primary": "ground_truth_occurrence_onset_to_successful_webhook_receiver_ack",
+    "timely_deadline_s": null,
+    "required_sensitivity_s": [2.0, 5.0, 10.0],
+    "delivered_event_percentiles": [0.5, 0.95, 0.99]
+  },
+  "economy": {
+    "absolute_ceiling_usd": 0.1,
+    "denominator": "source_stream_hour",
+    "scope": "all_in",
+    "include": [
+      "settled_provider_usage",
+      "retries_timeouts_cancelled_calls",
+      "compute",
+      "storage",
+      "egress",
+      "queue_and_outbox",
+      "webhook_delivery"
+    ]
+  },
+  "statistics": {
+    "recall_method": "one_sided_95pct_clopper_pearson_upper_miss_bound",
+    "precision_method": "one_sided_95pct_clopper_pearson_lower_precision_bound",
+    "familywise_method": "bonferroni_over_primary_cells",
+    "cluster_sensitivity": "site_camera_day_bootstrap_or_hierarchical_beta_binomial",
+    "minimum_zero_miss_independent_occurrences_per_unadjusted_cell": 299,
+    "minimum_zero_miss_independent_occurrences_per_12_cell_family": 546
+  },
+  "supported_primary_cells": {
+    "mechanics": ["state", "transition", "duration", "count"],
+    "source_classes": ["fixed_camera", "moving_or_ego_camera", "document_or_screen"],
+    "audio_is_separate": true
+  },
+  "note": "This file is deliberately not approved. The launch decision owner must select precision, false-alert, and timely receiver-ACK bars and record approval before --qualification can make provider calls."
+}

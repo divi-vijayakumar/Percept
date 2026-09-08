@@ -14,6 +14,7 @@ import unittest
 from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
+from percept.edge.detectors import Boundary, register_detector, unregister
 from percept.edge.tier0 import gray_frame
 from percept.runtime import RuntimeStats, run
 
@@ -58,6 +59,48 @@ class RuntimeDetectorTests(unittest.TestCase):
         stats = RuntimeStats()
         asyncio.run(_collect(core, OSCILLATING, stats=stats))
         self.assertEqual(stats.boundaries, 0)
+
+    def test_admission_detector_wakes_one_goal_judge_instead_of_counting_boundary(self):
+        class OneCandidate:
+            signal = "frame"
+            name = "test-one-candidate"
+
+            def __init__(self):
+                self.seen = 0
+
+            def reset(self):
+                self.seen = 0
+
+            def push(self, t, frame):
+                self.seen += 1
+                return (
+                    [Boundary(self.name, "candidate", t, 1.0)]
+                    if self.seen == 2 else []
+                )
+
+        register_detector(
+            OneCandidate.name,
+            OneCandidate,
+            senses="test candidate",
+            output="one candidate",
+            route="admission",
+        )
+        try:
+            core = _core(detectors=[OneCandidate.name])
+            core.vision._script["x"] = Verdict(  # deterministic test backend fixture
+                satisfied=True, confidence=0.95, evidence="verified"
+            )
+            stats = RuntimeStats()
+            incidents = asyncio.run(
+                _collect(core, [(float(i), STILL, "x") for i in range(4)], stats=stats)
+            )
+        finally:
+            unregister(OneCandidate.name)
+
+        self.assertEqual(stats.candidate_wakes, 1)
+        self.assertEqual(stats.judge_calls, 1)
+        self.assertEqual(stats.boundaries, 0)
+        self.assertEqual(len(incidents), 1)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ policy — NOT to loosen an assertion.
 from __future__ import annotations
 
 import asyncio
+import json
 import unittest
 import warnings
 
@@ -27,7 +28,7 @@ from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
 from percept.behavior_routes import UndrivenBehaviorRouteWarning
 from percept.edge.tier0 import gray_frame
-from percept.episodes import Episode, EpisodeLog
+from percept.episodes import Episode, EpisodeLog, Revision
 from percept.persistence import InMemoryPersistence
 from percept.runtime import run
 
@@ -153,6 +154,54 @@ class TheForwardSeamExistsButIsNotWired(unittest.TestCase):
                      status="open", subject_key="cup-A", observations=3)
         back = Episode.from_dict(ep.to_dict())
         self.assertEqual(back, ep)
+
+    def test_terminal_episode_round_trips_through_json_without_losing_revision_state(self):
+        ep = Episode(
+            id="claim:ep7",
+            goal_id="claim",
+            started_at=10.0,
+            last_seen=42.0,
+            exemplar={"speaker": "alice"},
+            representative={"speaker": "alice", "amount": 25_000},
+            status="closed",
+            subject_key="budget",
+            observations=4,
+            judged_observations=3,
+            t_end=43.5,
+            value={"amount": 25_000, "currency": "USD"},
+            incident_id="inc-claim-2",
+            last_confirmed=40.0,
+            revisions=[
+                Revision("opened", 10.0, {"amount": 40_000}, "inc-claim-1"),
+                Revision("updated", 42.0, {"amount": 25_000}, "inc-claim-2"),
+                Revision("closed", 43.5, {"amount": 25_000}, "inc-claim-2"),
+            ],
+        )
+
+        wire = json.loads(json.dumps(ep.to_dict()))
+        back = Episode.from_dict(wire)
+
+        self.assertEqual(back, ep)
+        self.assertTrue(all(isinstance(row, Revision) for row in back.revisions))
+        self.assertEqual(wire["revisions"][1]["incident_id"], "inc-claim-2")
+
+    def test_pre_full_state_payload_remains_readable(self):
+        """The old in-process seam omitted terminal fields and carried live Revision objects."""
+        legacy = {
+            "id": "e1",
+            "goal_id": "g1",
+            "started_at": 1.0,
+            "last_seen": 2.0,
+            "status": "open",
+            "revisions": [Revision("opened", 1.0)],
+        }
+
+        back = Episode.from_dict(legacy)
+
+        self.assertIsNone(back.t_end)
+        self.assertIsNone(back.value)
+        self.assertIsNone(back.incident_id)
+        self.assertEqual(back.revisions, [Revision("opened", 1.0)])
 
     def test_stream_time_fields_survive_the_seam(self):
         """started_at/last_seen are stream-time instants — they must be carried verbatim so a later

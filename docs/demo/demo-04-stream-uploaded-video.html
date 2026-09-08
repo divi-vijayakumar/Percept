@@ -632,7 +632,7 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
   const salienceOf=r=>{const s=(r.data||{}).salience; return Number.isFinite(s)?` · salience ${s.toFixed(3)}`:''};
   const admittedRec=r=>r.stage==='source.frame'||!!(r.data&&(r.data.escalate||r.data.coast_admit));
   const gateCopy=r=>{const d=r.data||{};return `gate says ${(d.action||'?').toUpperCase()}${d.reason?' — '+d.reason:''}`};
-  const foldCopy=r=>{const f=(r.data||{}).fold||{};return `identity/episode fold (advisory) · episode ${f.episode_id||'none'}`};
+  const foldCopy=r=>{const d=r.data||{};return `identity/episode fold (governing) · episode ${d.fold_episode_id||'none'} · match ${d.fold_match||'none'}`};
   const healthCopy=r=>{const d=r.data||{};return `${d.kind||'health'}${d.state&&d.state!=='info'?' · '+d.state:''}${d.error?' · '+String(d.error).slice(0,70):''}`};
 
   // The funnel deliberately speaks the RUNTIME's vocabulary, not tier-0's, so it agrees with the
@@ -751,7 +751,10 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
     const fin=(traceRec(traceId,'judge.finished')||{}).data||{};
     const jm=(traceRec(traceId,'judgment.event')||{}).data||{};
     const inc=(traceRec(traceId,'incident.created')||{}).data||{};
-    const fold=((traceRec(traceId,'shadow.fold')||{}).data||{}).fold||{};
+    const foldData=(traceRec(traceId,'shadow.fold')||{}).data||{};
+    const shadowFold=foldData.fold||{};
+    const governingEpisodeId=foldData.fold_episode_id;
+    const governingMatch=foldData.fold_match;
     const evSeq=evidenceSeqFor(traceId);
     const evFrame=evSeq!=null?state.records.find(r=>r.stage==='source.frame'&&r.seq===evSeq):null;
     const t=rel(num(gate.source_ts));
@@ -793,8 +796,8 @@ main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto
           ${row('judgment id',jm.judgment_event_id)}${row('dispatch #',jm.dispatch_seq)}
           ${row('evidence origin',jm.evidence_origin)}${row('evidence seq',jm.evidence_seq)}
           ${row('incident id',inc.incident_id)}
-          ${fold.episode_id||fold.match?`<div class="jStage">identity · episode (advisory, shadow)</div>`:''}
-          ${row('episode',fold.episode_id)}${row('match',fold.match)}${row('mutation',fold.mutation)}
+          ${governingEpisodeId||governingMatch?`<div class="jStage">identity · episode (governing)</div>`:''}
+          ${row('episode',governingEpisodeId)}${row('match',governingMatch)}${row('shadow mutation',shadowFold.mutation)}
         </dl>
       </details>`;
     if(evFrame){

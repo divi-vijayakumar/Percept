@@ -55,7 +55,7 @@ The architecture diagram is **generated from the code**
 |---|---|---|
 | [Audio modality — the acoustic-onset → judge wake path](sources/audio.md) | Fused vision + audio judging. | 2026-07-23 |
 | [Derive a profile for a new environment](sources/source-profiles.md) | Turn labelled fixtures + a ladder into a provenance-stamped profile. | 2026-07-23 |
-| [Two apps on one command seam — a silent watchdog and a voice assistant](sources/voice-and-watchdog.md) | The voice-escalation seam and long-running watches. | 2026-07-16 |
+| [Two apps on one command seam — a silent watchdog and a voice assistant](sources/voice-and-watchdog.md) | The voice-escalation seam and long-running watches. | 2026-08-01 |
 
 ## Admission — the eye
 
@@ -87,7 +87,7 @@ The architecture diagram is **generated from the code**
 
 | page | what it covers | updated |
 |---|---|---|
-| [Scope and persistence (percept 1.0.0)](incidents/scope-and-persistence.md) | **Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart. | 2026-07-23 |
+| [Scope and persistence (percept 1.0.0)](incidents/scope-and-persistence.md) | **Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart. | 2026-08-01 |
 
 ## Configuration
 

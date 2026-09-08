@@ -1,6 +1,6 @@
 ---
 title: Scope and persistence (percept 1.0.0)
-updated: 2026-07-23
+updated: 2026-08-01
 applies_to: percept-vision 1.0.0
 status: stable
 ---
@@ -78,6 +78,62 @@ If a subject reference carries `scope='durable'`, that describes **the identifie
 It says **nothing** about whether episode state, gate edges or counts survive a process restart.
 They do not. The two readings are easy to conflate and the cost of conflating them is silent
 under-counting after a redeploy.
+
+### Crash-safe webhook handoff is a separate, narrow contract
+
+The shipped automatic transactional-delivery path applies only when `percept.run(...)` receives
+both a **bare** `WebhookSink` as `on_incident` and a `SqlitePersistence` store as `persistence`.
+For that exact combination, the runtime:
+
+1. freezes the Incident JSON with its stable `id`;
+2. commits that payload and the post-fire core snapshot in one SQLite transaction **before the
+   webhook request can begin**;
+3. on startup, replays any pending payloads in deterministic oldest-first order before it starts
+   consuming the source; and
+4. after a successful send, atomically removes the pending row and persists the delivered-ID ledger.
+
+This is **at-least-once delivery**, not exactly-once delivery. A process can die after the receiver
+accepts the request but before the local ACK transaction commits. The next process then sends the
+same persisted payload again with the same stable Incident `id`; the downstream receiver must
+deduplicate on that ID.
+
+The boundary is intentionally explicit. Wrapping the webhook, supplying an arbitrary callback or
+other sink, or using `InMemoryPersistence` or another store without the transactional-outbox
+capability retains the legacy delivery path; it does not gain a durable pending-payload queue. A
+custom store would have to implement that capability explicitly.
+
+This closes one **delivery handoff** crash window. It does not widen the cognition snapshot and does
+not persist `Percept.episodes`, counting continuity, pending dwell, or compiled-Watch runtime
+bindings. The episode restart limitations above remain unchanged.
+
+### The durable audit archive is storage, not live continuity
+
+`percept.archive.SqliteAuditArchive` is an opt-in, standalone SQLite archive for three immutable
+record families: emitted episode/Incident revisions, complete `EventLog` history/count checkpoints,
+and copied `ActionLog` records. It gives each row a stable key, strict canonical JSON plus an
+integrity hash, an append cursor, atomic batch insertion, idempotent re-append, collision refusal,
+and deterministic cursor reads. It also stores versioned `HotTailPolicy` metadata with explicit
+record and byte ceilings.
+
+That capability is **not wired into `percept.run`, `EpisodeLog`, `EventLog`, or `ActionLog` yet**.
+`HotTailPolicy` reports `enforcement="metadata_only"` and `eviction_wired=false`; declaring one does
+not evict live memory. An application may write archive records explicitly, but the SDK does not yet
+claim that every live mutation reached the archive.
+
+Before archive-backed hot-tail eviction or restart continuity can be enabled, runtime integration
+must do all of the following:
+
+1. mint stable IDs for ActionLog appends and EventLog checkpoints at their mutation source;
+2. add an owner-thread write-through seam that commits each archive record before its live record is
+   eligible for eviction, atomically with any cognition snapshot it depends on;
+3. archive an episode revision and its frozen Incident together before trimming either live tail;
+4. define restore/reconciliation for EventLog counters and episode stream-time fields, including
+   discontinuity and clock-rebase rules; and
+5. make archive failures fail loud, qualify each crash boundary, and only then enforce the declared
+   record/byte tail limits.
+
+Until those steps land, the archive is useful for explicit audit retention and offline inspection;
+it does not change the session-only episode semantics stated above.
 
 ---
 

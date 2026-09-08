@@ -1,11 +1,11 @@
 {
   "suite": "SV-3.x judge pool boundedness",
-  "generated_at": "2026-07-26T15:43:01-0700",
+  "generated_at": "2026-08-01T12:23:14-0700",
   "runtime": {
     "percept_version": "1.0.0",
-    "judge_pool_module": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept/backends/judge_pool.py",
+    "judge_pool_module": "/private/tmp/percept-launch/eval-venv/lib/python3.12/site-packages/percept/backends/judge_pool.py",
     "python": "3.12.8",
-    "executable": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python"
+    "executable": "/private/tmp/percept-launch/eval-venv/bin/python"
   },
   "network_calls": 0,
   "provider_credentials_used": false,
@@ -38,17 +38,17 @@
         {
           "name": "sustained: offered load genuinely exceeded served capacity",
           "passed": true,
-          "detail": "offered 1761/s vs served capacity ~200/s"
+          "detail": "offered 1649/s vs served capacity ~200/s"
         },
         {
           "name": "sustained: excess shed with a `capacity` receipt",
           "passed": true,
-          "detail": "capacity receipts=7334, fully-shed decisions=3556"
+          "detail": "capacity receipts=7328, fully-shed decisions=3552"
         },
         {
           "name": "sustained: queue depth did not grow without bound",
           "passed": true,
-          "detail": "quartile means [7.95, 7.95, 7.97, 8.0], slope 0.00006/tick"
+          "detail": "quartile means [7.62, 7.61, 7.56, 7.6], slope -0.00005/tick"
         },
         {
           "name": "sustained: peak queue depth stayed far below units offered",
@@ -115,14 +115,14 @@
         "sustained": {
           "units_dispatched": 4000,
           "units_completed": 4000,
-          "wall_s": 2.271,
-          "offered_decisions_per_s": 1761.0,
+          "wall_s": 2.426,
+          "offered_decisions_per_s": 1648.8,
           "served_capacity_decisions_per_s": 200.0,
           "outcomes": {
-            "served": 444,
-            "shed": 3556
+            "served": 448,
+            "shed": 3552
           },
-          "shed_fraction": 0.889,
+          "shed_fraction": 0.888,
           "peak_concurrent_provider_calls_per_route": {
             "route_a": 4,
             "route_b": 2
@@ -137,18 +137,18 @@
           "peak_queue_depth_outstanding_decisions": 8,
           "peak_live_call_route_tasks": 6,
           "outstanding_quartile_means": [
-            7.95,
-            7.95,
-            7.97,
-            8.0
+            7.62,
+            7.61,
+            7.56,
+            7.6
           ],
-          "outstanding_slope_per_tick": 6e-05,
+          "outstanding_slope_per_tick": -5.3e-05,
           "receipts_total_observed": 8000,
           "receipts_by_outcome": {
-            "capacity": 7334,
-            "decisive": 666
+            "capacity": 7328,
+            "decisive": 672
           },
-          "capacity_receipts": 7334,
+          "capacity_receipts": 7328,
           "retained_receipt_ring_len": 256,
           "receipt_limit": 256,
           "leak_live_provider_calls": 0,
@@ -162,7 +162,7 @@
           "gap_s": 0.015,
           "units_dispatched": 8000,
           "units_completed": 8000,
-          "wall_s": 0.224,
+          "wall_s": 0.371,
           "outcomes": {
             "served": 20,
             "shed": 7980
@@ -192,8 +192,8 @@
             804
           ],
           "residual_slope_per_burst": 0.1212,
-          "offered_decisions_per_s": 35696.1,
-          "completed_decisions_per_s": 35696.1,
+          "offered_decisions_per_s": 21563.0,
+          "completed_decisions_per_s": 21563.0,
           "unbounded_queue_would_have_reached": 8000,
           "receipts_by_outcome": {
             "capacity": 15970,
@@ -221,7 +221,7 @@
         {
           "name": "A: judge() returned within the deadline",
           "passed": true,
-          "detail": "elapsed=0.3013s vs deadline=0.3s (+0.12s slack)"
+          "detail": "elapsed=0.3025s vs deadline=0.3s (+0.12s slack)"
         },
         {
           "name": "A: returned an UNKNOWN-shaped fail-closed verdict",
@@ -236,7 +236,7 @@
         {
           "name": "A: the declared latency_slo_s did NOT truncate the call early",
           "passed": true,
-          "detail": "declared SLO 0.05s but the pool ran the route for 0.3013s (SLO is a routing ceiling, not a timeout)"
+          "detail": "declared SLO 0.05s but the pool ran the route for 0.3025s (SLO is a routing ceiling, not a timeout)"
         },
         {
           "name": "A: the pool actually cancelled the provider call",
@@ -251,7 +251,7 @@
         {
           "name": "B: judge() still returned at the deadline",
           "passed": true,
-          "detail": "elapsed=0.3014s"
+          "detail": "elapsed=0.3007s"
         },
         {
           "name": "B: the late high-confidence reply did NOT resurrect the decision",
@@ -281,7 +281,7 @@
         {
           "name": "B: a decision issued while the slot was occupied shed fast instead of queueing",
           "passed": true,
-          "detail": "class=shed, elapsed=0.0002s, capacity receipts=1"
+          "detail": "class=shed, elapsed=0.0003s, capacity receipts=1"
         },
         {
           "name": "B: the slot was released once the hostile adapter actually terminated",
@@ -291,7 +291,7 @@
         {
           "name": "C: the decision WAS concluded by deadline expiry, returning the retained uncertain reply",
           "passed": true,
-          "detail": "elapsed=0.3007s, class=served, receipts={'cancelled': 1, 'deadline': 1, 'uncertain': 1} (judge_pool.py:695 prefers a retained `uncertain` over the synthesised UNKNOWN)"
+          "detail": "elapsed=0.3024s, class=served, receipts={'cancelled': 1, 'deadline': 1, 'uncertain': 1} (judge_pool.py:695 prefers a retained `uncertain` over the synthesised UNKNOWN)"
         },
         {
           "name": "C: a provider cannot rewrite a decision the pool already concluded at the deadline",
@@ -301,7 +301,7 @@
         {
           "name": "D: terminal deadline raised TimeoutError within the deadline and latched the error",
           "passed": true,
-          "detail": "raised=TimeoutError, elapsed=0.1510s, latched=TimeoutError"
+          "detail": "raised=TimeoutError, elapsed=0.1522s, latched=TimeoutError"
         },
         {
           "name": "D: the raising path still released the route slot",
@@ -314,7 +314,7 @@
           "deadline_s": 0.3,
           "declared_latency_slo_s": 0.05,
           "actual_provider_latency_s": 1.5,
-          "elapsed_s": 0.3013,
+          "elapsed_s": 0.3025,
           "verdict_class": "deadline",
           "verdict_satisfied": false,
           "verdict_confidence": 0.0,
@@ -326,7 +326,7 @@
           "provider_cancellations": 1
         },
         "B_hostile_late_reply": {
-          "elapsed_s": 0.3014,
+          "elapsed_s": 0.3007,
           "provider_delay_s": 0.8999999999999999,
           "cancellation_swallowed_by_adapter": 1,
           "adapter_returned_late": 1,
@@ -347,7 +347,7 @@
           "route_inflight_at_return": 1,
           "route_inflight_after_late_reply": 0,
           "second_decision_while_occupied": "shed",
-          "second_decision_elapsed_s": 0.0002,
+          "second_decision_elapsed_s": 0.0003,
           "capacity_receipts_while_occupied": 1,
           "receipt_outcomes_before_late_reply": {
             "cancelled": 1,
@@ -357,7 +357,7 @@
         },
         "C_returned_object_aliasing": {
           "scenario": "route A replies low-confidence before expiry; route B never replies; the pool concludes the decision by DEADLINE EXPIRY and hands back route A's object",
-          "elapsed_s": 0.3007,
+          "elapsed_s": 0.3024,
           "verdict_class": "served",
           "receipts_by_outcome": {
             "cancelled": 1,
@@ -388,7 +388,7 @@
         },
         "D_terminal_deadline": {
           "raised": "TimeoutError",
-          "elapsed_s": 0.151,
+          "elapsed_s": 0.1522,
           "latched_error": "TimeoutError",
           "receipts_by_outcome": {
             "cancelled": 1,
@@ -424,7 +424,7 @@
         {
           "name": "1: rejection was immediate, not a deadline burn",
           "passed": true,
-          "detail": "elapsed=0.00004s vs deadline=0.6s"
+          "detail": "elapsed=0.00002s vs deadline=0.6s"
         },
         {
           "name": "1: fail-closed UNKNOWN verdict, no fabrication",
@@ -472,7 +472,7 @@
           "evidence_shape": "single_image",
           "deadline_s": 0.6,
           "declared_latency_slo_s": 4.8,
-          "elapsed_s": 4e-05,
+          "elapsed_s": 2e-05,
           "verdict_class": "no_route",
           "adapter_invocations": 0,
           "receipts_by_outcome": {
@@ -485,7 +485,7 @@
         "case_2_in_slo_but_slow": {
           "declared_latency_slo_s": 0.3,
           "actual_provider_latency_s": 3.0,
-          "elapsed_s": 0.6012,
+          "elapsed_s": 0.6027,
           "verdict_class": "deadline",
           "adapter_invocations": 1,
           "receipts_by_outcome": {
@@ -545,7 +545,7 @@
         {
           "name": "single_image: queue depth bounded under overload",
           "passed": true,
-          "detail": "peak outstanding=6, quartile means=[5.64, 5.88, 5.88, 5.76]"
+          "detail": "peak outstanding=6, quartile means=[5.64, 5.68, 5.72, 5.64]"
         },
         {
           "name": "single_image: zero in-flight leak at shutdown",
@@ -555,7 +555,7 @@
         {
           "name": "single_image: outer deadline authoritative + correctly shaped receipt",
           "passed": true,
-          "detail": "elapsed=0.2509s, receipts={'cancelled': 1, 'deadline': 1}"
+          "detail": "elapsed=0.2523s, receipts={'cancelled': 1, 'deadline': 1}"
         },
         {
           "name": "single_image: reflex over-SLO route rejected at selection (adapter never called)",
@@ -575,12 +575,12 @@
         {
           "name": "audio: excess sheds with a `capacity` receipt",
           "passed": true,
-          "detail": "capacity receipts=798, fully-shed=798"
+          "detail": "capacity receipts=797, fully-shed=797"
         },
         {
           "name": "audio: queue depth bounded under overload",
           "passed": true,
-          "detail": "peak outstanding=6, quartile means=[5.68, 5.68, 5.68, 5.8]"
+          "detail": "peak outstanding=6, quartile means=[5.88, 5.65, 5.68, 5.67]"
         },
         {
           "name": "audio: zero in-flight leak at shutdown",
@@ -590,7 +590,7 @@
         {
           "name": "audio: outer deadline authoritative + correctly shaped receipt",
           "passed": true,
-          "detail": "elapsed=0.2512s, receipts={'cancelled': 1, 'deadline': 1}"
+          "detail": "elapsed=0.2521s, receipts={'cancelled': 1, 'deadline': 1}"
         },
         {
           "name": "audio: reflex over-SLO route rejected at selection (adapter never called)",
@@ -610,12 +610,12 @@
         {
           "name": "fused: excess sheds with a `capacity` receipt",
           "passed": true,
-          "detail": "capacity receipts=798, fully-shed=798"
+          "detail": "capacity receipts=792, fully-shed=792"
         },
         {
           "name": "fused: queue depth bounded under overload",
           "passed": true,
-          "detail": "peak outstanding=6, quartile means=[5.76, 5.76, 5.96, 5.88]"
+          "detail": "peak outstanding=9, quartile means=[5.64, 5.72, 5.72, 5.88]"
         },
         {
           "name": "fused: zero in-flight leak at shutdown",
@@ -625,7 +625,7 @@
         {
           "name": "fused: outer deadline authoritative + correctly shaped receipt",
           "passed": true,
-          "detail": "elapsed=0.2512s, receipts={'cancelled': 1, 'deadline': 1}"
+          "detail": "elapsed=0.2511s, receipts={'cancelled': 1, 'deadline': 1}"
         },
         {
           "name": "fused: reflex over-SLO route rejected at selection (adapter never called)",
@@ -650,7 +650,7 @@
         {
           "name": "context_stream: queue depth bounded under overload",
           "passed": true,
-          "detail": "peak outstanding=9, quartile means=[5.84, 5.96, 5.72, 5.8]"
+          "detail": "peak outstanding=6, quartile means=[5.68, 5.68, 5.64, 5.68]"
         },
         {
           "name": "context_stream: zero in-flight leak at shutdown",
@@ -660,7 +660,7 @@
         {
           "name": "context_stream: outer deadline authoritative + correctly shaped receipt",
           "passed": true,
-          "detail": "elapsed=0.2513s, receipts={'cancelled': 1, 'deadline': 1}"
+          "detail": "elapsed=0.2526s, receipts={'cancelled': 1, 'deadline': 1}"
         },
         {
           "name": "context_stream: reflex over-SLO route rejected at selection (adapter never called)",
@@ -680,7 +680,7 @@
         {
           "name": "audio binding: the compiled-audio path is a closed allowlist (probe succeeded)",
           "passed": true,
-          "detail": "JudgePool -> ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter; FakeVision -> accepted"
+          "detail": "JudgePool -> ValueError: compiled audio requires an exact SDK-owned FakeVision, GeminiVision, or fused HostedByokVision adapter; FakeVision -> accepted"
         }
       ],
       "metrics": {
@@ -693,9 +693,9 @@
               "peak_queue_depth_outstanding_decisions": 6,
               "outstanding_quartile_means": [
                 5.64,
-                5.88,
-                5.88,
-                5.76
+                5.68,
+                5.72,
+                5.64
               ],
               "units": 900,
               "completed": 900,
@@ -715,7 +715,7 @@
             },
             "deadline": {
               "deadline_s": 0.25,
-              "elapsed_s": 0.2509,
+              "elapsed_s": 0.2523,
               "within_deadline": true,
               "verdict_class": "deadline",
               "unknown_shaped": true,
@@ -730,7 +730,7 @@
             },
             "reflex_rejection": {
               "adapter_invocations": 0,
-              "elapsed_s": 4e-05,
+              "elapsed_s": 2e-05,
               "verdict_class": "no_route",
               "receipts_by_outcome": {
                 "no_route": 1
@@ -751,18 +751,18 @@
               "peak_concurrent_provider_calls": 3,
               "peak_queue_depth_outstanding_decisions": 6,
               "outstanding_quartile_means": [
+                5.88,
+                5.65,
                 5.68,
-                5.68,
-                5.68,
-                5.8
+                5.67
               ],
               "units": 900,
               "completed": 900,
               "outcomes": {
-                "served": 102,
-                "shed": 798
+                "served": 103,
+                "shed": 797
               },
-              "capacity_receipts": 798,
+              "capacity_receipts": 797,
               "leak_live_provider_calls": 0,
               "leak_snapshot_inflight": 0,
               "leak_call_route_tasks": 0,
@@ -774,7 +774,7 @@
             },
             "deadline": {
               "deadline_s": 0.25,
-              "elapsed_s": 0.2512,
+              "elapsed_s": 0.2521,
               "within_deadline": true,
               "verdict_class": "deadline",
               "unknown_shaped": true,
@@ -789,7 +789,7 @@
             },
             "reflex_rejection": {
               "adapter_invocations": 0,
-              "elapsed_s": 4e-05,
+              "elapsed_s": 0.00012,
               "verdict_class": "no_route",
               "receipts_by_outcome": {
                 "no_route": 1
@@ -808,20 +808,20 @@
             "overload": {
               "declared_max_inflight": 3,
               "peak_concurrent_provider_calls": 3,
-              "peak_queue_depth_outstanding_decisions": 6,
+              "peak_queue_depth_outstanding_decisions": 9,
               "outstanding_quartile_means": [
-                5.76,
-                5.76,
-                5.96,
+                5.64,
+                5.72,
+                5.72,
                 5.88
               ],
               "units": 900,
               "completed": 900,
               "outcomes": {
-                "served": 102,
-                "shed": 798
+                "served": 108,
+                "shed": 792
               },
-              "capacity_receipts": 798,
+              "capacity_receipts": 792,
               "leak_live_provider_calls": 0,
               "leak_snapshot_inflight": 0,
               "leak_call_route_tasks": 0,
@@ -833,7 +833,7 @@
             },
             "deadline": {
               "deadline_s": 0.25,
-              "elapsed_s": 0.2512,
+              "elapsed_s": 0.2511,
               "within_deadline": true,
               "verdict_class": "deadline",
               "unknown_shaped": true,
@@ -848,7 +848,7 @@
             },
             "reflex_rejection": {
               "adapter_invocations": 0,
-              "elapsed_s": 2e-05,
+              "elapsed_s": 0.00011,
               "verdict_class": "no_route",
               "receipts_by_outcome": {
                 "no_route": 1
@@ -867,12 +867,12 @@
             "overload": {
               "declared_max_inflight": 3,
               "peak_concurrent_provider_calls": 3,
-              "peak_queue_depth_outstanding_decisions": 9,
+              "peak_queue_depth_outstanding_decisions": 6,
               "outstanding_quartile_means": [
-                5.84,
-                5.96,
-                5.72,
-                5.8
+                5.68,
+                5.68,
+                5.64,
+                5.68
               ],
               "units": 900,
               "completed": 900,
@@ -892,7 +892,7 @@
             },
             "deadline": {
               "deadline_s": 0.25,
-              "elapsed_s": 0.2513,
+              "elapsed_s": 0.2526,
               "within_deadline": true,
               "verdict_class": "deadline",
               "unknown_shaped": true,
@@ -907,7 +907,7 @@
             },
             "reflex_rejection": {
               "adapter_invocations": 0,
-              "elapsed_s": 2e-05,
+              "elapsed_s": 3e-05,
               "verdict_class": "no_route",
               "receipts_by_outcome": {
                 "no_route": 1
@@ -957,7 +957,7 @@
           }
         },
         "audio_judge_binding": {
-          "prepare_audio_judge_binding(JudgePool)": "ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter",
+          "prepare_audio_judge_binding(JudgePool)": "ValueError: compiled audio requires an exact SDK-owned FakeVision, GeminiVision, or fused HostedByokVision adapter",
           "prepare_audio_judge_binding(FakeVision)": "accepted",
           "trusted_adapters": [
             "percept.backends.fake.FakeVision",

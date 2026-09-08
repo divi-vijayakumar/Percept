@@ -413,7 +413,11 @@ def test_real_ordinary_template_uses_one_executed_judgment_per_dispatch(tmp_path
         if trace["stage"] == "judge.started"
     ]
     assert [dict(trace["data"]) for trace in started] == [
-        {"temporal": "single", "roi": False}
+        {
+            "temporal": "single",
+            "roi": False,
+            "latency_clock": "producer_monotonic_v1",
+        }
         for candidate in receipt.baseline.candidates
         if candidate.runtime_dispatched
     ]
@@ -1042,7 +1046,10 @@ def test_v2_ordinary_provider_failure_receipt_validates_before_not_comparable(
     assert [(trace["t"], dict(trace["data"])) for trace in degraded] == [
         (
             receipt.baseline.candidates[0].t,
-            {"cause": "RuntimeError('judgment provider unavailable')"},
+            {
+                "cause": "RuntimeError('judgment provider unavailable')",
+                "latency_clock": "producer_monotonic_v1",
+            },
         )
     ]
     degraded_health = [

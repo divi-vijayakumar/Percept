@@ -1,0 +1,21 @@
+{
+  "kind": "percept-authoring-cache",
+  "prompt_version": "primitive-authoring-1",
+  "model": "claude-haiku-4-5-20251001",
+  "entries": {
+    "5d23f59bced8388ad3d8da8e978c0168": {
+      "behavior_type": "watch",
+      "explicit": {
+        "Goal.state.type": "watch",
+        "Goal.state.perception.temporal": "strip",
+        "Goal.state.perception.sampling": "uniform",
+        "Goal.state.perception.n_frames": 5,
+        "Goal.state.perception.window_s": 2.0
+      },
+      "goal_text": "Two or more vehicles collide in the intersection.",
+      "key": "5d23f59bced8388ad3d8da8e978c0168",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "human"
+    }
+  }
+}

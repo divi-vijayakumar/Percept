@@ -148,7 +148,7 @@ def test_every_onset_anchored_leg_is_occurrence_aggregated():
         row("c1", (5.0, 40.0), 20.0, onset_to_ingest_s=19.0, onset_to_admission_s=19.5),
     ]
     out = LR.latency_summary(lat)
-    for leg in LR.ONSET_ANCHORED_LEGS:
+    for leg in LR.INTERNAL_ONSET_LEGS:
         assert out["legs"][leg]["n"] == 1, leg
     assert out["legs"]["onset_to_ingest_s"]["p50"] == 0.5
     assert out["legs"]["onset_to_admission_s"]["p50"] == 0.7
@@ -192,7 +192,84 @@ def test_schema_and_aggregation_unit_are_declared():
     out = LR.latency_summary([row("c1", (5.0, 10.0), 1.0)])
     assert out["schema"] == LR.LATENCY_SCHEMA
     assert out["aggregation_unit"]["onset_to_incident_s"] == "occurrence:earliest_incident"
+    assert out["aggregation_unit"]["onset_to_webhook_arrival_s"] == (
+        "occurrence:earliest_webhook_arrival"
+    )
     assert out["aggregation_unit"]["dispatch_to_verdict_s"] == "incident_emission"
+
+
+def test_receiver_latency_uses_earliest_successful_delivery_not_earliest_sdk_incident():
+    lat = [
+        row("c1", (5.0, 10.0), 1.0, onset_to_webhook_arrival_s=5.0,
+            onset_to_webhook_ack_s=5.2),
+        row("c1", (5.0, 10.0), 2.0, onset_to_webhook_arrival_s=3.0,
+            onset_to_webhook_ack_s=3.2),
+    ]
+    out = LR.latency_summary(lat, [case("c1", media_end=20.0, gt=[(5.0, 10.0)], incidents=[])])
+    assert out["legs"]["onset_to_incident_s"]["p50"] == 1.0
+    assert out["legs"]["onset_to_webhook_arrival_s"]["p50"] == 3.0
+    assert out["receiver_matched_occurrences"] == 1
+    assert out["receiver_timely_recall_all_gt"] == 0.0
+
+
+def test_receiver_delivery_misses_remain_in_all_gt_denominator():
+    lat = [row("c1", (5.0, 10.0), 1.0)]  # Incident exists, webhook record does not
+    rows = [case("c1", media_end=20.0, gt=[(5.0, 10.0), (12.0, 15.0)], incidents=[])]
+    out = LR.latency_summary(lat, rows)
+    assert out["matched_occurrences"] == 1
+    assert out["receiver_matched_occurrences"] == 0
+    assert out["receiver_missed_occurrences"] == 2
+    assert out["receiver_timely_recall_all_gt"] == 0.0
+
+
+def test_receiver_quality_scores_only_http_arrivals_and_penalizes_delivery_loss():
+    measured = case(
+        "c1",
+        media_end=20.0,
+        gt=[(5.0, 10.0), (12.0, 15.0)],
+        incidents=[6.0, 13.0, 18.0],
+    )
+    measured["latency_rows"] = [
+        {
+            "case_id": "c1",
+            "incident_media_ts": 6.0,
+            "matched_occurrence": [5.0, 10.0],
+            "webhook_receiver_observed": True,
+            "webhook_receiver_acked": True,
+            "onset_to_webhook_arrival_s": 1.0,
+        },
+        {
+            "case_id": "c1",
+            "incident_media_ts": 13.0,
+            "matched_occurrence": [12.0, 15.0],
+            "webhook_receiver_observed": False,
+            "webhook_receiver_acked": False,
+        },
+        {
+            "case_id": "c1",
+            "incident_media_ts": 18.0,
+            "matched_occurrence": None,
+            "webhook_receiver_observed": True,
+            "webhook_receiver_acked": True,
+        },
+    ]
+    measured["delivery"] = {"enabled": True}
+    out = LR.receiver_quality([measured])
+    assert out["occurrences_matched"] == 1
+    assert out["occurrences_missed"] == 1
+    assert out["occurrence_recall"] == 0.5
+    assert out["precision_per_emission"] == 0.5
+    assert out["timely_recall_2s"] == 0.5
+    assert out["receiver_arrivals"] == 2
+
+
+def test_historical_artifact_without_receiver_probe_reports_not_measured_not_zero_recall():
+    measured = case("c1", media_end=20.0, gt=[(5.0, 10.0)], incidents=[6.0])
+    measured["stages"] = {"stage4_cognition": {"gt_occurrences": 1}}
+    out = LR.receiver_quality([measured])
+    assert out["measured"] is False
+    assert out["occurrence_recall"] is None
+    assert out["precision_per_emission"] is None
 
 
 def test_input_rows_are_not_mutated():
@@ -283,6 +360,37 @@ def test_one_long_occurrence_weights_recall_once_and_emission_precision_many_tim
     assert q["negative_intervals_hit"] == 1
     assert q["precision_per_occurrence"] == pytest.approx(1 / 2)
     assert q["precision_per_emission_unit"] == "incident_emission"
+    # The strict headline uses the raw baseline's one-to-one event matcher: one duplicate can claim
+    # no second occurrence, so every extra message is a false positive.
+    strict = q["strict_one_to_one"]
+    assert strict["true_positives"] == 1
+    assert strict["false_positives"] == 127
+    assert strict["false_negatives"] == 0
+    assert strict["precision"] == pytest.approx(1 / 128)
+    assert strict["recall"] == 1.0
+    assert q["headline"] == strict
+
+
+def test_strict_headline_is_exactly_like_for_like_with_raw_baseline_matcher():
+    rows = [case("c1", media_end=20.0, gt=[(1.0, 4.0), (3.0, 5.0)],
+                 incidents=[3.5, 1.5, 10.0])]
+    expected = LR.score_temporal_events(
+        [(1.0, 4.0), (3.0, 5.0)],
+        [(3.5, 3.5), (1.5, 1.5), (10.0, 10.0)],
+        duration_s=20.0,
+        point_tolerance_s=LR.DEFAULT_POINT_TOLERANCE_S,
+    )
+    strict = LR.quality(rows, [])["headline"]
+    for key in ("true_positives", "false_positives", "false_negatives", "precision", "recall"):
+        assert strict[key] == expected[key]
+
+
+def test_legacy_precision_and_recall_fields_remain_present_beside_strict_headline():
+    q = LR.quality([case("c1", media_end=10.0, gt=[(1.0, 2.0)], incidents=[1.5])], [])
+    assert q["schema"] == LR.QUALITY_SCHEMA
+    assert q["headline"] == q["strict_one_to_one"]
+    for legacy in ("occurrence_recall", "precision_per_occurrence", "precision_per_emission"):
+        assert legacy in q
 
 
 def test_the_mislabelled_schema_1_key_is_gone_not_silently_repointed():
@@ -442,8 +550,8 @@ def test_missing_gt_is_reported_not_guessed():
 # PER-VERDICT PERSISTENCE
 # ==============================================================================================
 
-def test_verdict_schema_names_its_source_stage():
-    assert LR.VERDICT_SCHEMA == "percept.verdicts/1-gate-classified"
+def test_verdict_schema_names_primitive_aware_decisions():
+    assert LR.VERDICT_SCHEMA == "percept.verdicts/2-primitive-decision"
 
 
 # ==============================================================================================
@@ -453,7 +561,22 @@ def test_verdict_schema_names_its_source_stage():
 def test_both_shas_and_the_corpus_version_are_stamped():
     hp = LR.harness_provenance()
     assert hp["scorer_sha256"] and len(hp["scorer_sha256"]) == 64
-    assert hp["corpus_version"] in {"1.0", "1.1"} or hp["corpus_version"] == "unknown"
+    assert hp["corpus_version"] in {"1.0", "1.1", "1.2"} or hp["corpus_version"] == "unknown"
+    assert hp["corpus_sha256"]
+
+
+def test_external_corpus_path_is_stamped_without_post_run_crash(tmp_path, monkeypatch):
+    """PERCEPT_SV_CORPUS explicitly supports adopter-owned paths outside the repository."""
+    corpus = tmp_path / "diagnostic-corpus.json"
+    corpus.write_text('{"corpus_version":"diagnostic-1","cases":[]}')
+    monkeypatch.setattr(LR.SM, "corpus_path", lambda: corpus)
+    LR.harness_provenance.cache_clear()
+    try:
+        hp = LR.harness_provenance()
+    finally:
+        LR.harness_provenance.cache_clear()
+    assert hp["corpus_path"] == str(corpus.resolve())
+    assert hp["corpus_version"] == "diagnostic-1"
     assert hp["corpus_sha256"]
 
 

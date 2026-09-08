@@ -48,11 +48,11 @@ What this file does NOT establish
 Pins and characterizations, and what a fixer does with each
 -----------------------------------------------------------
 * ``test_a_cache_served_verdict_is_not_an_actual_judge_call`` — **FIXED** (was a strict xfail;
-  FIND-REFLEX-01). The trace used to count a cache serve as a judge call: ``percept/tracing.py``
-  states the identity ``actual_judge_calls = judge_completed - judge_direct_hits`` and carried
-  ``judge_direct_hits`` only for the other zero-cost path (a confident ``DirectJudge`` hit), while a
-  cache HIT — the same shape, the gate still classifies, zero vision calls spent — was subtracted by
-  nothing. Measured on this scenario: the cache cuts provider calls from 6 to 3 while
+  FIND-REFLEX-01). The trace used to count a cache serve as a judge call. It now publishes
+  ``provider_calls`` in explicit provider-call units, derived from logical starts minus every verdict
+  carrying the shared zero-spend serve marker. A cache HIT — the gate still classifies, but zero
+  vision calls are spent — is therefore not spend. Measured on this scenario: the cache cuts
+  provider calls from 6 to 3 while
   ``judge_completed`` reads 6 either way, so the funnel reported twice the spend that happened and
   ``estimated_saved_calls`` read 34 when the truth is 37. The serve now carries the shared zero-spend
   marker (``percept.tracing.JUDGE_SERVED_KEY``, read through ``judge_call_was_served``) and folds
@@ -941,9 +941,9 @@ def test_a_cache_served_verdict_is_not_an_actual_judge_call() -> None:
 
     Was a strict xfail: `judge.started`/`judge.finished` are emitted for a cache serve too (the tick
     is real — the gate still classifies the served verdict), and nothing marked it, so
-    `actual_judge_calls` counted the runtime's own cache hits as model spend by an error that GROWS
-    with the hit rate the cache exists to raise. The serve now carries the shared zero-spend marker
-    and folds into the subtracted counter.
+    the old derived call count included the runtime's own cache hits as model spend by an error that
+    GROWS with the hit rate the cache exists to raise. The serve now carries the shared zero-spend
+    marker and the summary publishes the resulting provider-call count directly.
     """
     warm = _drive(SPINE, source_profile=None, cache=True)
     # Ground truth, measured at the provider seam. TheCacheServesTheRepeat pins these separately, so
@@ -953,11 +953,11 @@ def test_a_cache_served_verdict_is_not_an_actual_judge_call() -> None:
     assert warm.core.metrics.snapshot()["cache.hit"] == 3
 
     summary = warm.summary
-    actual_judge_calls = summary.judge_completed - summary.judge_direct_hits
-    assert actual_judge_calls == warm.provider_calls, (
-        f"the funnel reports {actual_judge_calls} actual judge calls; "
+    assert summary.provider_calls == warm.provider_calls, (
+        f"the funnel reports {summary.provider_calls} provider calls; "
         f"{warm.provider_calls} reached the provider"
     )
+    assert summary.provider_calls_unit == "provider_calls"
     assert summary.estimated_saved_calls == N_FRAMES - warm.provider_calls
     # The tick is still IN the funnel — only the spend is subtracted back out. And the cache's own
     # share of that subtraction is legible rather than folded anonymously into "direct".
@@ -973,7 +973,8 @@ def test_the_cold_run_marks_nothing_and_its_arithmetic_is_unchanged() -> None:
     summary = cold.summary
     assert summary.judge_direct_hits == 0
     assert summary.judge_cache_hits == 0
-    assert summary.judge_completed - summary.judge_direct_hits == cold.provider_calls
+    assert summary.provider_calls == cold.provider_calls
+    assert summary.provider_calls_unit == "provider_calls"
 
 
 def _explain(result: _Run) -> str:
@@ -999,7 +1000,7 @@ def test_a_locally_completed_fused_bundle_is_not_an_actual_judge_call() -> None:
     bundle's own coverage uncertainty and calls nothing. That path omitted
     ``_ProviderCallCompletion.provider_spent=False`` — the sibling local completion twenty lines
     above it declares it — so it defaulted to ``True`` and every locally-completed bundle inflated
-    ``actual_judge_calls`` and entered the provider-latency population as a 0.0 s sample.
+    ``provider_calls`` and entered the provider-latency population as a 0.0 s sample.
 
     The declaration is what is asserted here, not an inference from empty ``usage`` or a zero
     latency: those are side effects a future completion could legitimately have while really having

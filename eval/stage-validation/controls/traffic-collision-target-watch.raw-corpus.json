@@ -1,0 +1,16 @@
+{
+  "corpus_version": "traffic-collision-raw-control-2026-08-02",
+  "n_cases": 1,
+  "cases": [
+    {
+      "case_id": "traffic-control-single-shot::collision-raw-whole-video::0",
+      "dataset": "traffic-control-single-shot",
+      "duration_s": 7.3,
+      "goal_kind": "duration",
+      "goal_text": "Two or more vehicles collide in the intersection.",
+      "positives": [[2.2666666667, 7.3]],
+      "video_path": "/private/tmp/traffic-review-corrected/Traffic_Data_collision_single_shot_122p433_129p733.mp4",
+      "video_sha256": "5fdb62e5392b0d412dee673dde6944c3e7ae15ce717dff72a47b3742892120bd"
+    }
+  ]
+}

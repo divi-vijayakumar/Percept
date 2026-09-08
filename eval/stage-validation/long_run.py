@@ -1,4 +1,4 @@
-"""ONE long source, MANY concurrent watches — the long-horizon state run.
+"""One long source, many concurrent watches — long-horizon qualification.
 
 ``live_run.py`` measures per-stage recall and end-to-end latency on ~100 SHORT clips, each with ONE
 goal armed, each in its own process-lifetime ``Percept``.  Everything it measures is per-clip, and
@@ -13,13 +13,15 @@ actually claims are therefore untested by it, and untestable by it in principle:
 3. **The event ledger** — admitted + suppressed-with-receipt + dropped-with-receipt must account for
    every unit.  A prior suite found the primary ledger reconciles exactly while a ``funnel`` mirror
    did not; on 40 000 units the disagreement is measurable rather than anecdotal.
-4. **Judge allocation** — with ONE goal there is no allocation question.  With 73 goals sharing one
-   single-flight scheduler there is nothing BUT an allocation question.
+4. **Judge allocation** — with ONE goal there is no allocation question.  With many goals sharing
+   one scheduler there is nothing BUT an allocation question.
 5. **Bounded retention** — RSS over 80 minutes, not the peak of a 40-second clip.
 
-So this file runs the opposite shape: one 81.6-minute source (``build_long_run.py``), 73 distinct
-goals armed simultaneously on ONE core, one paced real-time replay, one live Gemini judge behind the
-shipped ``JudgePool``.
+So this file runs the opposite shape: one manifest-selected long source, every selected watch armed
+simultaneously on ONE core, one paced real-time replay, one live Gemini judge behind the shipped
+``JudgePool``.  It accepts both the retained L2 manifest and the relocated two-hour injected L3
+manifest; the latter carries occurrence ground truth for recall/latency but explicitly unlabelled
+background, so precision remains ineligible.
 
 Declared deviations from ``live_run.py`` — each one exists because the long shape forces it
 ==========================================================================================
@@ -27,16 +29,16 @@ Declared deviations from ``live_run.py`` — each one exists because the long sh
 ``--decision-deadline-s``
     The per-admission decision deadline in ``live_run`` is 1.9 s, sized for ONE goal.  A judgment
     batch judges its admitted goals SEQUENTIALLY (``percept/agent.py:4090`` — ``for goal in
-    active_goals: ... await``), so a 73-goal batch needs ~73 x the provider latency.  Held at 1.9 s
+    active_goals: ... await``), so an M-goal batch needs ~M x the provider latency.  Held at 1.9 s
     the batch is cancelled wholesale (``percept/runtime/worker.py:1120-1143``) and the run emits
     nothing at all — which is a finding, and is reported as one, but is not a measurement of
     anything downstream.  The deadline is therefore scaled to the armed-goal count and the scaling
     is printed with every number.
 
 ``--max-provider-calls``
-    A hard spend cap enforced at the adapter boundary.  Past the cap the wrapper returns an
-    explicitly-marked abstention WITHOUT crossing the network, and every such call is counted
-    separately so no metric silently absorbs them.
+    One bound in a durable global call-and-USD ledger enforced inside the provider adapter.  Every
+    attempt is reserved on disk before transport; exhausted attempts fail explicitly without a
+    synthetic verdict, and therefore cannot be silently absorbed into quality metrics.
 
 entity observations
     The runtime feeds ``EntityGraph`` from ``vision.detect`` (``percept/agent.py:4084``), and the
@@ -77,6 +79,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import bisect
+import copy
 import json
 import math
 import os
@@ -97,6 +100,7 @@ RESULTS = HERE / "results"
 sys.path.insert(0, str(HERE))
 
 import live_run as LR  # noqa: E402  -- pacing, watch-plan shape and constants are REUSED
+import qualification_contract as QC  # noqa: E402
 
 from percept import Percept  # noqa: E402
 from percept._build import build_info  # noqa: E402
@@ -108,7 +112,6 @@ from percept.backends.judge_pool import (  # noqa: E402
     JudgeRoute,
 )
 from percept.config import load_settings  # noqa: E402
-from percept.contracts import Verdict  # noqa: E402
 from percept.episodes import EpisodeLog  # noqa: E402
 from percept.incidents import incident_judgment  # noqa: E402
 from percept.resolver import ConfigResolver  # noqa: E402
@@ -135,27 +138,31 @@ BLOB_MAX_PER_FRAME = 8
 
 
 class BudgetedVision:
-    """``live_run.RecordingVision`` plus a cap.
+    """Record the adapter whose transport is guarded by the durable global USD/call ledger.
 
-    The cap is enforced HERE, at the adapter boundary, and not by trusting the run to end on time:
-    past ``max_calls`` this returns an abstention that never crossed the network, counted in its own
-    bucket (``budget_capped``) so no downstream metric absorbs it silently.
+    ``GeminiVision`` owns the only safe reservation seam: it calls ``begin_attempt`` immediately
+    before transport and settles/fails that reservation on every terminal path.  This wrapper is
+    therefore observational only.  In particular, it must never replace an exhausted request with
+    a synthetic verdict, because doing so hides the budget terminal outcome inside quality metrics.
     """
 
-    def __init__(self, inner: Any, *, max_calls: int, on_cap: Any = None) -> None:
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        request_budget: LR.GlobalProviderBudget,
+        on_cap: Any = None,
+    ) -> None:
         self.inner = inner
-        self.max_calls = max_calls
+        self.request_budget = request_budget
         #: Fired ONCE, the instant the cap first bites, so the pre-cap window (in which the judge was
         #: a real provider) can be reported separately from the post-cap window (in which it was not).
         self.on_cap = on_cap
         self.capped_at_wall: float | None = None
-        #: Synthetic latency for post-cap abstentions, set to the MEASURED median at cap time.
-        self.cap_sleep_s = 1.2
         self.SUPPORTS_NATIVE_VIDEO_TRANSPORT = bool(
             getattr(inner, "SUPPORTS_NATIVE_VIDEO_TRANSPORT", False)
         )
         self.PARSES_CLAIM_CHANNEL = bool(getattr(inner, "PARSES_CLAIM_CHANNEL", False))
-        self.calls = 0
         self.budget_capped = 0
         self.errors = 0
         self.cancelled = 0
@@ -172,6 +179,12 @@ class BudgetedVision:
         self.call_marks: list[tuple[float, int]] = []
         self._t0 = time.monotonic()
 
+    @property
+    def calls(self) -> int:
+        """Physical attempts durably admitted by the request ledger (not judge invocations)."""
+
+        return int(self.request_budget.snapshot()["physical_attempts"])
+
     async def detect(self, frame: Any, goals: list) -> list:
         return []
 
@@ -179,27 +192,6 @@ class BudgetedVision:
         return []
 
     async def judge(self, condition: str, frame: Any, **kwargs: Any):
-        if self.calls >= self.max_calls:
-            self.budget_capped += 1
-            if self.capped_at_wall is None:
-                self.capped_at_wall = time.monotonic()
-                if self.latencies_completed:
-                    self.cap_sleep_s = statistics.median(self.latencies_completed)
-                if self.on_cap is not None:
-                    try:
-                        self.on_cap()
-                    except Exception:
-                        pass
-            # A capped call that returned INSTANTLY would put the rest of the run in a completely
-            # different operating regime: batches of 73 goals would finish in milliseconds, the
-            # scheduler would judge at frame rate, and the entity/episode/memory curves for the
-            # remaining hour would be measurements of a machine that never exists in production.
-            # Sleeping the MEASURED median provider latency keeps the scheduler in the same regime
-            # it was in before the cap. The latency is synthetic and is declared as such; the
-            # VERDICT is an explicit abstention, never a fabricated answer.
-            await asyncio.sleep(self.cap_sleep_s)
-            return Verdict(satisfied=False, confidence=0.0, evidence="")
-        self.calls += 1
         context = dict(kwargs.get("context") or {})
         if context.get(LATENCY_MODE_CONTEXT_KEY) == "reflex":
             self.reflex_stamped += 1
@@ -213,6 +205,17 @@ class BudgetedVision:
         t0 = time.monotonic()
         try:
             verdict = await self.inner.judge(condition, frame, **kwargs)
+        except LR.ProviderBudgetExceeded:
+            self.budget_capped += 1
+            if self.capped_at_wall is None:
+                self.capped_at_wall = time.monotonic()
+                if self.on_cap is not None:
+                    try:
+                        self.on_cap()
+                    except Exception:
+                        pass
+            self.latencies_censored.append(time.monotonic() - t0)
+            raise
         except asyncio.CancelledError:
             # CancelledError is a BaseException: an `except Exception` here would report a run that
             # burned thousands of calls as having made none.
@@ -232,7 +235,7 @@ class BudgetedVision:
             self.output_tokens += int(usage.get("output_tokens") or 0)
         if str(getattr(verdict, "evidence", "") or "").strip():
             self.evidence_nonempty += 1
-        if self.calls % 50 == 0:
+        if self.calls and self.calls % 50 == 0:
             self.call_marks.append((round(time.monotonic() - self._t0, 1), self.calls))
         return verdict
 
@@ -398,6 +401,7 @@ class Channels:
     frames_yielded: int = 0
     anchor_media: float | None = None
     anchor_wall: float | None = None
+    last_media: float | None = None
     pace_lag_s: list[float] = field(default_factory=list)
     #: (wall_since_anchor, media_since_anchor) every 200 frames — the replay's own realtime proof.
     pace_marks: list[tuple[float, float]] = field(default_factory=list)
@@ -446,6 +450,7 @@ async def paced_source(
         else:
             ch.pace_lag_s.append(-remaining)
         ch.frames_yielded += 1
+        ch.last_media = media_t
         if ch.frames_yielded % 200 == 0:
             ch.pace_marks.append(
                 (round(time.monotonic() - started_wall, 2), round(media_t - first_media, 2))
@@ -487,8 +492,432 @@ def goal_id_for(index: int, text: str) -> str:
     return f"g{index:03d}-{slug}" if slug else f"g{index:03d}"
 
 
+def normalize_long_manifest(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize both retained L2 and relocated injected-L3 manifests for one runner.
+
+    The injected fixture deliberately calls its arm list ``watches`` and its source tiling
+    ``segments``; the older runner expected ``goals`` and ``members``.  Keeping the translation at
+    one fail-loud boundary prevents a second, subtly different long-horizon runner from growing
+    beside this one.
+    """
+    kind = payload.get("kind")
+    if kind == "stage-validation-single-long-source":
+        out = copy.deepcopy(payload)
+        out.setdefault("source_manifest_kind", kind)
+        # The retained L2 source does not claim exhaustively labelled background.
+        out.setdefault("precision_eligible", False)
+        out.setdefault(
+            "precision_ineligible_reason",
+            "source does not declare exhaustive goal-specific negative/background labels",
+        )
+        return out
+    if kind != "longhorizon-injected-source":
+        raise ValueError(f"unsupported long-run manifest kind {kind!r}")
+
+    out = copy.deepcopy(payload)
+    goals: list[dict[str, Any]] = []
+    for index, watch in enumerate(payload.get("watches") or []):
+        datasets = [str(x) for x in (watch.get("datasets") or [])]
+        goals.append(
+            {
+                "case_ids": list(watch.get("injection_ids") or []),
+                "case_id": f"injected-watch::{index}",
+                "dataset": ",".join(datasets) if datasets else "unknown",
+                "goal_kind": watch.get("goal_kind"),
+                "goal_text": watch.get("goal_text"),
+                "gt_strength": watch.get("gt_strength"),
+                "n_occurrences": int(watch.get("n_occurrences") or 0),
+                "positives": copy.deepcopy(watch.get("positives") or []),
+            }
+        )
+    clock = copy.deepcopy(payload.get("clock") or {})
+    clock["measured_container_duration_s"] = payload.get("container_duration_s")
+    clock["drift_s"] = payload.get("drift_s")
+    segments = copy.deepcopy(payload.get("segments") or [])
+    unlabelled = [s for s in segments if s.get("gt") == "none"]
+
+    out.update(
+        source_manifest_kind=kind,
+        goals=goals,
+        n_goals=len(goals),
+        members=segments,
+        n_members=len(segments),
+        clock=clock,
+        precision_eligible=not unlabelled,
+        precision_ineligible_reason=(
+            None
+            if not unlabelled
+            else f"{len(unlabelled)} background segment(s) are explicitly unlabelled, not negative"
+        ),
+    )
+    return out
+
+
+def long_manifest_issues(manifest: dict[str, Any]) -> list[str]:
+    """Return schema/clock/label defects that make a long run unscoreable."""
+    issues: list[str] = []
+    video = manifest.get("video_path")
+    if not video:
+        issues.append("video_path is missing")
+    else:
+        path = Path(str(video))
+        resolved = path if path.is_absolute() else REPO / path
+        if not resolved.is_file():
+            issues.append(f"video_path does not exist: {resolved}")
+
+    duration = (manifest.get("clock") or {}).get("measured_container_duration_s")
+    try:
+        duration_f = float(duration)
+    except (TypeError, ValueError):
+        duration_f = 0.0
+    if not math.isfinite(duration_f) or duration_f <= 0:
+        issues.append(f"measured container duration must be finite and positive, got {duration!r}")
+
+    goals = manifest.get("goals") or []
+    if not goals:
+        issues.append("manifest contains no goals/watches")
+    for index, goal in enumerate(goals):
+        prefix = str(goal.get("case_id") or f"goal[{index}]")
+        if not str(goal.get("goal_text") or "").strip():
+            issues.append(f"{prefix}: goal_text is missing")
+        if goal.get("goal_kind") not in {"state", "transition", "duration", "count"}:
+            issues.append(f"{prefix}: unsupported goal_kind {goal.get('goal_kind')!r}")
+        positives = goal.get("positives") or []
+        if int(goal.get("n_occurrences") or 0) != len(positives):
+            issues.append(
+                f"{prefix}: n_occurrences={goal.get('n_occurrences')} but positives={len(positives)}"
+            )
+        for occurrence_index, interval in enumerate(positives):
+            try:
+                lo, hi = float(interval[0]), float(interval[1])
+            except (TypeError, ValueError, IndexError):
+                issues.append(f"{prefix}: occurrence[{occurrence_index}] is not a numeric interval")
+                continue
+            ordered = lo < hi if goal.get("gt_strength") == "annotated_interval" else lo <= hi
+            if not (math.isfinite(lo) and math.isfinite(hi) and 0 <= lo and ordered and hi <= duration_f):
+                issues.append(
+                    f"{prefix}: occurrence[{occurrence_index}]={interval!r} outside [0,{duration_f}]"
+                )
+    return issues
+
+
+async def preflight_long_manifest(
+    manifest: dict[str, Any], *, require_conductor: bool
+) -> list[Any | None]:
+    """Validate source/labels and, when requested, every authored mechanic before provider setup."""
+    issues = long_manifest_issues(manifest)
+    if issues:
+        raise ValueError("; ".join(issues[:20]))
+    goals = list(manifest["goals"])
+    if not require_conductor:
+        return [None] * len(goals)
+    if not LR.ACTION_CONDUCTOR_PIN:
+        raise ValueError("--expect-conductor requires PERCEPT_SV_CONDUCTOR=<frozen artifact>")
+    cases = [
+        {
+            "case_id": goal.get("case_id") or goal_id_for(i, str(goal["goal_text"])),
+            "goal_text": goal["goal_text"],
+            "goal_kind": goal["goal_kind"],
+        }
+        for i, goal in enumerate(goals)
+    ]
+    return list(await LR.preflight_authored_plans(cases))
+
+
+def long_armability_issues(
+    goals: Sequence[dict[str, Any]],
+    authored: Sequence[Any | None],
+    *,
+    settings: Any = None,
+) -> list[str]:
+    """Dry-arm the exact multi-goal shape on an offline core before provider construction."""
+
+    if len(goals) != len(authored):
+        return [f"authored plan count {len(authored)} != selected goal count {len(goals)}"]
+    resolved_settings = settings or load_settings()
+    core = Percept.create(
+        vision="scripted",
+        specialist="scripted",
+        conductor="scripted-conductor",
+        stt="fake",
+        tts="fake",
+        settings=resolved_settings,
+        discover_plugins=False,
+        mode="offline",
+    )
+    issues: list[str] = []
+    for index, (goal, primitive) in enumerate(zip(goals, authored)):
+        goal_id = goal_id_for(index, str(goal["goal_text"]))
+        receipt = apply_watch_plan(
+            core,
+            LR.watch_plan_for(goal_id, str(goal["goal_text"]), primitive),
+            resolver=ConfigResolver(),
+            source_profile=PHYSICAL_SCENE,
+        )
+        if receipt.status == "applied" and receipt.watch_ids == (goal_id,):
+            continue
+        dropped = [
+            f"{item.code} at {item.path}: {item.message}" for item in receipt.dropped_fields
+        ]
+        issues.append(
+            f"{goal.get('case_id') or goal_id}: status={receipt.status}; "
+            f"watch_ids={list(receipt.watch_ids)!r}; "
+            f"warnings={[item.code for item in receipt.warnings]!r}; dropped_fields={dropped!r}"
+        )
+    return issues
+
+
+def provider_budget_policy_from_args(args: Any) -> Any:
+    """Require an explicit paid allocation and prove it fits the user's absolute $100 cap."""
+
+    required = {
+        "--max-provider-usd": args.max_provider_usd,
+        "--max-provider-calls": args.max_provider_calls,
+        "--conservative-usd-per-call": args.conservative_usd_per_call,
+        "--global-prior-committed-usd": args.global_prior_committed_usd,
+        "--global-prior-commitment-source": args.global_prior_commitment_source,
+        "--global-prior-commitment-basis": args.global_prior_commitment_basis,
+    }
+    missing = [flag for flag, value in required.items() if value is None or value == ""]
+    if missing:
+        raise LR.ProviderBudgetInputError(
+            "paid long run requires explicit " + ", ".join(missing)
+        )
+    if (args.price_in is None) != (args.price_out is None):
+        raise LR.ProviderBudgetInputError("--price-in and --price-out must be supplied together")
+    if args.settle_from_official_token_prices and (
+        args.price_in is None or not args.price_source.strip() or not args.price_version.strip()
+    ):
+        raise LR.ProviderBudgetInputError(
+            "--settle-from-official-token-prices requires --price-in, --price-out, "
+            "--price-source, and --price-version"
+        )
+    policy = LR.PaidRunPolicy(
+        max_usd=args.max_provider_usd,
+        max_calls=args.max_provider_calls,
+        conservative_usd_per_call=args.conservative_usd_per_call,
+        request_timeout_s=args.provider_request_timeout_s,
+    )
+    prior = args.global_prior_committed_usd
+    if not isinstance(prior, (int, float)) or isinstance(prior, bool):
+        raise LR.ProviderBudgetInputError(
+            "--global-prior-committed-usd must be finite and non-negative"
+        )
+    prior = float(prior)
+    if not math.isfinite(prior) or prior < 0:
+        raise LR.ProviderBudgetInputError(
+            "--global-prior-committed-usd must be finite and non-negative"
+        )
+    if prior + float(policy.max_usd) > LR.ABSOLUTE_PROVIDER_RUN_CAP_USD + 1e-12:
+        raise LR.ProviderBudgetInputError(
+            f"prior commitment (${prior:.6f}) plus long-run allocation "
+            f"(${policy.max_usd:.6f}) exceeds the "
+            f"${LR.ABSOLUTE_PROVIDER_RUN_CAP_USD:.2f} total user cap"
+        )
+    return policy
+
+
 def dist(xs: Sequence[float]) -> dict[str, Any]:
     return LR.dist(xs)
+
+
+def score_long_quality(
+    armed: Sequence[dict[str, Any]],
+    incidents: Sequence[dict[str, Any]],
+    *,
+    anchor_media: float | None,
+    precision_eligible: bool,
+    precision_ineligible_reason: str | None,
+    delivery_enabled: bool = False,
+) -> dict[str, Any]:
+    """Score labeled long-horizon occurrences at SDK and webhook-receiver boundaries.
+
+    The earliest Incident for one ``(goal_id, occurrence)`` owns its latency sample; later repeats
+    remain emissions and therefore affect precision when the source has exhaustive negatives. The
+    receiver view independently takes the earliest successfully delivered emission. A zero-width
+    legacy point annotation is named unscorable rather than silently given an invented tolerance.
+    """
+    by_goal = {str(goal["goal_id"]): goal for goal in armed}
+    emitted_by_goal: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for incident in incidents:
+        emitted_by_goal[str(incident.get("goal_id"))].append(incident)
+
+    occurrence_rows: list[dict[str, Any]] = []
+    unscorable: list[dict[str, Any]] = []
+    inside_emissions: set[int] = set()
+    inside_receiver_emissions: set[int] = set()
+    for goal_id, goal in by_goal.items():
+        goal_incidents = emitted_by_goal.get(goal_id, [])
+        for occurrence_index, interval in enumerate(goal.get("positives") or []):
+            lo, hi = float(interval[0]), float(interval[1])
+            if hi <= lo:
+                unscorable.append(
+                    {
+                        "goal_id": goal_id,
+                        "occurrence_index": occurrence_index,
+                        "interval": [lo, hi],
+                        "reason": "point annotation has no declared matching tolerance",
+                    }
+                )
+                continue
+            hits = [item for item in goal_incidents if lo <= float(item.get("ts") or 0.0) < hi]
+            for item in hits:
+                inside_emissions.add(id(item))
+            receiver_hits = [
+                item
+                for item in hits
+                if (item.get("webhook") or {}).get("receiver_arrival_since_anchor_s") is not None
+            ]
+            for item in receiver_hits:
+                inside_receiver_emissions.add(id(item))
+            earliest = min(
+                hits,
+                key=lambda item: (
+                    float(item["observed_since_anchor_s"])
+                    if item.get("observed_since_anchor_s") is not None
+                    else math.inf
+                ),
+                default=None,
+            )
+            earliest_receiver = min(
+                receiver_hits,
+                key=lambda item: float(
+                    (item.get("webhook") or {})["receiver_arrival_since_anchor_s"]
+                ),
+                default=None,
+            )
+            latency = None
+            latency_valid = False
+            if earliest is not None and anchor_media is not None:
+                observed = earliest.get("observed_since_anchor_s")
+                if observed is not None:
+                    latency = float(observed) - (lo - float(anchor_media))
+                    latency_valid = math.isfinite(latency) and latency >= 0.0
+            occurrence_rows.append(
+                {
+                    "goal_id": goal_id,
+                    "goal_kind": goal.get("goal_kind"),
+                    "dataset": goal.get("dataset"),
+                    "occurrence_index": occurrence_index,
+                    "interval": [lo, hi],
+                    "matched": earliest is not None,
+                    "first_incident_id": None if earliest is None else earliest.get("id"),
+                    "emissions_in_occurrence": len(hits),
+                    "onset_to_incident_s": round(latency, 6) if latency_valid else None,
+                    "latency_invalid_reason": (
+                        None
+                        if earliest is None or latency_valid
+                        else "negative/non-finite source-to-monotonic clock crossing"
+                    ),
+                    "receiver_matched": earliest_receiver is not None,
+                    "first_receiver_incident_id": (
+                        None if earliest_receiver is None else earliest_receiver.get("id")
+                    ),
+                    "receiver_emissions_in_occurrence": len(receiver_hits),
+                    "onset_to_webhook_arrival_s": (
+                        None
+                        if earliest_receiver is None or anchor_media is None
+                        else round(
+                            float(
+                                (earliest_receiver.get("webhook") or {})[
+                                    "receiver_arrival_since_anchor_s"
+                                ]
+                            )
+                            - (lo - float(anchor_media)),
+                            6,
+                        )
+                    ),
+                }
+            )
+
+    scoreable = len(occurrence_rows)
+    matched = sum(1 for row in occurrence_rows if row["matched"])
+    valid_latencies = [
+        float(row["onset_to_incident_s"])
+        for row in occurrence_rows
+        if row.get("onset_to_incident_s") is not None
+    ]
+    emissions = [item for values in emitted_by_goal.values() for item in values]
+    inside = sum(1 for item in emissions if id(item) in inside_emissions)
+    receiver_emissions = [
+        item
+        for item in emissions
+        if (item.get("webhook") or {}).get("receiver_arrival_since_anchor_s") is not None
+    ]
+    receiver_inside = sum(
+        1 for item in receiver_emissions if id(item) in inside_receiver_emissions
+    )
+
+    def summary(
+        rows: Sequence[dict[str, Any]],
+        *,
+        matched_field: str = "matched",
+        latency_field: str = "onset_to_incident_s",
+        latency_name: str = "onset_to_incident_s",
+    ) -> dict[str, Any]:
+        n = len(rows)
+        hit = sum(1 for row in rows if row[matched_field])
+        latencies = [
+            float(row[latency_field])
+            for row in rows
+            if row.get(latency_field) is not None and float(row[latency_field]) >= 0.0
+        ]
+        return {
+            "gt_occurrences": n,
+            "occurrences_matched": hit,
+            "occurrences_missed": n - hit,
+            "occurrence_recall": (hit / n) if n else None,
+            latency_name: dist(latencies),
+            "timely_recall": {
+                "2s": (sum(x <= 2.0 for x in latencies) / n) if n else None,
+                "5s": (sum(x <= 5.0 for x in latencies) / n) if n else None,
+            },
+        }
+
+    pooled = summary(occurrence_rows)
+    pooled.update(
+        incidents=len(emissions),
+        incidents_inside_labeled_positive=inside,
+        precision_per_emission=(inside / len(emissions))
+        if precision_eligible and emissions
+        else None,
+        precision_eligible=precision_eligible,
+        precision_ineligible_reason=None
+        if precision_eligible
+        else precision_ineligible_reason,
+        latency_valid_occurrences=len(valid_latencies),
+    )
+    receiver = summary(
+        occurrence_rows,
+        matched_field="receiver_matched",
+        latency_field="onset_to_webhook_arrival_s",
+        latency_name="onset_to_webhook_arrival_s",
+    )
+    receiver.update(
+        enabled=delivery_enabled,
+        incidents=len(receiver_emissions),
+        incidents_inside_labeled_positive=receiver_inside,
+        precision_per_emission=(receiver_inside / len(receiver_emissions))
+        if precision_eligible and receiver_emissions
+        else None,
+        precision_eligible=precision_eligible,
+        precision_ineligible_reason=None
+        if precision_eligible
+        else precision_ineligible_reason,
+    )
+    kinds = sorted({str(row.get("goal_kind")) for row in occurrence_rows})
+    return {
+        "schema": "percept.longhorizon-quality/1",
+        "matching": "same goal_id; Incident media timestamp inside [onset,end); earliest hit owns latency",
+        "pooled": pooled,
+        "receiver": receiver,
+        "by_goal_kind": {
+            kind: summary([row for row in occurrence_rows if str(row.get("goal_kind")) == kind])
+            for kind in kinds
+        },
+        "unscorable_occurrences": unscorable,
+        "occurrences": occurrence_rows,
+    }
 
 
 # =================================================================================================
@@ -497,9 +926,22 @@ def dist(xs: Sequence[float]) -> dict[str, Any]:
 
 
 async def run_long(args: argparse.Namespace) -> dict[str, Any]:
-    manifest = json.loads(Path(args.manifest).read_text())
+    manifest = getattr(args, "_prepared_manifest", None)
+    if manifest is None:
+        manifest = normalize_long_manifest(json.loads(Path(args.manifest).read_text()))
     source_path = str(REPO / manifest["video_path"])
     goals_in = manifest["goals"][: args.max_goals] if args.max_goals else manifest["goals"]
+    authored_in = getattr(args, "_prepared_authored", None)
+    if authored_in is None:
+        authored_in = await preflight_long_manifest(
+            {**manifest, "goals": goals_in}, require_conductor=args.expect_conductor
+        )
+    provider_budget = getattr(args, "_provider_budget", None)
+    if not isinstance(provider_budget, LR.GlobalProviderBudget):
+        raise LR.ProviderBudgetInputError(
+            "durable provider budget was not opened before long-run provider setup"
+        )
+    webhook_probe = getattr(args, "_webhook_probe", None)
     member_offsets = [m["offset_s"] for m in manifest["members"]]
 
     settings = load_settings()
@@ -512,11 +954,12 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
         print(f"[long_run] media_resolution pinned to {media_resolution}", file=sys.stderr,
               flush=True)
 
-    inner = GeminiVision(settings)
+    inner = GeminiVision(settings, request_budget=provider_budget)
     model = getattr(inner, "_model", None) or getattr(inner, "model", None)
+    provider_budget.assert_provider(backend="gemini", model=str(model))
     cap_snapshot: dict[str, Any] = {}
     provider = BudgetedVision(
-        inner, max_calls=args.max_provider_calls,
+        inner, request_budget=provider_budget,
         on_cap=lambda: cap_snapshot.update(snapshot_sample(), kind="cap_reached"),
     )
     temporal = TemporalImageVision(provider, max_frames=min(LR.ACTION_TEMPORAL_FRAMES, 5))
@@ -575,7 +1018,7 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
     for i, g in enumerate(goals_in):
         gid = goal_id_for(i, g["goal_text"])
         receipt = apply_watch_plan(
-            core, LR.watch_plan_for(gid, g["goal_text"]),
+            core, LR.watch_plan_for(gid, g["goal_text"], authored_in[i]),
             resolver=ConfigResolver(), source_profile=PHYSICAL_SCENE,
         )
         if receipt.status != "applied" or receipt.watch_ids != (gid,):
@@ -586,6 +1029,11 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
         armed.append({"goal_id": gid, "goal_text": g["goal_text"], "goal_kind": g["goal_kind"],
                       "dataset": g["dataset"], "n_occurrences": g["n_occurrences"],
                       "positives": g["positives"]})
+    if args.expect_conductor and arm_failures:
+        raise SystemExit(
+            f"mechanics-qualified arm refused {len(arm_failures)} selected goal(s) before provider "
+            f"calls; first={arm_failures[0]!r}"
+        )
     if not armed:
         raise SystemExit("no goals armed -- refusing to run")
 
@@ -650,10 +1098,8 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
     stage_counts: Counter = Counter()
     judge_started: Counter = Counter()
     judge_finished: Counter = Counter()
-    # PRE-CAP mirrors. Past the spend cap the "judge" is a harness abstention that returns instantly,
-    # which changes both the batch rate and the gate's answer (confidence 0.0 -> ASK). Pooling the
-    # two regimes would report the harness's own abstention rate as the runtime's ASK rate, so the
-    # window in which the judge was a REAL provider is counted separately.
+    # PRE-CAP mirrors. Past the spend cap dispatches fail before provider transport and produce no
+    # fabricated verdict. Keep the real-provider window separate from those terminal dispatches.
     judge_started_pre: Counter = Counter()
     gate_actions: dict[str, Counter] = defaultdict(Counter)
     gate_actions_pre: dict[str, Counter] = defaultdict(Counter)
@@ -802,6 +1248,8 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
         "provider_deadline_s": LR.ACTION_PROVIDER_DEADLINE_S,
         "max_provider_calls": args.max_provider_calls,
         "model": model,
+        "provider_budget_checkpoint": str(provider_budget.checkpoint_path),
+        "provider_budget_global_allocation": provider_budget.provenance()["global_allocation"],
     }, default=str) + "\n")
     ck.flush()
 
@@ -850,7 +1298,8 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
             on_trace=on_trace,
             on_health=on_health,
             on_ask=on_ask,
-            sink_errors="ignore",
+            on_incident=None if webhook_probe is None else webhook_probe.sink,
+            sink_errors="ignore" if webhook_probe is None else "raise",
         )
         try:
             async for inc in runtime:
@@ -862,9 +1311,13 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
                 # empties the per-goal incident column, which is what the first full run reported.
                 gid = getattr(inc, "concern_id", None) or getattr(inc, "goal_id", None)
                 incidents.append({
+                    "id": getattr(inc, "id", None),
                     "goal_id": gid,
                     "ts": float(getattr(inc, "ts", 0.0) or 0.0),
                     "wall": round(observed - t_start, 2),
+                    "observed_since_anchor_s": (
+                        None if ch.anchor_wall is None else observed - ch.anchor_wall
+                    ),
                     "confidence": float(
                         getattr(getattr(inc, "verdict", None), "confidence", 0.0) or 0.0),
                     # NOT an action-onset latency, and no longer named as one.
@@ -876,12 +1329,9 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
                     # which is a real and useful number, but it is blind to how long the action had
                     # already been running before a frame of it was admitted.
                     #
-                    # It is also PER EMISSION and UNMATCHED. This source has no per-occurrence
-                    # ground truth at all, so there is nothing to anchor an onset against and no
-                    # occurrence over which to deduplicate. Calling it `onset_to_incident_s` put it
-                    # under the same key as `live_run.py`'s product-gate metric, which IS
-                    # onset-anchored and IS deduplicated to the earliest Incident per occurrence —
-                    # so the two were silently comparable in a report and are not comparable at all.
+                    # It is also PER EMISSION and UNMATCHED. Qualification quality below separately
+                    # matches this emission to manifest occurrences and deduplicates to the earliest
+                    # Incident/receiver arrival; this raw leg must never be quoted in its place.
                     "frame_media_to_incident_s": (
                         None if timing is None or ch.anchor_wall is None else round(
                             observed - (ch.anchor_wall
@@ -903,6 +1353,37 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
             await sampler_task
         except (asyncio.CancelledError, Exception):
             pass
+
+    delivery_missing: list[str] = []
+    delivery_attempts = 0
+    for incident in incidents:
+        observation = (
+            None if webhook_probe is None else webhook_probe.lookup(str(incident.get("id")))
+        )
+        if observation is None:
+            incident["webhook"] = None
+            if webhook_probe is not None:
+                delivery_missing.append(str(incident.get("id")))
+            continue
+        delivery_attempts += int(observation.attempts)
+        incident["webhook"] = {
+            "receiver_arrival_since_anchor_s": (
+                None
+                if ch.anchor_wall is None
+                else observation.arrival_at - ch.anchor_wall
+            ),
+            "receiver_ack_since_anchor_s": (
+                None
+                if ch.anchor_wall is None or observation.ack_at is None
+                else observation.ack_at - ch.anchor_wall
+            ),
+            "attempts": observation.attempts,
+        }
+    if delivery_missing and error is None:
+        error = (
+            f"receiver did not observe {len(delivery_missing)} emitted incident(s); "
+            f"first={delivery_missing[0]}"
+        )
 
     final = snapshot_sample()
     final["kind"] = "final_sample"
@@ -930,6 +1411,19 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
         media_resolution=media_resolution,
         resolved_batch_deadline_s=resolved_batch_deadline_s,
         detector=detector, trace_errors=trace_errors,
+        delivery={
+            "enabled": webhook_probe is not None,
+            "incidents": len(incidents),
+            "receiver_arrivals": len(incidents) - len(delivery_missing)
+            if webhook_probe is not None
+            else 0,
+            "receiver_acks": sum(
+                1 for item in incidents
+                if (item.get("webhook") or {}).get("receiver_ack_since_anchor_s") is not None
+            ),
+            "attempts": delivery_attempts,
+            "missing_event_ids": delivery_missing,
+        },
     )
     return payload
 
@@ -954,6 +1448,27 @@ def analyse(**k: Any) -> dict[str, Any]:
     edge_goal_admits: Counter = k["edge_goal_admits"]
     probe_ids: dict[str, str] = k["probe_ids"]
     fn = dict(core.metrics.snapshot())
+
+    quality = score_long_quality(
+        armed,
+        incidents,
+        anchor_media=k["ch"].anchor_media,
+        precision_eligible=bool(manifest.get("precision_eligible")),
+        precision_ineligible_reason=manifest.get("precision_ineligible_reason"),
+        delivery_enabled=bool(k["delivery"]["enabled"]),
+    )
+    quality["launch_recall_gate"] = {
+        "target_recall": 0.99,
+        "confidence": 0.95,
+        "minimum_independent_occurrences_with_zero_misses": 299,
+        "nominal_gt_occurrences": quality["pooled"]["gt_occurrences"],
+        "eligible": False,
+        "status": "not_eligible",
+        "reason": (
+            "injected occurrences share source clips/watches and are not declared independent; "
+            "the nominal total is also below the 299 zero-miss minimum"
+        ),
+    }
 
     def g(key: str) -> int:
         return int(fn.get(key) or 0)
@@ -1045,7 +1560,7 @@ def analyse(**k: Any) -> dict[str, Any]:
     # UNIT DISCIPLINE. Two different units live in this ledger and conflating them invents a
     # phantom imbalance: an ADMISSION is one frame, and ``stats.judge_calls`` counts admissions
     # LAUNCHED (worker.py:910).  A DISPATCH (``perceive_dispatches`` / ``judge.started``) is one
-    # frame x one goal, so with 73 goals armed a single launched admission produces 73 of them.
+    # frame x one goal, so with M goals armed a single launched admission produces M of them.
     # The scheduler invariant documented at ``percept/runtime/worker.py:264`` is stated in the
     # ADMISSION unit and is checked here in that unit only.
     n_batches = int(stats.judge_calls)
@@ -1169,8 +1684,8 @@ def analyse(**k: Any) -> dict[str, Any]:
             "ask": sum(p["ask"] for p in per_goal),
             "silent": sum(p["silent"] for p in per_goal),
         },
-        # The window in which the judge was a REAL provider. Everything above pools the post-cap
-        # abstention regime with it; these four lines do not.
+        # The window in which a provider attempt could still be durably admitted. Dispatch counts
+        # above may include post-cap terminal failures; these lines do not.
         "pre_cap": {
             "judged_total": sum(pre_counts),
             "goals_ever_judged": sum(1 for v in pre_counts if v > 0),
@@ -1239,6 +1754,22 @@ def analyse(**k: Any) -> dict[str, Any]:
     if price_in is not None and price_out is not None:
         cost = round(provider.input_tokens / 1e6 * price_in
                      + provider.output_tokens / 1e6 * price_out, 6)
+    source_duration_s = float(manifest["clock"]["measured_container_duration_s"] or 0.0)
+    observed_source_s = 0.0
+    if k["ch"].anchor_media is not None and k["ch"].last_media is not None:
+        # Include the final sampled frame interval, bounded by the declared container duration.
+        observed_source_s = min(
+            source_duration_s,
+            max(0.0, k["ch"].last_media - k["ch"].anchor_media) + (1.0 / float(k["fps"])),
+        )
+    source_stream_hours = observed_source_s / 3600.0
+    scheduled_watch_hours = source_stream_hours * len(armed)
+    cost_per_source_hour = (
+        cost / source_stream_hours if cost is not None and source_stream_hours > 0 else None
+    )
+    cost_per_scheduled_watch_hour = (
+        cost / scheduled_watch_hours if cost is not None and scheduled_watch_hours > 0 else None
+    )
     accounting = {
         "model": k["model"],
         "physical_calls": provider.calls,
@@ -1259,11 +1790,28 @@ def analyse(**k: Any) -> dict[str, Any]:
         "price_usd_per_million": {"input": price_in, "output": price_out,
                                   "source": args.price_source},
         "estimated_cost_usd": cost,
+        "source_stream_hours": source_stream_hours,
+        "scheduled_watch_hours": scheduled_watch_hours,
+        "estimated_provider_cost_usd_per_source_hour": cost_per_source_hour,
+        "estimated_provider_cost_usd_per_scheduled_watch_hour": cost_per_scheduled_watch_hour,
+        "provider_cost_estimate_is_lower_bound": provider.usage_rows != provider.calls,
+        "launch_cost_gate": {
+            "ceiling_usd_per_source_hour": LR.ABSOLUTE_COST_CEILING_USD_PER_SOURCE_HOUR,
+            "eligible": False,
+            "status": "not_eligible",
+            "observed_provider_estimate_usd_per_source_hour": cost_per_source_hour,
+            "reason": (
+                "declared-price x returned-token usage excludes calls without usage rows, "
+                "runtime/hosting/egress costs, and the provider invoice; an all-in gate needs "
+                "billed provider spend plus infrastructure metering"
+            ),
+        },
         "cost_caveat": ("Tokens are measured only on calls that RETURNED a usage row. A call the "
                         "pool cancelled at the 1.5 s deadline may still have been billed by the "
                         "provider; the fraction of such calls is reported so the figure can be "
                         "read as a LOWER bound."),
         "completed_fraction": (provider.usage_rows / provider.calls) if provider.calls else None,
+        "provider_budget": args._provider_budget.provenance(),
     }
 
     bi = build_info()
@@ -1275,10 +1823,20 @@ def analyse(**k: Any) -> dict[str, Any]:
             "contract_version": bi.contract_version,
             "interpreter": sys.executable,
             "source": manifest["video_path"],
+            "source_manifest_kind": manifest.get("source_manifest_kind"),
             "source_duration_s": manifest["clock"]["measured_container_duration_s"],
             "source_members": manifest["n_members"],
             "source_profile": manifest["profile"],
             "clock_drift_s": manifest["clock"]["drift_s"],
+            "precision_eligible": bool(manifest.get("precision_eligible")),
+            "precision_ineligible_reason": manifest.get("precision_ineligible_reason"),
+            "conductor_pin": LR.ACTION_CONDUCTOR_PIN or None,
+            "webhook_probe": (
+                "loopback real HTTP receiver; monotonic arrival + ACK timestamps"
+                if k["delivery"]["enabled"]
+                else "disabled"
+            ),
+            "qualification_contract": getattr(args, "_qualification_contract_summary", None),
             "gt_occurrences": sum(a["n_occurrences"] for a in armed),
             "n_goals_armed": len(armed),
             "arm_failures": k["arm_failures"],
@@ -1311,7 +1869,7 @@ def analyse(**k: Any) -> dict[str, Any]:
             "decoder_dropped": k["dropped"][0],
             "pace_lag_s": dist(k["ch"].pace_lag_s),
             "pace_marks": k["ch"].pace_marks[:400],
-            "media_covered_s": (k["ch"].pace_marks[-1][1] if k["ch"].pace_marks else None),
+            "media_covered_s": observed_source_s,
         },
         "entity": entity,
         "episodes": episodes,
@@ -1319,6 +1877,8 @@ def analyse(**k: Any) -> dict[str, Any]:
         "allocation": allocation,
         "memory": memory,
         "accounting": accounting,
+        "quality": quality,
+        "delivery": k["delivery"],
         "incidents": {
             "n": len(incidents),
             "distinct_goals": len({i.get("goal_id") for i in incidents}),
@@ -1327,10 +1887,8 @@ def analyse(**k: Any) -> dict[str, Any]:
             "frame_media_to_incident_s_unit": "incident_emission",
             "frame_media_to_incident_s_note": (
                 "judged frame's media instant -> Incident observed. NOT the action-onset latency "
-                "live_run.py reports: this source carries no per-occurrence ground truth, so there "
-                "is no onset to anchor against and no occurrence to deduplicate over. Per emission "
-                "and unmatched. Do not place it in a table beside "
-                "`percept.latency/2-occurrence-anchored` figures."
+                "reported in quality: this raw diagnostic is per emission and unmatched. Use "
+                "quality.pooled.onset_to_incident_s for occurrence-deduplicated latency."
             ),
             "rows": incidents[:500],
         },
@@ -1366,7 +1924,7 @@ def render_md(p: dict) -> str:
     L: list[str] = []
     A = L.append
     m = p["meta"]
-    A("# Long-horizon state run: ONE 81-minute source, many concurrent watches")
+    A("# Long-horizon run: one source, many concurrent watches")
     A("")
     A(f"Runtime under test: `percept` {m['package_version']} built from `{m['build_commit']}` "
       f"(contract {m['contract_version']}), interpreter `{m['interpreter']}`.")
@@ -1388,6 +1946,31 @@ def render_md(p: dict) -> str:
       f"dropped by the decoder without a receipt, per-frame pacing lag "
       f"p50 {rep['pace_lag_s']['p50']} s / p95 {rep['pace_lag_s']['p95']} s / "
       f"max {rep['pace_lag_s']['max']} s.")
+    A("")
+
+    q = p["quality"]["pooled"]
+    qr = p["quality"]["receiver"]
+    A("## Qualification quality")
+    A("")
+    A(f"Occurrence recall: **{q['occurrences_matched']}/{q['gt_occurrences']}** "
+      f"({q['occurrence_recall']}); misses {q['occurrences_missed']}. Timely recall: "
+      f"2 s `{q['timely_recall']['2s']}`, 5 s `{q['timely_recall']['5s']}`.")
+    A(f"Launch recall gate: **{p['quality']['launch_recall_gate']['status']}** — "
+      f"{p['quality']['launch_recall_gate']['reason']}.")
+    A(f"Occurrence-deduplicated onset → SDK Incident latency: `{q['onset_to_incident_s']}`.")
+    if qr["enabled"]:
+        A(f"Webhook-receiver recall: **{qr['occurrences_matched']}/{qr['gt_occurrences']}** "
+          f"({qr['occurrence_recall']}); misses {qr['occurrences_missed']}. Timely recall: "
+          f"2 s `{qr['timely_recall']['2s']}`, 5 s `{qr['timely_recall']['5s']}`.")
+        A(f"Occurrence-deduplicated onset → webhook receiver latency: "
+          f"`{qr['onset_to_webhook_arrival_s']}`. Delivery: `{p['delivery']}`.")
+    else:
+        A("Webhook-receiver quality: **NOT MEASURED** — delivery probe disabled.")
+    if q["precision_eligible"]:
+        A(f"Per-emission precision: `{q['precision_per_emission']}` "
+          f"({q['incidents_inside_labeled_positive']}/{q['incidents']}).")
+    else:
+        A(f"Per-emission precision: **NOT ELIGIBLE** — {q['precision_ineligible_reason']}.")
     A("")
 
     # --- entity ---
@@ -1514,8 +2097,8 @@ def render_md(p: dict) -> str:
         A(f"**Spend cap bit at wall {cs.get('wall_s')} s / media {cs.get('media_s')} s** — up to "
           f"that instant the judge was a live provider ({cs.get('judge_started')} dispatches over "
           f"{cs.get('goals_judged_distinct')} goals, {cs.get('incidents')} incidents); after it, "
-          f"every judge call is a harness abstention that never crossed the network. Allocation "
-          f"numbers spanning both regimes are marked.")
+          f"new attempts fail at the durable ledger before transport and produce no synthetic "
+          f"verdict. Allocation numbers spanning both regimes are marked.")
         A("")
         A(f"PRE-CAP ONLY (the live-provider window): {al['pre_cap']}")
         A("")
@@ -1551,14 +2134,21 @@ def render_md(p: dict) -> str:
     A("## Provider accounting and spend")
     A("")
     A(f"Model `{ac['model']}`, {ac['physical_calls']:,} physical calls "
-      f"({ac['budget_capped_calls']} refused by the harness spend cap), {ac['cancelled']:,} "
+      f"plus {ac['budget_capped_calls']} pre-transport budget refusals, {ac['cancelled']:,} "
       f"cancelled at the deadline, {ac['errors']} errors {ac['error_types']}.")
     A(f"Usage rows {ac['usage_rows']:,} ({(ac['completed_fraction'] or 0) * 100:.1f}% of calls); "
       f"input {ac['input_tokens']:,} tok, output {ac['output_tokens']:,} tok; "
       f"**estimated spend ${ac['estimated_cost_usd']}** at "
       f"{ac['price_usd_per_million']}.")
+    A(f"Observed {ac['source_stream_hours']:.4f} source-stream hours / "
+      f"{ac['scheduled_watch_hours']:.4f} scheduled watch-hours; estimated provider cost "
+      f"`${ac['estimated_provider_cost_usd_per_source_hour']}` per source-hour and "
+      f"`${ac['estimated_provider_cost_usd_per_scheduled_watch_hour']}` per watch-hour.")
     A("")
     A(f"_{ac['cost_caveat']}_")
+    A(f"Launch cost gate: **{ac['launch_cost_gate']['status']}** against the all-in "
+      f"${LR.ABSOLUTE_COST_CEILING_USD_PER_SOURCE_HOUR:.2f}/source-hour ceiling — "
+      f"{ac['launch_cost_gate']['reason']}.")
     A("")
     A(f"Terminal route outcomes: {ac['terminal_outcomes']}")
     A(f"Provider latency, completed: {ac['provider_latency_completed']}")
@@ -1579,8 +2169,20 @@ def render_md(p: dict) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Long-horizon state run: one source, many watches")
+    ap = argparse.ArgumentParser(description="Long-horizon qualification: one source, many watches")
     ap.add_argument("--manifest", default=str(MANIFEST))
+    ap.add_argument("--expect-conductor", action="store_true",
+                    help="require complete, goal-kind-correct frozen mechanics before provider setup")
+    ap.add_argument("--qualification", action="store_true",
+                    help="launch-claim run: require an approved --qualification-contract before "
+                         "provider setup")
+    ap.add_argument("--qualification-contract", default="",
+                    help="frozen launch-bar JSON; its exact sha256 is stamped into the artifact")
+    ap.add_argument("--preflight-only", action="store_true",
+                    help="validate source, occurrence bounds, and optional conductor pin; no provider")
+    ap.add_argument("--webhook-probe", action=argparse.BooleanOptionalAction, default=True,
+                    help="deliver through a real local HTTP receiver and record arrival/ACK "
+                         "timestamps (default on)")
     ap.add_argument("--max-goals", type=int, default=0, help="0 = every distinct goal")
     ap.add_argument("--decision-deadline-s", type=float, default=0.0,
                     help="0 = scale to the armed-goal count (see the module docstring)")
@@ -1589,21 +2191,164 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "every route's max_inflight, all three set together. K >= armed-goal count "
                          "collapses the _batch_deadline_s wave multiplier to 1. Default 1 = the "
                          "previous sequential behaviour, unchanged.")
-    ap.add_argument("--max-provider-calls", type=int, default=5000)
+    ap.add_argument("--max-provider-usd", type=float, default=None,
+                    help="run-local USD allocation; required for paid runs")
+    ap.add_argument("--max-provider-calls", type=int, default=None,
+                    help="global physical-call cap; required for paid runs")
+    ap.add_argument("--conservative-usd-per-call", type=float, default=None,
+                    help="amount durably reserved before every provider transport")
+    ap.add_argument("--global-prior-committed-usd", type=float, default=None,
+                    help="provider dollars already committed outside this run")
+    ap.add_argument("--global-prior-commitment-source", default="",
+                    help="artifact/path identifying the imported prior commitment")
+    ap.add_argument("--global-prior-commitment-basis", default="", choices=(
+                        "official-token-settled", "conservative-reservations",
+                        "mixed-token-settled-and-conservative"),
+                    help="explicit accounting basis of the imported prior commitment")
+    ap.add_argument("--provider-request-timeout-s", type=float, default=120.0)
     ap.add_argument("--max-wall-s", type=float, default=0.0)
     ap.add_argument("--sample-s", type=float, default=15.0)
     ap.add_argument("--entity-feed", action="store_true", default=True)
     ap.add_argument("--no-entity-feed", dest="entity_feed", action="store_false")
     ap.add_argument("--episode-probe", action="store_true", default=True)
     ap.add_argument("--no-episode-probe", dest="episode_probe", action="store_false")
-    ap.add_argument("--price-in", type=float, default=0.25)
-    ap.add_argument("--price-out", type=float, default=1.5)
-    ap.add_argument("--price-source",
-                    default="ai.google.dev/gemini-api/docs/pricing, page last updated 2026-07-21")
+    ap.add_argument("--price-in", type=float, default=None)
+    ap.add_argument("--price-out", type=float, default=None)
+    ap.add_argument("--price-source", default="")
+    ap.add_argument("--price-version", default="")
+    ap.add_argument("--settle-from-official-token-prices", action="store_true",
+                    help="settle completed calls from complete token counts and the pinned official "
+                         "price; all incomplete/error/cancelled calls retain their reservation")
+    ap.add_argument("--resume", action="store_true", default=True,
+                    help="resume the durable provider ledger (default on)")
+    ap.add_argument("--no-resume", dest="resume", action="store_false")
     ap.add_argument("--out-stem", default="long_run")
     args = ap.parse_args(argv)
 
-    payload = asyncio.run(run_long(args))
+    if args.qualification and not args.qualification_contract:
+        raise SystemExit(
+            "[long_run] PREFLIGHT FAILED before provider setup: --qualification requires an "
+            "approved --qualification-contract"
+        )
+    args._qualification_contract_summary = None
+    if args.qualification_contract:
+        try:
+            _contract, args._qualification_contract_summary = QC.load(
+                args.qualification_contract, require_approved=args.qualification
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"[long_run] PREFLIGHT FAILED before provider setup: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    if args.preflight_only:
+        manifest = normalize_long_manifest(json.loads(Path(args.manifest).read_text()))
+        goals = manifest["goals"][: args.max_goals] if args.max_goals else manifest["goals"]
+        try:
+            authored = asyncio.run(
+                preflight_long_manifest(
+                    {**manifest, "goals": goals}, require_conductor=args.expect_conductor
+                )
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"[long_run] PREFLIGHT FAILED before provider setup: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        print(json.dumps({
+            "status": "ok",
+            "manifest_kind": manifest.get("source_manifest_kind"),
+            "video_path": manifest["video_path"],
+            "source_duration_s": manifest["clock"]["measured_container_duration_s"],
+            "n_goals": len(goals),
+            "n_occurrences": sum(int(g.get("n_occurrences") or 0) for g in goals),
+            "precision_eligible": bool(manifest.get("precision_eligible")),
+            "precision_ineligible_reason": manifest.get("precision_ineligible_reason"),
+            "conductor_verified": args.expect_conductor,
+            "authored_types": dict(Counter(
+                getattr(item, "behavior_type", "none") for item in authored
+            )),
+        }, indent=2))
+        return 0
+
+    # Every schema, source, authored-mechanic and exact multi-goal arm check completes on an
+    # offline core before a credentialed adapter can be constructed.
+    try:
+        manifest = normalize_long_manifest(json.loads(Path(args.manifest).read_text()))
+        goals = manifest["goals"][: args.max_goals] if args.max_goals else manifest["goals"]
+        authored = asyncio.run(
+            preflight_long_manifest(
+                {**manifest, "goals": goals}, require_conductor=args.expect_conductor
+            )
+        )
+        arm_issues = long_armability_issues(goals, authored)
+        if arm_issues:
+            raise ValueError("; ".join(arm_issues[:20]))
+        paid_policy = provider_budget_policy_from_args(args)
+    except Exception as exc:
+        raise SystemExit(
+            f"[long_run] PREFLIGHT FAILED before provider setup: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    ckpt = RESULTS / f"{args.out_stem}.checkpoint.jsonl"
+    budget_ckpt = RESULTS / f"{args.out_stem}.provider-budget.json"
+    settings = load_settings()
+    pricing = LR.PricingStamp(
+        backend="gemini",
+        model=str(settings.models.vision_model),
+        pricing_version=(
+            args.price_version
+            or ("unpriced-conservative" if args.price_in is None else "declared-unsettled")
+        ),
+        pricing_source=(
+            args.price_source
+            or ("declared on command line" if args.price_in is not None
+                else "unpriced; full conservative reservation retained")
+        ),
+        input_usd_per_million_tokens=float(args.price_in or 0.0),
+        output_usd_per_million_tokens=float(args.price_out or 0.0),
+    )
+    try:
+        args._provider_budget = LR.GlobalProviderBudget.open(
+            policy=paid_policy,
+            pricing=pricing,
+            checkpoint_path=budget_ckpt,
+            global_prior_committed_usd=float(args.global_prior_committed_usd),
+            global_prior_commitment_source=args.global_prior_commitment_source,
+            global_prior_commitment_basis=args.global_prior_commitment_basis,
+            settle_from_official_token_prices=args.settle_from_official_token_prices,
+            resume=args.resume,
+            case_checkpoint_exists=ckpt.exists(),
+        )
+    except (LR.ProviderBudgetInputError, LR.ProviderBudgetExceeded, OSError) as exc:
+        raise SystemExit(
+            f"[long_run] PREFLIGHT FAILED before provider setup: {type(exc).__name__}: {exc}"
+        ) from exc
+    args._prepared_manifest = manifest
+    args._prepared_authored = authored
+    allocation = args._provider_budget.provenance()["global_allocation"]
+    print(
+        "[long_run] provider budget: "
+        f"${allocation['prior_committed_usd']:.2f} prior + "
+        f"${allocation['live_run_local_max_usd']:.2f} long-run allocation <= "
+        f"${LR.ABSOLUTE_PROVIDER_RUN_CAP_USD:.2f} total; "
+        f"{paid_policy.max_calls} physical calls max",
+        file=sys.stderr,
+    )
+
+    webhook_probe = None
+    if args.webhook_probe:
+        from percept.harness.webhook_probe import LoopbackWebhookProbe
+
+        webhook_probe = LoopbackWebhookProbe(sink_timeout_s=5.0).start()
+        args._webhook_probe = webhook_probe
+        print(f"[long_run] webhook receiver probe: {webhook_probe.url}", file=sys.stderr)
+    try:
+        payload = asyncio.run(run_long(args))
+    finally:
+        if webhook_probe is not None:
+            webhook_probe.close()
     RESULTS.mkdir(parents=True, exist_ok=True)
     (RESULTS / f"{args.out_stem}.json").write_text(json.dumps(payload, indent=1, default=str))
     (RESULTS / f"{args.out_stem}.md").write_text(render_md(payload))

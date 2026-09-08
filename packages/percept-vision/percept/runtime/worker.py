@@ -248,13 +248,15 @@ class RuntimeStats:
     deliveries_dropped: int = 0
     audio_chunks: int = 0  # audio chunks pumped into the AudioWindow (fused/acoustic perception)
     audio_wakes: int = 0  # audio onsets that admitted a frame the visual gate would have skipped
+    candidate_wakes: int = 0  # local detector candidates that admitted one semantic verification
     # Admission partition (each admitted frame lands in EXACTLY one bucket, so the totals sum cleanly):
-    #   escalations == signal_admits + fixed_admits + coast_admits + audio_wakes
+    #   escalations == signal_admits + fixed_admits + coast_admits + audio_wakes + candidate_wakes
     # - signal_admits: the tuned motion/salience gate escalated (decision.escalate) — the real signal.
     # - coast_admits: a fixed-cadence coast floor forced the judge on a frame the gate would have
     #   skipped (coast_admit and NOT escalate). A strict_admission ExecutionPolicy (coast_enabled=False)
     #   strips a SourceProfile coast at resolve time, so this stays 0 on static content there.
     # - audio_wakes: an audio onset admitted a frame neither the gate nor the coast would (above).
+    # - candidate_wakes: a goal-scoped local detector proposed one semantic verification.
     signal_admits: int = 0  # tuned-signal (motion/salience) escalations
     fixed_admits: int = 0  # fixed-only per-Watch cadence admits (never motion-labelled)
     coast_admits: int = 0  # fixed-cadence coast admits (no tuned signal, no audio)
@@ -326,7 +328,7 @@ class RuntimeStats:
     # scheduler has moved on. So a cache-served dispatch is counted here. The TRACE is where served
     # ticks are subtracted back out, from the marker the serve itself sets
     # (`percept.tracing.judge_call_was_served` / `TraceSummary.judge_direct_hits`). Read this
-    # counter for DISPATCHES; read the trace's `actual_judge_calls` for SPEND. On a run with the
+    # counter for DISPATCHES; read the trace's `provider_calls` for SPEND. On a run with the
     # cache off the two are equal.
     fixed_opportunities: int = 0
     goal_admissions: int = 0
@@ -407,6 +409,10 @@ _DELIVERY_QUEUE_MAX = 64
 # shallow lane lost the very evidence of itself. Overflow here is still counted (`receipts_dropped`)
 # and every receipt carries the running `dropped_total`, so the true count always reconciles.
 _DELIVERY_RECEIPT_MAX = 1024
+
+
+class _TransactionalOutboxPersistenceError(RuntimeError):
+    """A durable-delivery operation failed and the runtime must stop, even in ignore mode."""
 
 
 @dataclass(frozen=True)
@@ -659,7 +665,14 @@ class _DeliverySpool:
                 item.health_kind, data={"error": repr(exc), "sink": item.sink}
             )
         )
-        if item.errors != "ignore" and self._fatal is None:
+        # A notification failure may follow the caller's ordinary ``sink_errors`` policy.  Losing
+        # the state/outbox transaction or its ACK may not: continuing would expose later network
+        # effects after durability has become unknown.  Keep that invariant even when the caller
+        # deliberately configured best-effort notification delivery.
+        if (
+            item.errors != "ignore"
+            or isinstance(exc, _TransactionalOutboxPersistenceError)
+        ) and self._fatal is None:
             self._fatal = exc
 
     async def _emit(self, event: RuntimeHealthEvent) -> None:
@@ -750,6 +763,139 @@ class _SpooledSink:
                 incident=args[0] if self._channel == "incident" and args else None,
             )
         )
+
+
+class _TransactionalWebhookSink:
+    """Deliver only webhook payloads that already exist in a transactional durable outbox.
+
+    The runtime stages a :class:`~percept.persistence.PendingDelivery` in the same SQLite
+    transaction as the cognition snapshot before this callable can be reached.  The network call
+    therefore consumes the persisted payload, not the live Incident object.  A successful call is
+    followed by one transaction that removes the pending row and writes the delivered-ID ledger.
+    """
+
+    def __init__(self, sink: Callable, persistence: Any, ledger: Any) -> None:
+        self._sink = sink
+        self._persistence = persistence
+        self._ledger = ledger
+        self._sink_config_ref = sink.outbox_sink_config_ref
+        self._staged: dict[str, Any] = {}
+
+    def stage(self, deliveries: Any) -> None:
+        for delivery in deliveries:
+            self._staged[delivery.event_id] = delivery
+
+    def __call__(self, incident: Any) -> Any:
+        event_id = getattr(incident, "id", None)
+        delivery = self._staged.get(event_id)
+        if delivery is None:
+            raise _TransactionalOutboxPersistenceError(
+                f"incident {event_id!r} reached webhook delivery before durable enqueue"
+            )
+        return self.deliver_pending(delivery)
+
+    @staticmethod
+    def _durable_now(*floors: float | None) -> float:
+        """Return a restart-comparable timestamp that cannot precede its durable record."""
+
+        return max(
+            time.time(),
+            *(float(value) for value in floors if value is not None),
+        )
+
+    def _proposed_ledger(self, event_id: str, delivered_at: float) -> Any:
+        # Build the exact bounded ledger state first without mutating the live ledger.  If the ACK
+        # transaction fails after the HTTP 2xx, in-memory state must remain un-ACKed so a restart
+        # replays the same stable ID.
+        from percept.runtime.sinks import IdempotencyLedger
+
+        proposed = IdempotencyLedger(
+            max_records=self._ledger.max_records,
+            ttl_s=self._ledger.ttl_s,
+        )
+        proposed.restore(self._ledger.snapshot())
+        proposed.mark_delivered(event_id, ts=delivered_at)
+        return proposed.snapshot()
+
+    @staticmethod
+    def _ledger_timestamp(snapshot: Any, event_id: str) -> float | None:
+        for row in snapshot or ():
+            if isinstance(row, (list, tuple)) and len(row) >= 2 and row[0] == event_id:
+                return float(row[1])
+        return None
+
+    async def deliver_pending(self, delivery: Any) -> None:
+        """Attempt one pending row and ACK only after the webhook completes successfully."""
+
+        if delivery.sink_config_ref != self._sink_config_ref:
+            raise _TransactionalOutboxPersistenceError(
+                "pending webhook route does not match the configured WebhookSink"
+            )
+
+        current = self._ledger.snapshot()
+        delivered_at = self._ledger_timestamp(current, delivery.event_id)
+        delivered_check_at = self._durable_now(delivery.created_at)
+        if (
+            delivered_at is not None
+            and self._ledger.is_delivered(
+                delivery.event_id,
+                now=delivered_check_at,
+            )
+        ):
+            # Defensive recovery for a legacy/non-atomic checkpoint: no second network exposure.
+            try:
+                self._persistence.ack_delivery(
+                    delivery.event_id,
+                    current,
+                    delivered_at=delivered_at,
+                )
+            except Exception as exc:  # noqa: BLE001 - persistence failures are always fatal
+                raise _TransactionalOutboxPersistenceError(
+                    f"failed to remove already-delivered outbox event {delivery.event_id!r}"
+                ) from exc
+            self._staged.pop(delivery.event_id, None)
+            return
+
+        attempted_at = self._durable_now(
+            delivery.created_at,
+            delivery.last_attempt_at,
+        )
+        try:
+            noted = self._persistence.note_delivery_attempt(
+                delivery.event_id,
+                attempted_at=attempted_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - persistence failures are always fatal
+            raise _TransactionalOutboxPersistenceError(
+                f"failed to record webhook attempt for {delivery.event_id!r}"
+            ) from exc
+        if not noted:
+            raise _TransactionalOutboxPersistenceError(
+                f"pending webhook event {delivery.event_id!r} disappeared before delivery"
+            )
+
+        result = self._sink(delivery.payload)
+        if inspect.isawaitable(result):
+            await result
+
+        delivered_at = self._durable_now(attempted_at)
+        proposed = self._proposed_ledger(delivery.event_id, delivered_at)
+        try:
+            acknowledged = self._persistence.ack_delivery(
+                delivery.event_id,
+                proposed,
+                delivered_at=delivered_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - send succeeded, so this must replay loudly
+            raise _TransactionalOutboxPersistenceError(
+                f"webhook sent but durable ACK failed for {delivery.event_id!r}"
+            ) from exc
+        if not acknowledged:
+            raise _TransactionalOutboxPersistenceError(
+                f"webhook sent but pending event {delivery.event_id!r} vanished before ACK"
+            )
+        self._ledger.mark_delivered(delivery.event_id, ts=delivered_at)
+        self._staged.pop(delivery.event_id, None)
 
 
 def _unwrap_sink(sink: Any) -> Any:
@@ -3009,6 +3155,30 @@ async def _drain_restore_health(core: Any, on_health: "Callable | None") -> None
         await _call_sink(on_health, RuntimeHealthEvent(kind, data=data))
 
 
+def _preflight_persistence_snapshot(core: Any, persistence: Any) -> None:
+    """Prove this core can produce the state artifact ``run`` promises to save.
+
+    A configured persistence backend makes the worker call ``core.save_state`` either from the
+    autosave loop or on every exit.  A compiled Watch deliberately refuses that operation because
+    its executable/profile/judge/episode bindings are session-only, but the refusal used to arrive
+    only after capture had started: autosave translated it into repeated ``state_save_error`` health
+    events and teardown swallowed the final failure.  That run had spent provider calls while never
+    being capable of keeping the durability contract its configuration requested.
+
+    Ask the core's side-effect-free ``snapshot`` seam once after optional restore and before opening
+    or pulling the source.  The existing ``CompiledWatchSnapshotUnsupportedError`` therefore remains
+    the policy and the public error; this function only moves it to the configuration boundary.  A
+    duck-typed core that does not expose both ``save_state`` and ``snapshot`` retains the historical
+    delivery-ledger-only behavior.
+    """
+    if persistence is None:
+        return
+    save_state = getattr(core, "save_state", None)
+    snapshot = getattr(core, "snapshot", None)
+    if callable(save_state) and callable(snapshot):
+        snapshot()
+
+
 def _log_disposition(log: Any, *, incident_id: str, fire: Any, disposition: str, ts: float) -> None:
     """Append one gate disposition to the :class:`~percept.labelstore.DispositionLog`.
 
@@ -4241,7 +4411,10 @@ async def _run_worker(
       in an :class:`~percept.runtime.sinks.IdempotentSink` bound to a bounded, restart-
       surviving :class:`~percept.runtime.sinks.IdempotencyLedger` keyed by ``incident.id`` (the
       event_id) — a redelivery of an event_id already delivered to terminal-OK is deduped (the sink is
-      not called again), while a retry of an in-flight/failed one still reaches it normally.
+      not called again), while a retry of an in-flight/failed one still reaches it normally.  The
+      explicit ``TransactionalOutboxPersistence`` + bare ``WebhookSink`` combination strengthens
+      that path: post-fire cognition state and the frozen wire payload commit together before the
+      network call, and pending rows replay oldest-first at startup.
     - ``on_ask(event)`` — optional refusal sink for low-confidence reads; asks are not incidents.
     - ``on_frame(t, judge_frame)`` — the live-feed hook (wire an MJPEG streamer here).
     - ``on_health(event)`` — optional structured health/telemetry hook.
@@ -4520,7 +4693,7 @@ async def _run_worker(
         UnsupportedDurationRouteError,
         require_duration_routes,
     )
-    from percept.edge.detectors import DetectorBank
+    from percept.edge.detectors import DetectorBank, manifest_of
     from percept.edge.tier0 import MotionGate, compile_watchspec, watchspec_kwargs
     from percept.rhythm import RhythmDrive
 
@@ -4905,6 +5078,13 @@ async def _run_worker(
         # ``episode_memory_reset`` restore() queued so that amnesia reaches on_health loudly, once.
         await _drain_restore_health(core, on_health)
 
+    # Fail at the configuration boundary, before source capture/iteration or a provider call.  In
+    # particular, a compiled Watch intentionally cannot produce an OSS snapshot; discovering that
+    # from the autosave task (or silently at final save) makes a non-durable run look healthy first.
+    # Restore runs immediately above because it may replace a pre-existing compiled Watch with a
+    # supported plain-goal snapshot; the capability checked here is the state the worker will drive.
+    _preflight_persistence_snapshot(core, persistence)
+
     # ADR-001 §6: the delivery-path idempotency ledger — bounded, restart-surviving, keyed
     # by event_id (= Incident.id, percept/incidents.py). Built unconditionally (mirrors _funnel/_gate
     # above) so the dedupe-on-redelivery guarantee holds even when persistence isn't wired at all; when
@@ -4912,16 +5092,64 @@ async def _run_worker(
     # a restart) and the autosave loop below persists it back out, so a crash/restart resumes with the
     # same "already delivered" memory instead of starting blank. `on_incident` is wrapped AFTER any
     # restore so a redelivered Incident from a resumed session is checked against the rehydrated state.
-    from percept.runtime.sinks import IdempotencyLedger, IdempotentSink
+    from percept.persistence import (
+        PendingDelivery,
+        TRANSACTIONAL_OUTBOX_CAPABILITY,
+        TransactionalOutboxPersistence,
+    )
+    from percept.runtime.sinks import (
+        IdempotencyLedger,
+        IdempotentSink,
+        WebhookSink,
+        incident_payload,
+    )
+
+    # Crash-safe delivery is an explicit, narrow capability intersection: the persistence backend
+    # must advertise the transactional outbox protocol and the user sink must be the bare reference
+    # WebhookSink.  Wrapper chains and arbitrary callbacks retain their existing IdempotentSink path;
+    # guessing how to serialize or route those would silently change their contract.
+    _transactional_store = None
+    if (
+        persistence is not None
+        and type(on_incident) is WebhookSink
+        and isinstance(persistence, TransactionalOutboxPersistence)
+        and getattr(persistence, "outbox_capability", None)
+        == TRANSACTIONAL_OUTBOX_CAPABILITY
+    ):
+        if not callable(getattr(core, "snapshot", None)):
+            raise TypeError(
+                "transactional webhook delivery requires core.snapshot() for its atomic state commit"
+            )
+        _transactional_store = persistence
 
     _idem_ledger = IdempotencyLedger()
-    if persistence is not None and restore:
+    if _transactional_store is not None:
+        # The outbox/ACK ledger is delivery state, not cognition state.  Always restore it when this
+        # explicit capability is active, even if the caller intentionally starts cognition fresh.
+        # Unlike the legacy best-effort restore below, backend read failures must stop the run.
+        _idem_ledger.restore(persistence.load("percept_delivery_ledger"))
+    elif persistence is not None and restore:
         try:
             _idem_ledger.restore(persistence.load("percept_delivery_ledger"))
         except Exception:  # noqa: BLE001 - a corrupt/missing ledger snapshot must never block restart
             pass
+    _transactional_webhook = None
     if on_incident is not None:
-        on_incident = IdempotentSink(on_incident, _idem_ledger, clock=wall_clock)
+        if _transactional_store is not None:
+            _transactional_webhook = _TransactionalWebhookSink(
+                on_incident,
+                _transactional_store,
+                _idem_ledger,
+            )
+            pending = _transactional_store.load_pending_deliveries()
+            _transactional_webhook.stage(pending)
+            # ``load_pending_deliveries`` is ordered by (created_at, event_id); awaiting each record
+            # here preserves that order and finishes crash recovery before capture/source iteration.
+            for delivery in pending:
+                await _transactional_webhook.deliver_pending(delivery)
+            on_incident = _transactional_webhook
+        else:
+            on_incident = IdempotentSink(on_incident, _idem_ledger, clock=wall_clock)
 
     # DELIVERY OFF THE PERCEPTION CRITICAL PATH. Every notification sink now goes through one
     # bounded, drop-oldest, receipted lane (:class:`_DeliverySpool`) instead of being awaited inline
@@ -6726,6 +6954,39 @@ async def _run_worker(
             return materialized
 
         async def _emit_materialized(materialized):
+            if _transactional_webhook is not None:
+                incidents = tuple(
+                    item.incident
+                    for item in materialized.items
+                    if item.action == FIRE and item.incident is not None
+                )
+                if incidents:
+                    created_at = time.time()
+                    deliveries = tuple(
+                        PendingDelivery(
+                            event_id=incident.id,
+                            payload=incident_payload(
+                                incident,
+                                include_media=_transactional_webhook._sink.include_media,
+                            ),
+                            sink_config_ref=(
+                                _transactional_webhook._sink.outbox_sink_config_ref
+                            ),
+                            created_at=created_at,
+                        )
+                        for incident in incidents
+                    )
+                    # This is the only state transition that can precede webhook exposure: the
+                    # post-reduction cognition snapshot and every frozen Incident payload land in
+                    # one SQLite transaction.  Stage for the callable only after commit succeeds.
+                    state = core.snapshot()
+                    try:
+                        _transactional_store.commit_state_and_enqueue(state, deliveries)
+                    except Exception as exc:  # noqa: BLE001 - durability failure is always fatal
+                        raise _TransactionalOutboxPersistenceError(
+                            "failed to atomically commit cognition state and webhook outbox"
+                        ) from exc
+                    _transactional_webhook.stage(deliveries)
             delivered = await _deliver_materialized(
                 materialized,
                 core=core,
@@ -7453,19 +7714,28 @@ async def _run_worker(
                 outcome.goal_id: float(outcome.score) for outcome in decision.outcomes
             }
 
-            # Run edge detectors on the cheap motion/energy signals at native fps. Each emitted
+            # Run edge detectors on the cheap motion/energy/full-frame signals at native fps. A
+            # historical ``boundary`` detector feeds count cognition without a cloud call. An
+            # ``admission`` detector proposes exactly one ordinary semantic verification for its
+            # own goal through the same schedule/cadence firewall as an audio wake.
             # boundary (a rep peak, an acoustic onset) is a distinct occurrence fed to the brain via
             # perceive_boundary (edge proposes · brain counts) — firing per the goal's accumulate.fire_when
             # WITHOUT a cloud judge. No banks -> this whole block is skipped (byte-for-byte the pre-PR path).
-            if banks and perceive_boundary is not None:
+            candidate_proposals: list[tuple[str, Any]] = []
+            if banks:
                 for goal_id, bank in banks.items():
                     for b in bank.push(t, motion=decision.signal.motion, frame=judge_frame, energy=energy_now):
+                        if manifest_of(b.detector).route == "admission":
+                            if b.kind == "candidate":
+                                candidate_proposals.append((goal_id, b))
+                            continue
                         if stats is not None:
                             stats.boundaries += 1
-                        fired = perceive_boundary(goal_id, t=b.t)
-                        if fired is not None:
-                            async for incident in _emit_fires([fired], at=b.t):
-                                yield incident
+                        if perceive_boundary is not None:
+                            fired = perceive_boundary(goal_id, t=b.t)
+                            if fired is not None:
+                                async for incident in _emit_fires([fired], at=b.t):
+                                    yield incident
             # The RHYTHM sense (percept.rhythm): measure this frame's decomposed channels and let the
             # brain confirm reps causally. Runs on EVERY frame at native rate — never tier-0 gated,
             # never judged — so the count is bounded by the frame rate, not by judgment density. Reps
@@ -7541,6 +7811,33 @@ async def _run_worker(
                 audio["wake_at"] = None
             admitted_goal_ids = list(decision.goal_ids)
             admitted_causes = list(decision.admission_causes)
+            candidate_goal_ids = gate.admit_external(
+                [goal_id for goal_id, _ in candidate_proposals], ts=t
+            ) if candidate_proposals else ()
+            candidate_admit = bool(candidate_goal_ids)
+            if candidate_admit:
+                _cov.candidate_wakes += 1
+                for goal_id in candidate_goal_ids:
+                    if goal_id not in admitted_goal_ids:
+                        admitted_goal_ids.append(goal_id)
+                        admitted_causes.append("candidate")
+                if on_health is not None:
+                    _candidate_rows = [
+                        {
+                            "goal_id": goal_id,
+                            "detector": boundary.detector,
+                            "score": float(boundary.value),
+                        }
+                        for goal_id, boundary in candidate_proposals
+                        if goal_id in candidate_goal_ids
+                    ]
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "candidate_wake", ts=t,
+                            data={"source": gate_source, "candidates": _candidate_rows},
+                        ),
+                    )
             if coast_admit:
                 for goal_id in coast_goal_ids:
                     if goal_id not in admitted_goal_ids:
@@ -7695,7 +7992,9 @@ async def _run_worker(
             # escalation, else a fixed-cadence coast admit, else an audio wake. This mirrors the
             # `cause` string computed just below for the escalation health event.
             gate_causes = set(decision.admission_causes)
-            if decision.escalate and gate_causes - {"fixed"}:
+            if candidate_admit and not decision.escalate:
+                pass  # counted in candidate_wakes above
+            elif decision.escalate and gate_causes - {"fixed"}:
                 _cov.signal_admits += 1
             elif decision.escalate and gate_causes == {"fixed"}:
                 _cov.fixed_admits += 1
@@ -7704,7 +8003,9 @@ async def _run_worker(
             if audio_admit and not (decision.escalate or coast_admit):
                 _cov.audio_wakes += 1
             if on_health is not None:
-                if audio_admit and not (decision.escalate or coast_admit):
+                if candidate_admit and not (decision.escalate or coast_admit or audio_admit):
+                    cause = "candidate"
+                elif audio_admit and not (decision.escalate or coast_admit):
                     cause = "audio"
                 elif audio_admit and decision.escalate:
                     cause = "both"
@@ -8190,6 +8491,7 @@ async def _run_worker(
                 "fixed_admits": _cov.fixed_admits,
                 "coast_admits": _cov.coast_admits,
                 "audio_wakes": _cov.audio_wakes,
+                "candidate_wakes": _cov.candidate_wakes,
                 # ...and the per-(FRAME x GOAL) accounting below it, which uses the OTHER
                 # denominator on purpose (see RuntimeStats): both maps sum to `goal_admissions`,
                 # never to `admitted`, because one admitted frame admits every goal that cleared its

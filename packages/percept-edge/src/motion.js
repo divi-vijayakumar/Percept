@@ -224,14 +224,15 @@ function nearestRankP95(scores) {
 }
 
 /**
- * Ego-motion-compensated salience: the minimum mean-abs-diff over an integer-pixel global shift.
+ * Ego-motion-compensated salience after a mean-estimated integer-pixel global shift.
  *
  * Removes whole-frame translation (camera pan / head turn) by searching integer shifts `(dx,dy)` in
- * `[-k,k]` and taking the *residual* — the smallest MAD between `prev` shifted by `(dx,dy)` and
- * `frame` over their overlap. A pure pan is explained by some shift (residual ~0, no false escalate);
- * a subject entering the frame cannot be shifted away (residual stays high). The `(0,0)` shift equals
- * the uncompensated mean, so the residual is always <= the full-frame `motionScore`. Mirrors the
- * Python `percept.harness.tier0.ego_residual_score` bit-for-bit.
+ * `[-k,k]`, choosing the shift with the smallest whole-frame MAD. The already-aligned residual is
+ * then summarized with `stat` (`mean`, `block_max`, or `p95`) on the same scale as `motionScore`.
+ * The default `mean` result is byte-for-byte the legacy path; its `(0,0)` candidate equals the
+ * uncompensated mean, so that result is always <= the full-frame mean `motionScore`. A pure pan is
+ * explained by some shift (every residual statistic ~0); localized subject motion remains localized
+ * after alignment. Mirrors Python `percept.harness.tier0.ego_residual_score` bit-for-bit.
  *
  * `region` (the watch-out zone) restricts WHAT IS MEASURED, never WHAT IS ESTIMATED. The shift
  * search still runs over the whole frame, because a pan is a whole-frame property: a zone can be too
@@ -243,10 +244,14 @@ function nearestRankP95(scores) {
  *
  * @param {{width:number,height:number,data:Uint8Array|number[]}|null|undefined} prevFrame
  * @param {{width:number,height:number,data:Uint8Array|number[]}} frame
- * @param {{k?:number, region?:{x:number,y:number,w:number,h:number}|null}} [opts]
+ * @param {{k?:number, region?:{x:number,y:number,w:number,h:number}|null, stat?:"mean"|"block_max"|"p95", blockGrid?:[number,number]}} [opts]
  * @returns {number} ego-compensated salience in [0, 1]
  */
-export function egoResidualScore(prevFrame, frame, { k = 4, region = null } = {}) {
+export function egoResidualScore(
+  prevFrame,
+  frame,
+  { k = 4, region = null, stat = "mean", blockGrid = [8, 6] } = {}
+) {
   if (prevFrame == null) return 0;
   assertBoxOpt(region, "region", "egoResidualScore");
   assertFrame(prevFrame, "prevFrame");
@@ -295,17 +300,18 @@ export function egoResidualScore(prevFrame, frame, { k = 4, region = null } = {}
     }
   }
   if (best === null) return 0;
-  if (region == null) return best;
-  return egoRegionResidual(a, b, w, h, region, bestDx, bestDy);
+  if (stat === "mean" && region == null) return best;
+  return egoAlignedResidual(a, b, w, h, region, stat, blockGrid, bestDx, bestDy);
 }
 
-// The residual of the ALREADY-CHOSEN shift `(dx, dy)`, measured over `region ∩ overlap`. Two
+// Summarize the residual of the ALREADY-CHOSEN shift `(dx, dy)` over `region ∩ overlap`. Two
 // rectangles in `frame` coordinates: the overlap the shift leaves behind, and the watch-out zone.
 // Their intersection is the only place the zone's promise ("movement elsewhere is ignored") and the
-// shift's validity ("both frames have a pixel here") both hold. Integer sum over an integer
-// denominator, exactly like the unmasked path. Twin: `tier0._ego_region_residual`.
-function egoRegionResidual(a, b, w, h, region, dx, dy) {
-  const [rx0, ry0, rx1, ry1] = regionBounds(region, w, h);
+// shift's validity ("both frames have a pixel here") both hold. Crop it into two same-size frames so
+// `motionScore` remains the single implementation of mean/block_max/p95 partition semantics. Twin:
+// `tier0._ego_aligned_residual`.
+function egoAlignedResidual(a, b, w, h, region, stat, blockGrid, dx, dy) {
+  const [rx0, ry0, rx1, ry1] = region == null ? [0, 0, w, h] : regionBounds(region, w, h);
   const ox0 = dx > 0 ? dx : 0;
   const oy0 = dy > 0 ? dy : 0;
   const ox1 = ox0 + w - (dx >= 0 ? dx : -dx);
@@ -319,17 +325,21 @@ function egoRegionResidual(a, b, w, h, region, dx, dy) {
   const mw = mx1 - mx0;
   const mh = my1 - my0;
   if (mw <= 0 || mh <= 0) return 0;
-  const npx = mw * mh;
-  let total = 0;
+  const alignedPrev = [];
+  const alignedCur = [];
   for (let fy = my0; fy < my1; fy++) {
     const fbBase = fy * w;
     const paBase = (fy - dy) * w;
     for (let fx = mx0; fx < mx1; fx++) {
-      const d = a[paBase + (fx - dx)] - b[fbBase + fx];
-      total += d < 0 ? -d : d;
+      alignedPrev.push(a[paBase + (fx - dx)]);
+      alignedCur.push(b[fbBase + fx]);
     }
   }
-  return total / (npx * 255);
+  return motionScore(
+    { width: mw, height: mh, data: alignedPrev },
+    { width: mw, height: mh, data: alignedCur },
+    { stat, blockGrid }
+  );
 }
 
 /**

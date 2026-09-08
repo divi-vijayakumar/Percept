@@ -89,9 +89,10 @@ import os
 import re
 import statistics
 import sys
+import threading
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -104,11 +105,24 @@ sys.path.insert(0, str(HERE))
 # metric code is REUSED, never reimplemented -- see the module docstring
 # ---------------------------------------------------------------------------------------------
 import stage_metrics as SM  # noqa: E402
+import qualification_contract as QC  # noqa: E402
+from raw_vlm_baseline import (  # noqa: E402
+    BaselineInputError as ProviderBudgetInputError,
+    DEFAULT_POINT_TOLERANCE_S,
+    PaidBudgetExceeded as ProviderBudgetExceeded,
+    PaidBudgetLedger,
+    PaidRunPolicy,
+    PricingStamp,
+    _atomic_json as _atomic_budget_json,
+    score_temporal_events,
+)
 
 from percept import Percept  # noqa: E402
 from percept._build import build_info  # noqa: E402
 from percept.backends.judge_pool import (  # noqa: E402
     LATENCY_MODE_CONTEXT_KEY,
+    REFLEX_DECISION_DEADLINE_S,
+    REFLEX_PROVIDER_DEADLINE_S,
     JudgeCapability,
     JudgePool,
     JudgeRoute,
@@ -116,6 +130,9 @@ from percept.backends.judge_pool import (  # noqa: E402
 from percept.config import load_settings  # noqa: E402
 from percept.contracts.watchplan import WatchPlan  # noqa: E402
 from percept.incidents import incident_judgment  # noqa: E402
+from percept.profile_resolution import resolve_profile, resolve_situation  # noqa: E402
+from percept.profile_wiring import resolve_watch_profile  # noqa: E402
+from percept.profiles_default import seed as seed_watch_profiles  # noqa: E402
 from percept.resolver import ConfigResolver  # noqa: E402
 from percept.runtime import (  # noqa: E402
     NativeVideoVision,
@@ -128,6 +145,7 @@ from percept.runtime.worker import run as worker_run  # noqa: E402
 from percept.sensorplan import sensor_plan_for  # noqa: E402
 from percept.source_profiles_default import PHYSICAL_SCENE  # noqa: E402
 from percept.watchplan_apply import apply_watch_plan  # noqa: E402
+from percept.watchprofile import WatchProfileRegistry  # noqa: E402
 
 # ---------------------------------------------------------------------------------------------
 # pinned constants -- cited from the runtime/bench, or DECLARED here before the run
@@ -152,20 +170,26 @@ from percept.watchplan_apply import apply_watch_plan  # noqa: E402
 #: so the bounded 320-token reply, the absent free-text ``evidence`` field and (on a build that has
 #: it) the 3-frame evidence bound all stay in force. A raised-deadline reflex arm is NOT the
 #: deliberate arm, which additionally relaxes the output contract to 1024 verbose tokens.
-ACTION_PROVIDER_DEADLINE_S = float(os.environ.get("PERCEPT_SV_PROVIDER_DEADLINE_S", "1.5"))
-ACTION_DECISION_DEADLINE_S = float(os.environ.get("PERCEPT_SV_DECISION_DEADLINE_S", "1.9"))
+ACTION_PROVIDER_DEADLINE_S = float(
+    os.environ.get("PERCEPT_SV_PROVIDER_DEADLINE_S", str(REFLEX_PROVIDER_DEADLINE_S))
+)
+ACTION_DECISION_DEADLINE_S = float(
+    os.environ.get("PERCEPT_SV_DECISION_DEADLINE_S", str(REFLEX_DECISION_DEADLINE_S))
+)
 
 #: The user-visible product gate: action onset -> Incident.
 ACTION_TO_INCIDENT_GATE_S = 2.0
+# Product viability constraint supplied by the launch owner.  This is an ALL-IN ceiling, not a
+# provider-token budget: a token estimate alone is therefore evidence, but can never pass the gate.
+ABSOLUTE_COST_CEILING_USD_PER_SOURCE_HOUR = 0.10
 
 #: The deliberate arm's budget.  Generous BY DESIGN so deliberate quality is measured un-truncated
 #: (see the module docstring).  A deliberate arm at 1.5 s measures the bus, not the model.
 DELIBERATE_PROVIDER_DEADLINE_S = 30.0
 DELIBERATE_DECISION_DEADLINE_S = 40.0
 
-#: Evidence shape held identical across arms -- the event-chain occurrence watch, which is what a
-#: real occurrence watch sends.  Copied from the bench (lines 65-80 of the same file).
-ACTION_BRIEF_WINDOW_S = 1.0
+#: Default evidence envelope used by the corpus's predeclared goal-shape contract.  Unlike the old
+#: universal brief-window prior, these do not change capture cadence or claim every event is brief.
 ACTION_TEMPORAL_WINDOW_S = 2.0
 ACTION_TEMPORAL_FRAMES = int(os.environ.get("PERCEPT_SV_FRAMES", "5"))
 # Overridable so the frame-count/latency trade can be measured without editing the harness: fewer
@@ -235,11 +259,11 @@ LIFT_MIN_HEADROOM = 0.02
 #: schema 1 exposed one key ``occurrence_precision`` that was in fact emission-weighted.  Schema 2
 #: removes that name entirely rather than silently re-pointing it, and publishes two explicitly
 #: named, explicitly united figures instead.
-QUALITY_SCHEMA = "percept.quality/2-dual-unit-precision"
+QUALITY_SCHEMA = "percept.quality/3-strict-one-to-one-headline"
 
 #: Schema marker for the per-verdict rows persisted on every case record.  One row per
 #: ``gate.classified`` trace event: ``(media_ts, satisfied, confidence, truth, action, degraded)``.
-VERDICT_SCHEMA = "percept.verdicts/1-gate-classified"
+VERDICT_SCHEMA = "percept.verdicts/2-primitive-decision"
 
 #: Receipt outcomes that mean the pool produced no usable provider answer.  NOTE: unlike the
 #: qualification bench, this harness does NOT pass these as ``terminal_outcomes`` -- a measurement
@@ -251,6 +275,11 @@ FAILED_OUTCOMES = frozenset({"provider_error", "malformed", "deadline", "capacit
 #: without re-running the corpus.  ``None`` means "not priced" and the report says so rather than
 #: inventing a figure.
 DEFAULT_PRICES: dict[str, dict[str, Any]] = {}
+
+# One live_run invocation may cover every case in both modes.  This is the user's absolute testing
+# authorization, not a per-mode allowance: no CLI value may widen it.
+ABSOLUTE_PROVIDER_RUN_CAP_USD = 100.0
+PROVIDER_BUDGET_SCHEMA = "percept.live-run.provider-budget/2-token-settlement"
 
 
 def capture_fps(cadence: dict) -> float:
@@ -285,35 +314,404 @@ async def authored_for(goal_text: str) -> Any:
     return await PlanConductor(cache=_authoring_pin()).author(goal_text)
 
 
-def watch_plan_for(goal_id: str, condition: str, authored: Any = None) -> WatchPlan:
+def authored_plan_issues(cases: Sequence[dict], authored: Sequence[Any]) -> list[str]:
+    """Return launch-invalid authored-plan mismatches without consulting scoring annotations.
+
+    The frozen conductor chooses from goal text alone.  This check runs *after* that choice and
+    compares the resulting primitive with the corpus's independently declared ``goal_kind``.  It
+    never repairs or replaces a plan from ground truth: a mismatch aborts the arm before any vision
+    provider call, which is the only honest outcome for a mechanics-qualified run.
+    """
+    from percept.conductor import goal_kind_of
+
+    issues: list[str] = []
+    if len(cases) != len(authored):
+        return [f"authored plan count {len(authored)} != selected case count {len(cases)}"]
+    for case, primitive in zip(cases, authored):
+        case_id = str(case.get("case_id") or "<unknown>")
+        goal_text = str(case.get("goal_text") or "")
+        if primitive.goal_text != goal_text:
+            issues.append(
+                f"{case_id}: pin text {primitive.goal_text!r} != selected goal {goal_text!r}"
+            )
+            continue
+        expected = str(case.get("goal_kind") or "")
+        actual = goal_kind_of(primitive)
+        if actual != expected:
+            issues.append(
+                f"{case_id}: frozen conductor selected {actual!r} "
+                f"({primitive.behavior_type!r}), expected declared goal_kind {expected!r}"
+            )
+    return issues
+
+
+def authored_plan_armability_issues(
+    cases: Sequence[dict],
+    authored: Sequence[Any],
+    *,
+    settings: Any = None,
+) -> list[str]:
+    """Exercise the paid arm's exact resolve/compile/apply seam without constructing a provider.
+
+    Primitive fidelity alone is insufficient: a correctly classified primitive may still select a
+    runtime route that ``percept.run`` cannot drive.  Use a fresh offline core for each case so this
+    preflight has the same one-plan/one-core isolation as :func:`run_case`, while the scripted vision
+    seam makes a provider call impossible.  The real :func:`watch_plan_for`, resolver, physical-scene
+    profile, and strict receipt acceptance rule are deliberately shared with the paid path.
+    """
+    if len(cases) != len(authored):
+        return [f"authored plan count {len(authored)} != selected case count {len(cases)}"]
+
+    resolved_settings = settings or load_settings()
+    issues: list[str] = []
+    for case, primitive in zip(cases, authored):
+        case_id = str(case.get("case_id") or "<unknown>")
+        goal_id = _goal_id(case_id)
+        case_settings = settings_for_case(resolved_settings, case)
+        core = Percept.create(
+            vision="scripted",
+            specialist="scripted",
+            conductor="scripted-conductor",
+            stt="fake",
+            tts="fake",
+            settings=case_settings,
+            discover_plugins=False,
+            mode="offline",
+        )
+        situation = situation_for(case)
+        receipt = apply_watch_plan(
+            core,
+            watch_plan_for(
+                goal_id,
+                str(case["goal_text"]),
+                primitive,
+                evidence_contract=(None if situation is not None else evidence_contract_for(case)),
+            ),
+            resolver=ConfigResolver(),
+            source_profile=PHYSICAL_SCENE,
+            situation=situation,
+            registry=watch_profile_registry() if situation is not None else None,
+            # Core-scoped profile values must be present before Percept.create(); resolve the arm
+            # against those same effective settings so apply cannot manufacture an inert per-Watch
+            # override or reject a correctly preconfigured core as drifted.
+            settings=case_settings,
+        )
+        if receipt.status == "applied" and receipt.watch_ids == (goal_id,):
+            goal = core.goals.get(goal_id)
+            actual_type, actual_rearm = effective_goal_mechanics(goal)
+            expected_type, expected_rearm = authored_mechanics(primitive)
+            if (actual_type, actual_rearm) != (expected_type, expected_rearm):
+                issues.append(
+                    f"{case_id}: compiled mechanic drift after WatchPlan merge: "
+                    f"authored type={expected_type!r} rearm={expected_rearm!r}; "
+                    f"effective type={actual_type!r} rearm={actual_rearm!r}"
+                )
+            state = dict(getattr(goal, "state", {}) or {})
+            perception = dict(state.get("perception") or {})
+            contract = evidence_contract_for(case)
+            expected_perception = (
+                {} if situation is not None else dict(contract.get("perception") or {})
+            )
+            authored_explicit = dict(getattr(primitive, "explicit", None) or {})
+            for key in tuple(expected_perception):
+                path = f"Goal.state.perception.{key}"
+                if path in authored_explicit:
+                    expected_perception[key] = authored_explicit[path]
+            drift = {
+                key: {"expected": expected, "effective": perception.get(key)}
+                for key, expected in expected_perception.items()
+                if perception.get(key) != expected
+            }
+            if drift:
+                issues.append(
+                    f"{case_id}: compiled temporal-evidence drift after WatchPlan merge: {drift!r}"
+                )
+            expected_brief = (
+                None if situation is not None
+                else (contract.get("sense") or {}).get("brief_window_s")
+            )
+            if "Goal.state.sense.brief_window_s" in authored_explicit:
+                expected_brief = authored_explicit["Goal.state.sense.brief_window_s"]
+            actual_brief = (state.get("sense") or {}).get("brief_window_s")
+            if actual_brief != expected_brief:
+                issues.append(
+                    f"{case_id}: compiled cadence drift: authored/declared brief_window_s="
+                    f"{expected_brief!r}; effective brief_window_s={actual_brief!r}"
+                )
+            required_motion = source_motion_contract_for(case)
+            compiled = getattr(core, "_watch_runtime_bindings", {}).get(goal_id, (None,))[0]
+            actual_ego = bool(
+                getattr(getattr(getattr(compiled, "settings", None), "edge", None),
+                        "ego_compensate", False)
+            )
+            if required_motion.get("camera_motion") == "ego" and not actual_ego:
+                issues.append(
+                    f"{case_id}: compiled source-motion drift: corpus declares ego/moving camera "
+                    "but effective Settings.edge.ego_compensate=False"
+                )
+            if situation is not None:
+                profile, overrides = resolve_profile(
+                    *situation, registry=watch_profile_registry()
+                )
+                expected_policy = profile.cadence.to_sense_policy()
+                actual_policy = getattr(compiled, "sense_policy", None)
+                situation_drift = {
+                    "profile": profile.name,
+                    "plan_mode": {
+                        "expected": overrides["plan_mode"],
+                        "effective": getattr(compiled, "plan_mode", None),
+                    },
+                    "require_false_first": {
+                        "expected": overrides["gate"]["require_false_first"],
+                        "effective": compiled.settings.gate.require_false_first,
+                    },
+                    "ego_compensate": {
+                        "expected": overrides["ego_compensate"],
+                        "effective": compiled.settings.edge.ego_compensate,
+                    },
+                    "cadence": {
+                        "expected": vars(expected_policy),
+                        "effective": vars(actual_policy) if actual_policy is not None else None,
+                    },
+                }
+                if any(
+                    item["expected"] != item["effective"]
+                    for key, item in situation_drift.items()
+                    if key != "profile"
+                ):
+                    issues.append(
+                        f"{case_id}: compiled situation/profile drift: {situation_drift!r}"
+                    )
+            continue
+
+        warnings = [warning.code for warning in receipt.warnings]
+        dropped = [
+            f"{diagnostic.code} at {diagnostic.path}: {diagnostic.message}"
+            for diagnostic in receipt.dropped_fields
+        ]
+        issues.append(
+            f"{case_id}: WatchPlan did not arm: status={receipt.status}; "
+            f"watch_ids={list(receipt.watch_ids)!r}; warnings={warnings!r}; "
+            f"dropped_fields={dropped!r}"
+        )
+    return issues
+
+
+async def preflight_authored_plans(cases: Sequence[dict]) -> list[Any]:
+    """Resolve, validate, and dry-arm every selected primitive before the paid arm can start.
+
+    ``_authoring_pin()`` is frozen, so a missing goal raises instead of falling through to a live
+    authoring call.  Resolving the whole selection up front closes a costly failure mode in which
+    valid cases had already reached the vision provider while a later concurrent case discovered a
+    missing or wrong primitive.
+    """
+    from percept.conductor import AuthoringCacheMiss, PlanConductor
+
+    conductor = PlanConductor(cache=_authoring_pin())
+    authored: list[Any | None] = []
+    issues: list[str] = []
+    for case in cases:
+        try:
+            authored.append(await conductor.author(str(case["goal_text"])))
+        except AuthoringCacheMiss:
+            authored.append(None)
+            issues.append(
+                f"{case.get('case_id') or '<unknown>'}: frozen conductor has no decision for "
+                f"{case['goal_text']!r}"
+            )
+    present_pairs = [
+        (case, primitive)
+        for case, primitive in zip(cases, authored)
+        if primitive is not None
+    ]
+    present_cases = [case for case, _primitive in present_pairs]
+    present_primitives = [primitive for _case, primitive in present_pairs]
+    issues.extend(authored_plan_issues(present_cases, present_primitives))
+    if not issues:
+        issues.extend(authored_plan_armability_issues(present_cases, present_primitives))
+    if issues:
+        preview = "\n  - ".join(issues[:12])
+        suffix = f"\n  ... and {len(issues) - 12} more" if len(issues) > 12 else ""
+        raise ValueError(
+            f"frozen conductor is not mechanics-valid and armable for "
+            f"{len(issues)} selected case(s):"
+            f"\n  - {preview}{suffix}"
+        )
+    return [primitive for primitive in authored if primitive is not None]
+
+
+def authored_mechanics(authored: Any) -> tuple[str, str]:
+    """The primitive contract before the harness layers in evidence-shape settings."""
+    explicit = dict(getattr(authored, "explicit", None) or {})
+    behavior_type = str(explicit.get("Goal.state.type") or authored.behavior_type or "watch")
+    rearm = str(explicit.get("Goal.state.rearm") or "on_false")
+    return behavior_type, rearm
+
+
+def effective_goal_mechanics(goal: Any) -> tuple[str, str]:
+    """The runtime's post-resolve/post-compile mechanic, with runtime defaults made explicit."""
+    state = dict(getattr(goal, "state", None) or {})
+    return str(state.get("type") or "watch"), str(state.get("rearm") or "on_false")
+
+
+@functools.lru_cache(maxsize=4)
+def _source_motion_contract(path: str) -> dict[str, Any]:
+    try:
+        document = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return dict(document.get("source_motion_contract") or {})
+
+
+def source_motion_contract_for(case: dict) -> dict[str, Any]:
+    """Explicit corpus/source metadata; never inferred from labels or scoring annotations."""
+    contract = _source_motion_contract(str(SM.corpus_path()))
+    datasets = dict(contract.get("datasets") or {})
+    selected = dict(datasets.get(str(case.get("dataset"))) or {})
+    return {
+        "schema": contract.get("schema"),
+        "dataset": case.get("dataset"),
+        "camera_motion": selected.get("camera_motion", "unspecified"),
+        "evidence": selected.get("evidence"),
+    }
+
+
+def evidence_contract_for(case: dict) -> dict[str, Any]:
+    """Predeclared evidence shape by independently adjudicated goal kind, never GT duration."""
+    try:
+        document = json.loads(SM.corpus_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        document = {}
+    root = dict(document.get("evidence_contract") or {})
+    by_kind = dict(root.get("goal_kinds") or {})
+    selected = dict(by_kind.get(str(case.get("goal_kind"))) or root.get("default") or {})
+    return {
+        "schema": root.get("schema"),
+        "goal_kind": case.get("goal_kind"),
+        "sense": dict(selected.get("sense") or {}),
+        "perception": dict(selected.get("perception") or {}),
+        "rationale": selected.get("rationale"),
+    }
+
+
+@functools.lru_cache(maxsize=1)
+def watch_profile_registry() -> WatchProfileRegistry:
+    """An isolated, deterministically seeded registry for launch measurement."""
+    registry = WatchProfileRegistry()
+    seed_watch_profiles(registry)
+    return registry
+
+
+def situation_contract_for(case: dict) -> dict[str, Any]:
+    """Explicit situation axes declared in corpus metadata before any result is scored."""
+    try:
+        document = json.loads(SM.corpus_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        document = {}
+    root = dict(document.get("situation_contract") or {})
+    selected = dict((root.get("datasets") or {}).get(str(case.get("dataset"))) or {})
+    return {
+        "schema": root.get("schema"),
+        "dataset": case.get("dataset"),
+        "goal_temporality": selected.get("goal_temporality"),
+        "camera_mount": selected.get("camera_mount"),
+        "start_state": selected.get("start_state"),
+        "evidence": selected.get("evidence"),
+    }
+
+
+def situation_for(case: dict) -> tuple[str, str, str] | None:
+    contract = situation_contract_for(case)
+    axes = (
+        contract.get("goal_temporality"),
+        contract.get("camera_mount"),
+        contract.get("start_state"),
+    )
+    return axes if all(isinstance(value, str) and value for value in axes) else None
+
+
+def settings_for_case(settings: Any, case: dict) -> Any:
+    """Build core-scoped settings implied by declared situation axes before Watch application."""
+    situation = situation_for(case)
+    if situation is None:
+        return settings
+    profile, overrides = resolve_profile(*situation, registry=watch_profile_registry())
+    profiled = resolve_watch_profile(profile, base=settings).settings
+    return replace(
+        profiled,
+        edge=replace(profiled.edge, ego_compensate=bool(overrides["ego_compensate"])),
+        gate=replace(
+            profiled.gate,
+            require_false_first=bool(overrides["gate"]["require_false_first"]),
+        ),
+    )
+
+
+def primitive_trace_contract(goal: Any) -> dict[str, Any]:
+    """Trace lifecycle names/predicates for the compiled primitive actually being measured."""
+    behavior_type, rearm = effective_goal_mechanics(goal)
+    if behavior_type == "transition":
+        return {
+            "behavior_type": behavior_type,
+            "rearm": rearm,
+            "completion_stage": "transition.decision",
+            "decision_stage": "transition.decision",
+            "passed": lambda data: data.get("outcome") == "fire",
+            "degraded": lambda data: data.get("outcome") == "judge_degraded",
+        }
+    return {
+        "behavior_type": behavior_type,
+        "rearm": rearm,
+        "completion_stage": "judge.finished",
+        "decision_stage": "gate.classified",
+        "passed": lambda data: bool(data.get("satisfied")),
+        "degraded": lambda data: bool(data.get("degraded")),
+    }
+
+
+def watch_plan_for(
+    goal_id: str,
+    condition: str,
+    authored: Any = None,
+    *,
+    legacy_occurrence_arm: bool = False,
+    evidence_contract: dict[str, Any] | None = None,
+) -> WatchPlan:
     """The fixed, corpus-independent occurrence WatchPlan every case is armed with.
 
     Identical in shape to the qualification bench's action plan.  Nothing in it is derived from the
     case's annotation — no window, no duration, no positive count — so no scoring data leaks into
     runtime admission.
 
-    When ``authored`` is supplied (the conductor arm), the conductor's ``Goal.state.*`` paths form
-    the BASE and the harness's own sense/perception paths are layered on top, so the two arms differ
-    in the selected PRIMITIVE and in nothing else about the evidence shape.  The conductor is
-    structurally barred from writing outside ``Goal.state.`` , so it can never reach the
-    ``WatchProfile.salience_stat`` held constant across both arms.
+    When ``authored`` is supplied, its ``Goal.state.*`` paths form the base. A predeclared fallback
+    evidence contract may fill absent paths for corpus cells without situation axes; cells with a
+    declared situation instead use the documented ``situation + seeded WatchProfile registry``
+    resolver route and pass no harness-authored evidence or salience override. Source salience then
+    comes from ``PHYSICAL_SCENE`` and temporal shape/cadence from the selected profile. In all cases
+    the harness must not fill typed ``rearm``: doing so is a post-authoring mechanic override because
+    the runtime compiler uses that field to fill an absent ``Goal.state.rearm`` path.
+
+    The historical fixed-watch control can still request its old event-chain behavior, but only by
+    naming ``legacy_occurrence_arm=True`` at the call site.  This keeps that diagnostic arm explicit
+    and makes it impossible for the conductor arm to inherit it by accident.
     """
     explicit: dict[str, Any] = dict(getattr(authored, "explicit", None) or {})
-    explicit.update(
-        {
-            "Goal.state.sense.brief_window_s": ACTION_BRIEF_WINDOW_S,
-            "Goal.state.perception.temporal": "strip",
-            "Goal.state.perception.n_frames": ACTION_TEMPORAL_FRAMES,
-            "Goal.state.perception.sampling": ACTION_TEMPORAL_SAMPLING,
-            "Goal.state.perception.window_s": ACTION_TEMPORAL_WINDOW_S,
-            "WatchProfile.salience_stat": "block_max",
-        }
-    )
+    # Detectors are a typed WatchPlan field, not a tunable dotted path. Human/frozen authoring
+    # artifacts use the Goal.state vocabulary, so project that one path onto its executable field
+    # before the resolver sees ``explicit``; leaving it there correctly fails as an unknown tunable.
+    authored_detectors = explicit.pop("Goal.state.detectors", ())
+    if not isinstance(authored_detectors, (list, tuple)):
+        raise ValueError("Goal.state.detectors authoring must be a list of detector names")
+    contract = dict(evidence_contract or {})
+    for section in ("sense", "perception"):
+        for key, value in dict(contract.get(section) or {}).items():
+            explicit.setdefault(f"Goal.state.{section}.{key}", value)
     return WatchPlan(
         id=goal_id,
         condition=condition,
         sense="video",
-        rearm="each_event",
+        detectors=tuple(str(name) for name in authored_detectors),
+        rearm="each_event" if legacy_occurrence_arm else None,
         explicit=explicit,
     )
 
@@ -350,6 +748,282 @@ def install_media_resolution_override(value: str) -> str | None:
 
     gtypes.GenerateContentConfig = _PinnedMediaResolution
     return value
+
+
+class GlobalProviderBudget:
+    """One crash-conservative provider ledger shared by every case and mode.
+
+    The shipped adapters call :meth:`begin_attempt` immediately before transport.  That method is
+    synchronous, lock-protected, and persists the reservation before returning, so concurrent cases
+    cannot each observe the same remaining dollar/call allowance.  Failed, cancelled, unpriced, and
+    crash-interrupted attempts retain their full conservative reservation.
+    """
+
+    def __init__(
+        self,
+        *,
+        policy: PaidRunPolicy,
+        pricing: PricingStamp,
+        checkpoint_path: Path,
+        global_prior_committed_usd: float,
+        global_prior_commitment_source: str,
+        global_prior_commitment_basis: str,
+        settle_from_official_token_prices: bool,
+        snapshot: dict[str, Any] | None = None,
+        recovered_inflight_attempts: int = 0,
+    ) -> None:
+        prior = float(global_prior_committed_usd)
+        if not math.isfinite(prior) or prior < 0:
+            raise ProviderBudgetInputError(
+                "global prior provider commitment must be finite and non-negative"
+            )
+        if prior + float(policy.max_usd) > ABSOLUTE_PROVIDER_RUN_CAP_USD + 1e-12:
+            raise ProviderBudgetInputError(
+                "prior provider commitment plus this run's allocation cannot exceed "
+                f"the ${ABSOLUTE_PROVIDER_RUN_CAP_USD:.2f} total user cap"
+            )
+        self.policy = policy
+        self.pricing = pricing
+        self.global_prior_committed_usd = prior
+        self.global_prior_commitment_source = str(global_prior_commitment_source).strip()
+        self.global_prior_commitment_basis = str(global_prior_commitment_basis).strip()
+        if not self.global_prior_commitment_source or not self.global_prior_commitment_basis:
+            raise ProviderBudgetInputError(
+                "global prior commitment source and basis must be explicit"
+            )
+        self.settle_from_official_token_prices = bool(settle_from_official_token_prices)
+        self.checkpoint_path = checkpoint_path.resolve()
+        self._lock = threading.RLock()
+        self._recovered_inflight_attempts = int(recovered_inflight_attempts)
+        self._ledger = PaidBudgetLedger(
+            policy,
+            pricing,
+            on_reserve=self._reservation_became_durable,
+            snapshot=snapshot,
+        )
+        # Duck-typed contract consumed by GeminiVision/OpenRouterVision.
+        self.plan = self._ledger.plan
+        self.attempts_per_call = 1
+        self.request_timeout_s = float(policy.request_timeout_s)
+        with self._lock:
+            recovered = self._ledger.recover_inflight_as_failed()
+            self._recovered_inflight_attempts += recovered
+            self._persist_locked()
+
+    @classmethod
+    def open(
+        cls,
+        *,
+        policy: PaidRunPolicy,
+        pricing: PricingStamp,
+        checkpoint_path: Path,
+        global_prior_committed_usd: float,
+        global_prior_commitment_source: str,
+        global_prior_commitment_basis: str,
+        settle_from_official_token_prices: bool,
+        resume: bool,
+        case_checkpoint_exists: bool,
+    ) -> "GlobalProviderBudget":
+        path = checkpoint_path.resolve()
+        if not path.exists():
+            if case_checkpoint_exists:
+                raise ProviderBudgetInputError(
+                    "case checkpoint exists without its provider-budget checkpoint; refusing to "
+                    "risk replaying previously paid work"
+                )
+            return cls(
+                policy=policy,
+                pricing=pricing,
+                checkpoint_path=path,
+                global_prior_committed_usd=global_prior_committed_usd,
+                global_prior_commitment_source=global_prior_commitment_source,
+                global_prior_commitment_basis=global_prior_commitment_basis,
+                settle_from_official_token_prices=settle_from_official_token_prices,
+            )
+        if not resume:
+            raise ProviderBudgetInputError(
+                f"provider-budget checkpoint already exists; choose a new --out-stem or resume: {path}"
+            )
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ProviderBudgetInputError(f"cannot load provider-budget checkpoint: {exc}") from exc
+        if document.get("schema") != PROVIDER_BUDGET_SCHEMA:
+            raise ProviderBudgetInputError("provider-budget checkpoint schema is incompatible")
+        if document.get("policy") != policy.to_dict():
+            raise ProviderBudgetInputError("provider-budget checkpoint policy differs from this run")
+        if document.get("price_snapshot") != pricing.to_dict():
+            raise ProviderBudgetInputError(
+                "provider-budget checkpoint backend/model/pricing differs from this run"
+            )
+        allocation = document.get("global_allocation") or {}
+        if allocation.get("prior_committed_usd") != float(global_prior_committed_usd):
+            raise ProviderBudgetInputError(
+                "provider-budget checkpoint global prior commitment differs from this run"
+            )
+        expected_prior_provenance = {
+            "source": str(global_prior_commitment_source).strip(),
+            "basis": str(global_prior_commitment_basis).strip(),
+        }
+        if allocation.get("prior_commitment_provenance") != expected_prior_provenance:
+            raise ProviderBudgetInputError(
+                "provider-budget checkpoint prior commitment provenance differs from this run"
+            )
+        settlement = document.get("settlement") or {}
+        if settlement.get("official_token_pricing_enabled") is not bool(
+            settle_from_official_token_prices
+        ):
+            raise ProviderBudgetInputError(
+                "provider-budget checkpoint token settlement mode differs from this run"
+            )
+        state = document.get("state")
+        recovered = document.get("recovered_inflight_attempts", 0)
+        if not isinstance(state, dict) or type(recovered) is not int or recovered < 0:
+            raise ProviderBudgetInputError("provider-budget checkpoint state is malformed")
+        return cls(
+            policy=policy,
+            pricing=pricing,
+            checkpoint_path=path,
+            global_prior_committed_usd=global_prior_committed_usd,
+            global_prior_commitment_source=global_prior_commitment_source,
+            global_prior_commitment_basis=global_prior_commitment_basis,
+            settle_from_official_token_prices=settle_from_official_token_prices,
+            snapshot=state,
+            recovered_inflight_attempts=recovered,
+        )
+
+    def _artifact_locked(self) -> dict[str, Any]:
+        return {
+            "schema": PROVIDER_BUDGET_SCHEMA,
+            "absolute_user_cap_usd": ABSOLUTE_PROVIDER_RUN_CAP_USD,
+            "global_allocation": {
+                "prior_committed_usd": self.global_prior_committed_usd,
+                "prior_commitment_provenance": {
+                    "source": self.global_prior_commitment_source,
+                    "basis": self.global_prior_commitment_basis,
+                },
+                "remaining_before_live_run_usd": round(
+                    ABSOLUTE_PROVIDER_RUN_CAP_USD - self.global_prior_committed_usd, 12
+                ),
+                "live_run_local_max_usd": float(self.policy.max_usd),
+                "unallocated_after_live_run_usd": round(
+                    ABSOLUTE_PROVIDER_RUN_CAP_USD
+                    - self.global_prior_committed_usd
+                    - float(self.policy.max_usd),
+                    12,
+                ),
+            },
+            "policy": self.policy.to_dict(),
+            "price_snapshot": self.pricing.to_dict(),
+            "settlement": {
+                "official_token_pricing_enabled": self.settle_from_official_token_prices,
+                "rule": (
+                    "complete input/output token counts settle to token-derived official price; "
+                    "all other outcomes retain full reservation"
+                ),
+                "formula": "(input_tokens * input_price + output_tokens * output_price) / 1e6",
+            },
+            "recovered_inflight_attempts": self._recovered_inflight_attempts,
+            "state": self._ledger.snapshot(),
+        }
+
+    def _persist_locked(self) -> None:
+        _atomic_budget_json(self.checkpoint_path, self._artifact_locked())
+
+    def _reservation_became_durable(self, _reservation: dict[str, Any]) -> None:
+        # PaidBudgetLedger invokes this after mutating its state and before begin_attempt returns.
+        with self._lock:
+            self._persist_locked()
+
+    def assert_provider(self, *, backend: str, model: str) -> None:
+        if backend != self.pricing.backend or model != self.pricing.model:
+            raise ProviderBudgetInputError(
+                "provider backend/model differs from the immutable budget price snapshot"
+            )
+
+    def begin_attempt(self) -> dict[str, Any]:
+        with self._lock:
+            return self._ledger.begin_attempt()
+
+    def complete_attempt(self, reservation: dict[str, Any], usage: dict[str, Any]) -> None:
+        with self._lock:
+            self._settle_completed_response_locked(reservation, usage)
+            self._persist_locked()
+
+    def complete_unpriced_attempt(
+        self, reservation: dict[str, Any], usage: dict[str, Any]
+    ) -> None:
+        with self._lock:
+            self._settle_completed_response_locked(reservation, usage)
+            self._persist_locked()
+
+    @staticmethod
+    def _complete_token_usage(usage: dict[str, Any]) -> tuple[int, int] | None:
+        values: list[int] = []
+        for name in ("input_tokens", "output_tokens"):
+            value = usage.get(name)
+            if type(value) is not int or value < 0:
+                return None
+            values.append(value)
+        return values[0], values[1]
+
+    def _settle_completed_response_locked(
+        self, reservation: dict[str, Any], usage: dict[str, Any]
+    ) -> None:
+        tokens = self._complete_token_usage(usage)
+        if self.settle_from_official_token_prices and tokens is not None:
+            input_tokens, output_tokens = tokens
+            exact_cost = (
+                input_tokens * float(self.pricing.input_usd_per_million_tokens)
+                + output_tokens * float(self.pricing.output_usd_per_million_tokens)
+            ) / 1_000_000
+            metered = dict(usage)
+            # Official pinned token prices, not a provider estimate, are the settlement authority.
+            metered["cost_usd"] = exact_cost
+            self._ledger.complete_attempt(reservation, metered)
+            return
+        # Missing/incomplete token usage or an unpinned price cannot authorize a refund. Preserve
+        # any valid partial token counters for observability while retaining the full reservation.
+        partial = {
+            name: value if type(value) is int and value >= 0 else 0
+            for name, value in (
+                ("input_tokens", usage.get("input_tokens")),
+                ("output_tokens", usage.get("output_tokens")),
+            )
+        }
+        self._ledger.complete_unpriced_attempt(reservation, partial)
+
+    def fail_attempt(self, reservation: dict[str, Any]) -> None:
+        with self._lock:
+            self._ledger.fail_attempt(reservation)
+            self._persist_locked()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return self._ledger.snapshot()
+
+    def provenance(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                **self._artifact_locked(),
+                "checkpoint_path": str(self.checkpoint_path),
+                "reservation_timing": "durable_before_transport",
+                "scope": "global across every selected case and mode in this out-stem",
+            }
+
+    @property
+    def terminal(self) -> bool:
+        """Whether no future reservation can become admissible after current calls settle."""
+
+        with self._lock:
+            state = self._ledger.snapshot()
+            if state["physical_attempts"] >= self.policy.max_calls:
+                return True
+            return (
+                not state["inflight"]
+                and state["committed_usd"] + self.policy.conservative_usd_per_call
+                > self.policy.max_usd + 1e-12
+            )
 
 
 class RecordingVision:
@@ -524,7 +1198,16 @@ def dist(xs: Sequence[float]) -> dict[str, Any]:
     }
 
 
-async def run_case(case: dict, mode: str, *, backend: str, transport: str = "images") -> dict[str, Any]:
+async def run_case(
+    case: dict,
+    mode: str,
+    *,
+    backend: str,
+    provider_budget: GlobalProviderBudget,
+    transport: str = "images",
+    judge_dispatch: str = "async",
+    webhook_probe: Any = None,
+) -> dict[str, Any]:
     """Drive ONE corpus case through ``percept.run`` with a live judge in ``mode``."""
     case_id = case["case_id"]
     path = case["video_path"]
@@ -534,6 +1217,7 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
         "goal_kind": case["goal_kind"],
         "mode": mode,
         "backend": backend,
+        "judge_dispatch": judge_dispatch,
         "notes": [],
         "error": None,
         "measurable": False,
@@ -543,7 +1227,12 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
     out["native_fps"] = src_fps
     out["native_frames"] = n_native
 
-    settings = load_settings()
+    deployment_settings = load_settings()
+    settings = settings_for_case(deployment_settings, case)
+    out["source_motion_contract"] = source_motion_contract_for(case)
+    out["situation_contract"] = situation_contract_for(case)
+    out["ego_compensate"] = bool(settings.edge.ego_compensate)
+    out["gate_refractory_s"] = float(settings.gate.refractory_s)
     if backend == "gemini":
         from percept.backends.gemini import GeminiVision
 
@@ -557,6 +1246,14 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
     else:  # pragma: no cover - guarded by the CLI
         raise ValueError(f"unknown backend {backend!r}")
     out["model"] = model
+    provider_budget.assert_provider(backend=backend, model=str(model))
+    configure_budget = getattr(inner, "configure_request_budget", None)
+    if not callable(configure_budget):
+        raise ProviderBudgetInputError(
+            f"{type(inner).__name__} has no pre-transport request-budget seam"
+        )
+    configure_budget(provider_budget)
+    out["provider_budget_at_case_start"] = provider_budget.snapshot()
 
     provider = RecordingVision(inner)
     # `auto` reproduces the qualification bench's route selection -- native video whenever the
@@ -567,6 +1264,7 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
     )
     if native_transport and not provider.SUPPORTS_NATIVE_VIDEO_TRANSPORT:
         out["error"] = f"backend {backend!r} does not support native video transport"
+        out["provider_budget_at_case_end"] = provider_budget.snapshot()
         return out
     temporal = (
         NativeVideoVision(
@@ -660,18 +1358,60 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
     out["authored_type"] = getattr(authored, "behavior_type", None)
     out["authored_origin"] = getattr(authored, "origin", None)
     out["authored_explicit"] = dict(getattr(authored, "explicit", None) or {})
+    situation = situation_for(case)
     receipt = apply_watch_plan(
-        core, watch_plan_for(goal_id, case["goal_text"], authored), resolver=ConfigResolver(),
+        core,
+        watch_plan_for(
+            goal_id,
+            case["goal_text"],
+            authored,
+            legacy_occurrence_arm=authored is None,
+            evidence_contract=(None if situation is not None else evidence_contract_for(case)),
+        ),
+        resolver=ConfigResolver(),
         source_profile=PHYSICAL_SCENE,
+        situation=situation,
+        registry=watch_profile_registry() if situation is not None else None,
+        # Profile-owned core settings were bound before Percept.create(); apply against that exact
+        # effective tree so the compiler and the live core cannot disagree.
+        settings=settings,
     )
     if receipt.status != "applied" or receipt.watch_ids != (goal_id,):
         out["error"] = (
             f"WatchPlan did not arm: status={receipt.status} "
-            f"warnings={[w.code for w in receipt.warnings]!r}"
+            f"warnings={[w.code for w in receipt.warnings]!r} "
+            f"dropped_fields={[(d.path, d.code, d.message) for d in receipt.dropped_fields]!r}"
         )
+        out["provider_budget_at_case_end"] = provider_budget.snapshot()
         return out
     goal = core.goals.get(goal_id)
+    compiled = getattr(core, "_watch_runtime_bindings", {}).get(goal_id, (None,))[0]
+    if situation is not None:
+        profile, overrides = resolve_profile(*situation, registry=watch_profile_registry())
+        out["situation_resolution"] = {
+            "axes": list(situation),
+            "profile": profile.name,
+            "overrides": overrides,
+            "compiled_plan_mode": getattr(compiled, "plan_mode", None),
+            "compiled_watchspec": dict(getattr(compiled, "watchspec_kwargs", {}) or {}),
+            "compiled_sense_policy": (
+                vars(compiled.sense_policy) if getattr(compiled, "sense_policy", None) else None
+            ),
+        }
+    else:
+        out["situation_resolution"] = None
+    trace_contract = primitive_trace_contract(goal)
+    out["effective_type"] = trace_contract["behavior_type"]
+    out["effective_rearm"] = trace_contract["rearm"]
+    out["evidence_contract"] = (
+        None if situation is not None else evidence_contract_for(case)
+    )
+    out["effective_perception"] = dict(goal.state.get("perception") or {})
+    out["trace_contract"] = {
+        key: value for key, value in trace_contract.items() if not callable(value)
+    }
     cadence = sensor_plan_for(goal).cadence
+    out["effective_cadence"] = dict(cadence)
     fps = capture_fps(cadence)
     out["capture_fps"] = fps
     out["watch_warnings"] = [w.code for w in receipt.warnings]
@@ -701,14 +1441,15 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
             fps=fps,
             stats=stats,
             gate_source="camera",
-            judge_dispatch="async",
+            judge_dispatch=judge_dispatch,
             judge_stall_after_s=decision_deadline,
             judge_decision_deadline_s=decision_deadline,
             timebase="media",
             on_trace=on_trace,
             on_health=on_health,
             on_ask=on_ask,
-            sink_errors="ignore",
+            on_incident=None if webhook_probe is None else webhook_probe.sink,
+            sink_errors="ignore" if webhook_probe is None else "raise",
         )
         try:
             async for inc in runtime:
@@ -740,6 +1481,42 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
         out["error"] = f"{type(exc).__name__}: {exc}"
     out["wall_s"] = round(time.monotonic() - wall0, 2)
 
+    delivery_missing: list[str] = []
+    delivery_attempts = 0
+    for incident in incidents:
+        observation = (
+            None if webhook_probe is None else webhook_probe.lookup(str(incident.get("id")))
+        )
+        if observation is None:
+            incident["webhook"] = None
+            if webhook_probe is not None:
+                delivery_missing.append(str(incident.get("id")))
+            continue
+        delivery_attempts += int(observation.attempts)
+        incident["webhook"] = {
+            "receiver_arrival_monotonic": observation.arrival_at,
+            "receiver_ack_monotonic": observation.ack_at,
+            "attempts": observation.attempts,
+        }
+    out["delivery"] = {
+        "enabled": webhook_probe is not None,
+        "schema": "percept.webhook-delivery/1-receiver-monotonic",
+        "incidents": len(incidents),
+        "receiver_arrivals": len(incidents) - len(delivery_missing)
+        if webhook_probe is not None
+        else 0,
+        "receiver_acks": sum(
+            1 for item in incidents if (item.get("webhook") or {}).get("receiver_ack_monotonic")
+        ),
+        "attempts": delivery_attempts,
+        "missing_event_ids": delivery_missing,
+    }
+    if delivery_missing and out.get("error") is None:
+        out["error"] = (
+            f"receiver did not observe {len(delivery_missing)} emitted incident(s); "
+            f"first={delivery_missing[0]}"
+        )
+
     # ------------------------------------------------------------------ channels -> stages ----
     ed = [(t, d) for (stage, t, d) in trace if stage == "edge.decision" and t is not None]
     out["frames_yielded"] = ch.frames_yielded
@@ -749,6 +1526,7 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
                                                     "monotonic_ts": ch.anchor.monotonic_ts}
     if not ed:
         out["notes"].append("no edge.decision trace -- case not measurable")
+        out["provider_budget_at_case_end"] = provider_budget.snapshot()
         return out
 
     ts = [t for t, _ in ed]
@@ -842,10 +1620,20 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
               identity_passthrough=n_disp == n_adm2)
 
     # ---- STAGE 3 -- judge dispatch (LIVE) ------------------------------------------------------
-    s3_time = spans_for("judge.finished")
+    completion_stage = str(trace_contract["completion_stage"])
+    decision_stage = str(trace_contract["decision_stage"])
+    s3_time = spans_for(completion_stage, lambda data: not trace_contract["degraded"](data))
     n_started = n_stage("judge.started")
-    n_finished = n_stage("judge.finished")
-    n_degraded = n_stage("judge.degraded")
+    n_finished = sum(
+        1 for st, _t, data in trace
+        if st == completion_stage and not trace_contract["degraded"](data)
+    )
+    n_degraded = (
+        sum(1 for st, _t, data in trace
+            if st == completion_stage and trace_contract["degraded"](data))
+        if completion_stage == "transition.decision"
+        else n_stage("judge.degraded")
+    )
     judge_receipted = int(stats.judge_deadline_expired)
     outcome_counts = Counter(r["outcome"] for r in receipts)
     failed = sum(outcome_counts[o] for o in FAILED_OUTCOMES)
@@ -858,7 +1646,9 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
     usage_rows = [d for st, _t, d in trace if st == "judge.usage"]
     fn = dict(core.metrics.snapshot())
     s3.update(
-        logical_calls=n_started,
+        logical_calls=(provider.calls if completion_stage == "transition.decision" else n_started),
+        lifecycle_completion_stage=completion_stage,
+        lifecycle_started_trace_available=completion_stage != "transition.decision",
         physical_attempts=provider.calls,
         route_attempts=sum(1 for r in receipts if r["route"] is not None),
         judge_calls_batches=int(stats.judge_calls),
@@ -895,10 +1685,10 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
     )
 
     # ---- STAGE 4 -- cognition + disposition ----------------------------------------------------
-    s4_time = spans_for("gate.classified", lambda d: bool(d.get("satisfied")))
-    n_gate = n_stage("gate.classified")
+    s4_time = spans_for(decision_stage, trace_contract["passed"])
+    n_gate = n_stage(decision_stage)
     n_true = len({round(float(t), 6) for st, t, d in trace
-                  if st == "gate.classified" and d.get("satisfied") and t is not None})
+                  if st == decision_stage and trace_contract["passed"](d) and t is not None})
     inc_ts = [i["ts"] for i in incidents]
     matched = sum(1 for a, b in gt_events if any(a <= t < b for t in inc_ts))
     s4 = SM.stage_metrics(
@@ -906,13 +1696,16 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
         units_received=n_finished, units_passed=n_true,
         units_dropped_no_receipt=max(0, n_finished - n_gate),
     )
-    s4.update(gate_classified=n_gate, gate_true_units=n_true, incidents=len(incidents),
+    s4.update(decision_stage=decision_stage, gate_classified=n_gate,
+              gate_true_units=n_true, incidents=len(incidents),
               gt_occurrences=len(gt_events), occurrences_matched=matched,
               occurrence_recall=(matched / len(gt_events)) if gt_events else None,
               incidents_outside_gt=sum(1 for t in inc_ts if not any(a <= t < b for a, b in gt)),
               asks=int(stats.asks), fires=int(stats.fires),
-              gate_actions=dict(Counter(str(d.get("action")) for st, _t, d in trace
-                                        if st == "gate.classified")))
+              gate_actions=dict(Counter(
+                  str(d.get("outcome") if decision_stage == "transition.decision" else d.get("action"))
+                  for st, _t, d in trace if st == decision_stage
+              )))
 
     # ---- LATENCY --------------------------------------------------------------------------------
     # Every wall figure below is anchored through ONE conversion: onset_wall = anchor.monotonic_ts +
@@ -928,12 +1721,24 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
                 "incident_media_ts": inc["ts"], "matched_occurrence": occ,
                 "confidence": inc["confidence"], "evidence_len": inc["evidence_len"],
             }
+            webhook = inc.get("webhook") or {}
+            row["webhook_receiver_observed"] = (
+                webhook.get("receiver_arrival_monotonic") is not None
+            )
+            row["webhook_receiver_acked"] = webhook.get("receiver_ack_monotonic") is not None
+            row["webhook_attempts"] = int(webhook.get("attempts") or 0)
             if occ is not None:
                 onset_wall = a.monotonic_ts + (occ[0] - a.media_ts)
                 row["onset_to_incident_s"] = inc["observed_monotonic"] - onset_wall
                 if tm is not None:
                     row["onset_to_ingest_s"] = tm["ingest_observed_ts"] - onset_wall
                     row["onset_to_admission_s"] = tm["admitted_ts"] - onset_wall
+                if webhook.get("receiver_arrival_monotonic") is not None:
+                    row["onset_to_webhook_arrival_s"] = (
+                        webhook["receiver_arrival_monotonic"] - onset_wall
+                    )
+                if webhook.get("receiver_ack_monotonic") is not None:
+                    row["onset_to_webhook_ack_s"] = webhook["receiver_ack_monotonic"] - onset_wall
             if tm is not None:
                 row.update(
                     ingest_to_admission_s=tm["admitted_ts"] - tm["ingest_observed_ts"],
@@ -943,6 +1748,18 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
                     decision_to_incident_s=inc["observed_monotonic"] - tm["decision_emitted_ts"],
                     ingest_to_incident_s=inc["observed_monotonic"] - tm["ingest_observed_ts"],
                     admission_to_incident_s=inc["observed_monotonic"] - tm["admitted_ts"],
+                )
+            if webhook.get("receiver_arrival_monotonic") is not None:
+                row["incident_to_webhook_arrival_s"] = (
+                    webhook["receiver_arrival_monotonic"] - inc["observed_monotonic"]
+                )
+                if tm is not None:
+                    row["decision_to_webhook_arrival_s"] = (
+                        webhook["receiver_arrival_monotonic"] - tm["decision_emitted_ts"]
+                    )
+            if webhook.get("receiver_ack_monotonic") is not None:
+                row["incident_to_webhook_ack_s"] = (
+                    webhook["receiver_ack_monotonic"] - inc["observed_monotonic"]
                 )
             lat_rows.append(row)
     else:
@@ -964,24 +1781,35 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
     # disposition of it (`truth`, `action`) at a media timestamp (`ev.t`). A degraded judgment is
     # emitted too, flagged `degraded=True` with no satisfied bit -- kept, not filtered, so the
     # denominator is every classification the gate actually made.
-    out["verdict_rows"] = [
-        {
+    out["verdict_rows"] = []
+    for st, t, d in trace:
+        if st != decision_stage or t is None:
+            continue
+        transition = decision_stage == "transition.decision"
+        confidence = d.get("to_confidence") if transition else d.get("confidence")
+        out["verdict_rows"].append({
             "media_ts": round(float(t), 6),
-            "satisfied": d.get("satisfied"),
-            "confidence": (None if d.get("confidence") is None else float(d["confidence"])),
-            "truth": d.get("truth"),
-            "action": d.get("action"),
-            "degraded": bool(d.get("degraded")),
-            "reason": d.get("reason"),
-        }
-        for st, t, d in trace
-        if st == "gate.classified" and t is not None
-    ]
+            "decision_stage": decision_stage,
+            "satisfied": (d.get("to_truth") == "yes") if transition else d.get("satisfied"),
+            "confidence": None if confidence is None else float(confidence),
+            "truth": d.get("to_truth") if transition else d.get("truth"),
+            "action": ("fire" if d.get("outcome") == "fire" else "silent")
+                      if transition else d.get("action"),
+            "degraded": trace_contract["degraded"](d),
+            "reason": d.get("outcome") if transition else d.get("reason"),
+            **({
+                "from_truth": d.get("from_truth"),
+                "transition_outcome": d.get("outcome"),
+            } if transition else {}),
+        })
     out["verdict_schema"] = VERDICT_SCHEMA
     # The GT the case was scored against, persisted so a re-scoring run never has to re-derive it
     # from a corpus file that may have moved on. Older artifacts have no such field; the scorers
     # below fall back to re-deriving from the corpus and say which path they took.
     out["gt_intervals"] = [[round(a, 6), round(b, 6)] for a, b in gt_events]
+    out["gt_event_intervals_raw"] = [
+        [round(float(a), 6), round(float(b), 6)] for a, b in case["positives"]
+    ]
     out["_provider_latency_raw"] = {
         "completed": [round(x, 4) for x in provider.latencies_completed],
         "censored": [round(x, 4) for x in provider.latencies_censored],
@@ -1013,6 +1841,7 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
     out["funnel"] = dict(core.metrics.snapshot())
     out["health_kinds"] = dict(Counter(h["kind"] for h in health))
     out["incident_ts"] = inc_ts[:200]
+    out["provider_budget_at_case_end"] = provider_budget.snapshot()
     return out
 
 
@@ -1084,6 +1913,68 @@ def gt_intervals_for(row: dict) -> tuple[list[tuple[float, float]], str]:
         return [], "unavailable"
     _gt, events, _kind, _occ = SM.ground_truth(case["positives"], float(media_end))
     return events, "rederived_from_corpus"
+
+
+def strict_gt_intervals_for(row: dict) -> tuple[list[tuple[float, float]], str]:
+    """Unexpanded labels for raw-baseline-compatible one-to-one matching."""
+    stored = row.get("gt_event_intervals_raw")
+    if stored is not None:
+        return [(float(a), float(b)) for a, b in stored], "artifact-raw"
+    # Preserve measurement provenance before seeking better point-label fidelity. An older artifact
+    # with only expanded ``gt_intervals`` must not silently adopt a newer corpus annotation.
+    stored_expanded = row.get("gt_intervals")
+    if stored_expanded is not None:
+        return (
+            [(float(a), float(b)) for a, b in stored_expanded],
+            "artifact-expanded-point-fidelity-unavailable",
+        )
+    case = _corpus_index().get(row.get("case_id"))
+    if case is not None:
+        return [(float(a), float(b)) for a, b in case.get("positives", [])], "corpus-raw-fallback"
+    events, source = gt_intervals_for(row)
+    return events, f"{source}-point-fidelity-unavailable"
+
+
+def strict_one_to_one_score(rows: Sequence[dict]) -> dict[str, Any]:
+    """Maximum-cardinality event matching using the raw comparator's exact implementation."""
+    tp = fp = fn = gt_n = pred_n = 0
+    sources: Counter = Counter()
+    per_case: list[dict[str, Any]] = []
+    unscorable: list[str] = []
+    for row in rows:
+        media_end = row.get("media_end_s")
+        if media_end is None or float(media_end) <= 0:
+            unscorable.append(str(row.get("case_id")))
+            continue
+        truths, source = strict_gt_intervals_for(row)
+        sources[source] += 1
+        predictions = [(ts, ts) for ts in _incident_ts(row)]
+        score = score_temporal_events(
+            truths,
+            predictions,
+            duration_s=float(media_end),
+            point_tolerance_s=DEFAULT_POINT_TOLERANCE_S,
+        )
+        tp += int(score["true_positives"])
+        fp += int(score["false_positives"])
+        fn += int(score["false_negatives"])
+        gt_n += int(score["ground_truth_occurrences"])
+        pred_n += int(score["predicted_occurrences"])
+        per_case.append({"case_id": row.get("case_id"), **score})
+    return {
+        "matching_rule": "maximum-cardinality one-to-one temporal overlap; identical to raw VLM baseline",
+        "point_ground_truth_tolerance_s": float(DEFAULT_POINT_TOLERANCE_S),
+        "true_positives": tp,
+        "false_positives": fp,
+        "false_negatives": fn,
+        "ground_truth_occurrences": gt_n,
+        "predicted_occurrences": pred_n,
+        "precision": tp / pred_n if pred_n else None,
+        "recall": tp / gt_n if gt_n else None,
+        "gt_source": dict(sources),
+        "unscorable_cases": unscorable,
+        "per_case": per_case,
+    }
 
 
 def _pad(interval: tuple[float, float], tol: float, media_end: float) -> tuple[float, float]:
@@ -1222,7 +2113,12 @@ def score_matching(rows: Sequence[dict], tol: float) -> dict[str, Any]:
     chance_prec_interval = (e_tp / (e_tp + e_fp)) if (e_tp + e_fp) else None
     always_fire_prec_interval = (n_occ_total / (n_occ_total + n_neg_total)) if n_neg_total else None
 
+    strict = strict_one_to_one_score(rows)
     return {
+        # The headline pair uses identical event units and the raw baseline's exact one-to-one
+        # matcher. Historical diagnostic units below retain their original keys and meanings.
+        "headline": strict,
+        "strict_one_to_one": strict,
         "match_tolerance_s": tol,
         "gt_source": dict(gt_sources),
         "unscorable_cases": unscorable,
@@ -1343,6 +2239,85 @@ def quality(rows: list[dict], lat: list[dict], tol: float | None = None) -> dict
     return out
 
 
+def receiver_quality(rows: Sequence[dict], tol: float | None = None) -> dict[str, Any]:
+    """User-visible quality at the HTTP receiver, not the earlier SDK Incident boundary."""
+    tol = MATCH_TOLERANCE_S if tol is None else float(tol)
+    measured = any((row.get("delivery") or {}).get("enabled") for row in rows)
+    if not measured:
+        gt_occurrences = sum(
+            (row.get("stages") or {}).get("stage4_cognition", {}).get("gt_occurrences", 0)
+            for row in rows
+        )
+        return {
+            "schema": "percept.quality/3-webhook-receiver",
+            "boundary": "first HTTP receiver arrival keyed by Incident id",
+            "measured": False,
+            "gt_occurrences": gt_occurrences,
+            "occurrences_matched": None,
+            "occurrences_missed": None,
+            "occurrence_recall": None,
+            "incidents": None,
+            "incidents_inside_gt": None,
+            "precision_per_emission": None,
+            "precision_per_occurrence": None,
+            "headline": {
+                "matching_rule": "maximum-cardinality one-to-one temporal overlap; identical to raw VLM baseline",
+                "true_positives": None,
+                "false_positives": None,
+                "false_negatives": None,
+                "precision": None,
+                "recall": None,
+            },
+            "strict_one_to_one": {
+                "matching_rule": "maximum-cardinality one-to-one temporal overlap; identical to raw VLM baseline",
+                "true_positives": None,
+                "false_positives": None,
+                "false_negatives": None,
+                "precision": None,
+                "recall": None,
+            },
+            "occurrences_timely_2s": None,
+            "timely_recall_2s": None,
+            "receiver_arrivals": 0,
+            "receiver_acks": 0,
+        }
+    receiver_rows: list[dict[str, Any]] = []
+    receiver_lat: list[dict[str, Any]] = []
+    for row in rows:
+        delivered = [
+            item for item in (row.get("latency_rows") or [])
+            if item.get("webhook_receiver_observed")
+        ]
+        receiver_lat.extend(delivered)
+        receiver_rows.append({**row, "latency_rows": delivered})
+    scored = score_matching(receiver_rows, tol)
+    best: dict[tuple, float] = {}
+    for item in receiver_lat:
+        key = occurrence_key(item)
+        value = item.get("onset_to_webhook_arrival_s")
+        if key is None or value is None or not math.isfinite(float(value)) or float(value) < 0:
+            continue
+        best[key] = min(float(value), best.get(key, math.inf))
+    timely = sum(value <= ACTION_TO_INCIDENT_GATE_S for value in best.values())
+    return {
+        "schema": "percept.quality/3-webhook-receiver",
+        "boundary": "first HTTP receiver arrival keyed by Incident id",
+        "measured": True,
+        **scored,
+        "occurrences_timely_2s": timely,
+        "timely_recall_2s": (
+            timely / scored["gt_occurrences"] if scored["gt_occurrences"] else None
+        ),
+        "receiver_arrivals": sum(len(row["latency_rows"]) for row in receiver_rows),
+        "receiver_acks": sum(
+            1
+            for row in receiver_rows
+            for item in row["latency_rows"]
+            if item.get("webhook_receiver_acked")
+        ),
+    }
+
+
 def tolerance_sensitivity(rows: Sequence[dict]) -> dict[str, Any]:
     """The headline metrics recomputed at every declared tolerance.
 
@@ -1381,6 +2356,20 @@ def accounting(rows: list[dict], prices: dict) -> dict[str, Any]:
     if price and price.get("input_usd_per_million") is not None:
         cost = round(tin / 1e6 * float(price["input_usd_per_million"])
                      + tout / 1e6 * float(price["output_usd_per_million"]), 6)
+    # One short-corpus case has one watch armed.  Keep both denominators even though they are equal
+    # here: the long-horizon lane arms many watches and would otherwise make a cheaper-looking
+    # source-hour number incomparable with this one.
+    source_stream_hours = sum(float(r.get("media_end_s") or 0.0) for r in rows) / 3600.0
+    scheduled_watch_hours = source_stream_hours
+    cost_per_source_hour = (
+        cost / source_stream_hours if cost is not None and source_stream_hours > 0 else None
+    )
+    cost_per_scheduled_watch_hour = (
+        cost / scheduled_watch_hours if cost is not None and scheduled_watch_hours > 0 else None
+    )
+    all_attempts_have_usage = sum(x["usage_rows"] for x in s3) == sum(
+        x["physical_attempts"] for x in s3
+    )
     return {
         "model": model,
         "logical_calls": sum(x["logical_calls"] for x in s3),
@@ -1399,6 +2388,22 @@ def accounting(rows: list[dict], prices: dict) -> dict[str, Any]:
         "input_bytes": sum(x["input_bytes"] for x in s3),
         "price_snapshot": price,
         "estimated_cost_usd": cost,
+        "source_stream_hours": source_stream_hours,
+        "scheduled_watch_hours": scheduled_watch_hours,
+        "estimated_provider_cost_usd_per_source_hour": cost_per_source_hour,
+        "estimated_provider_cost_usd_per_scheduled_watch_hour": cost_per_scheduled_watch_hour,
+        "provider_cost_estimate_is_lower_bound": not all_attempts_have_usage,
+        "launch_cost_gate": {
+            "ceiling_usd_per_source_hour": ABSOLUTE_COST_CEILING_USD_PER_SOURCE_HOUR,
+            "eligible": False,
+            "status": "not_eligible",
+            "observed_provider_estimate_usd_per_source_hour": cost_per_source_hour,
+            "reason": (
+                "declared-price x returned-token usage excludes calls without usage rows, "
+                "runtime/hosting/egress costs, and the provider invoice; an all-in gate needs "
+                "billed provider spend plus infrastructure metering"
+            ),
+        },
         "reflex_context_stamped": sum(x["reflex_context_stamped"] for x in s3),
         "verdicts_with_evidence_text": sum(x["verdicts_with_evidence_text"] for x in s3),
         "provider_latency": dist([v for r in rows for v in _flat(r, "completed")]),
@@ -1420,7 +2425,9 @@ def _flat(row: dict, which: str) -> list[float]:
 
 
 LATENCY_LEGS = (
-    ("onset_to_incident_s", "action onset -> Incident (THE PRODUCT GATE)"),
+    ("onset_to_webhook_arrival_s", "action onset -> webhook receiver arrival (USER ACTION)"),
+    ("onset_to_webhook_ack_s", "action onset -> receiver ACK emission"),
+    ("onset_to_incident_s", "action onset -> SDK Incident (internal boundary)"),
     ("onset_to_ingest_s", "action onset -> frame ingested"),
     ("onset_to_admission_s", "action onset -> admitted by tier-0"),
     ("ingest_to_admission_s", "ingest -> admission"),
@@ -1428,6 +2435,9 @@ LATENCY_LEGS = (
     ("dispatch_to_verdict_s", "judge dispatch -> verdict"),
     ("verdict_to_decision_s", "verdict -> decision emitted"),
     ("decision_to_incident_s", "decision -> Incident observed"),
+    ("decision_to_webhook_arrival_s", "decision -> webhook receiver arrival"),
+    ("incident_to_webhook_arrival_s", "SDK Incident -> webhook receiver arrival (signed race)"),
+    ("incident_to_webhook_ack_s", "SDK Incident -> receiver ACK emission"),
     ("ingest_to_incident_s", "ingest -> Incident"),
     ("admission_to_incident_s", "admission -> Incident"),
 )
@@ -1438,7 +2448,9 @@ LATENCY_LEGS = (
 #: correct Incidents, and averaging over emissions weights that single occurrence dozens of times,
 #: answering "how late were all the repeated messages?" instead of "how soon did we first alert?".
 #: Measured on the n=100 v10_r1 artifact, that inflates the reported median by 4.4x-9.5x per leg.
-ONSET_ANCHORED_LEGS = ("onset_to_incident_s", "onset_to_ingest_s", "onset_to_admission_s")
+INTERNAL_ONSET_LEGS = ("onset_to_incident_s", "onset_to_ingest_s", "onset_to_admission_s")
+RECEIVER_ONSET_LEGS = ("onset_to_webhook_arrival_s", "onset_to_webhook_ack_s")
+ONSET_ANCHORED_LEGS = INTERNAL_ONSET_LEGS + RECEIVER_ONSET_LEGS
 
 #: Everything else is genuinely per-emission or per-call (ingest->admission, dispatch->verdict, ...).
 #: One judge call is one sample of provider latency, so those distributions are already correct and
@@ -1510,6 +2522,21 @@ def latency_summary(lat: list[dict], rows: Sequence[dict] | None = None) -> dict
     earliest, pre_onset = earliest_rows_per_occurrence(lat)
     matched_keys = {occurrence_key(r) for r in lat if occurrence_key(r) is not None}
 
+    receiver_best: dict[tuple, dict] = {}
+    receiver_pre_onset = 0
+    for row in lat:
+        key = occurrence_key(row)
+        value = row.get("onset_to_webhook_arrival_s")
+        if key is None or value is None or not math.isfinite(float(value)):
+            continue
+        if float(value) < 0:
+            receiver_pre_onset += 1
+            continue
+        incumbent = receiver_best.get(key)
+        if incumbent is None or float(value) < float(incumbent["onset_to_webhook_arrival_s"]):
+            receiver_best[key] = row
+    earliest_receiver = list(receiver_best.values())
+
     gt_occurrences = None
     if rows is not None:
         gt_occurrences = sum(
@@ -1521,10 +2548,17 @@ def latency_summary(lat: list[dict], rows: Sequence[dict] | None = None) -> dict
 
     onset = [float(r["onset_to_incident_s"]) for r in earliest]
     timely = sum(1 for x in onset if x <= ACTION_TO_INCIDENT_GATE_S)
+    receiver_onset = [float(r["onset_to_webhook_arrival_s"]) for r in earliest_receiver]
+    receiver_timely = sum(1 for x in receiver_onset if x <= ACTION_TO_INCIDENT_GATE_S)
 
     legs: dict[str, Any] = {}
     for key, _ in LATENCY_LEGS:
-        source = earliest if key in ONSET_ANCHORED_LEGS else lat
+        if key in RECEIVER_ONSET_LEGS:
+            source = earliest_receiver
+        elif key in INTERNAL_ONSET_LEGS:
+            source = earliest
+        else:
+            source = lat
         legs[key] = dist([r[key] for r in source if r.get(key) is not None])
 
     def by(field: str) -> dict[str, Any]:
@@ -1537,15 +2571,21 @@ def latency_summary(lat: list[dict], rows: Sequence[dict] | None = None) -> dict
     return {
         "schema": LATENCY_SCHEMA,
         "aggregation_unit": {
-            leg: ("occurrence:earliest_incident" if leg in ONSET_ANCHORED_LEGS else "incident_emission")
+            leg: (
+                "occurrence:earliest_webhook_arrival"
+                if leg in RECEIVER_ONSET_LEGS
+                else "occurrence:earliest_incident"
+                if leg in INTERNAL_ONSET_LEGS
+                else "incident_emission"
+            )
             for leg, _ in LATENCY_LEGS
         },
         "methodology": (
-            "Onset-anchored legs are aggregated per GT occurrence, taking the EARLIEST Incident that "
-            "matched it -- 'how soon did we first alert?'. Legs downstream of ingest stay per "
-            "emission because one judge call is one genuine sample. The distribution is conditional "
-            "on detection: missed_occurrences contribute no sample, so read p50 next to "
-            "timely_recall_all_gt, never alone. Percentiles are linearly interpolated (_pct)."
+            "Onset->Incident legs take the earliest matching Incident per GT occurrence. Receiver "
+            "legs independently take the earliest receiver-observed delivery per occurrence, so a "
+            "failed first emission cannot hide a later successful delivery. Other downstream legs "
+            "stay per emission. Both distributions are conditional; read their percentiles beside "
+            "the corresponding timely recall over ALL GT. Percentiles are linearly interpolated."
         ),
         "legs": legs,
         "gate_s": ACTION_TO_INCIDENT_GATE_S,
@@ -1555,10 +2595,23 @@ def latency_summary(lat: list[dict], rows: Sequence[dict] | None = None) -> dict
         "timely_occurrences": timely,
         "timely_recall_all_gt": (timely / gt_occurrences) if gt_occurrences else None,
         "timely_rate_matched_only": (timely / matched_occurrences) if matched_occurrences else None,
+        "receiver_matched_occurrences": len(earliest_receiver),
+        "receiver_missed_occurrences": (
+            gt_occurrences - len(earliest_receiver) if gt_occurrences is not None else None
+        ),
+        "receiver_timely_occurrences": receiver_timely,
+        "receiver_timely_recall_all_gt": (
+            receiver_timely / gt_occurrences if gt_occurrences else None
+        ),
+        "receiver_pre_onset_rows_dropped": receiver_pre_onset,
         "pre_onset_rows_dropped": pre_onset,
         "n_gated_incidents": len(onset),
         "n_under_gate": timely,
         "fraction_under_gate": (timely / len(onset)) if onset else None,
+        "receiver_n_under_gate": receiver_timely,
+        "receiver_fraction_under_gate": (
+            receiver_timely / len(receiver_onset) if receiver_onset else None
+        ),
         "by_goal_kind": by("goal_kind"),
         "by_dataset": by("dataset"),
         #: AUDIT ONLY -- the per-emission distribution this report used to publish as product
@@ -1576,7 +2629,11 @@ def latency_summary(lat: list[dict], rows: Sequence[dict] | None = None) -> dict
 
 def mode_report(rows: list[dict], prices: dict) -> dict[str, Any]:
     ok = [r for r in rows if r.get("measurable") and r.get("stages")]
+    # Cost cannot inherit the quality filter.  A case that errored after spending provider tokens is
+    # still spend, so every row carrying a stage-3 receipt belongs in the accounting population.
+    accounting_rows = [r for r in rows if (r.get("stages") or {}).get("stage3_judge")]
     lat = [x for r in ok for x in r.get("latency_rows", [])]
+    quality_result = quality(ok, lat)
     return {
         "n_cases_attempted": len(rows),
         "n_cases_measured": len(ok),
@@ -1587,7 +2644,20 @@ def mode_report(rows: list[dict], prices: dict) -> dict[str, Any]:
         "overall": {st: SM.pool(ok, st) for st in SM.STAGES},
         "by_goal_kind": {st: SM.breakdown(ok, st, "goal_kind") for st in SM.STAGES},
         "by_dataset": {st: SM.breakdown(ok, st, "dataset") for st in SM.STAGES},
-        "quality": quality(ok, lat),
+        "quality": quality_result,
+        "launch_recall_gate": {
+            "target_recall": 0.99,
+            "confidence": 0.95,
+            "minimum_independent_occurrences_with_zero_misses": 299,
+            "nominal_gt_occurrences": quality_result["gt_occurrences"],
+            "eligible": False,
+            "status": "not_eligible",
+            "reason": (
+                "the current corpus has fewer than 299 nominal occurrences and does not declare "
+                "independent deployment cells; this descriptive score cannot certify <=1% misses"
+            ),
+        },
+        "quality_at_webhook_receiver": receiver_quality(ok),
         "quality_by_goal_kind": {
             k: quality([r for r in ok if r["goal_kind"] == k],
                        [x for x in lat if x["goal_kind"] == k])
@@ -1609,7 +2679,21 @@ def mode_report(rows: list[dict], prices: dict) -> dict[str, Any]:
         ),
         "tolerance_sensitivity": tolerance_sensitivity(ok),
         "latency": latency_summary(lat, ok),
-        "accounting": accounting(ok, prices),
+        "accounting": accounting(accounting_rows, prices),
+        "delivery": {
+            "enabled_cases": sum(1 for r in ok if (r.get("delivery") or {}).get("enabled")),
+            "incidents": sum((r.get("delivery") or {}).get("incidents", 0) for r in ok),
+            "receiver_arrivals": sum(
+                (r.get("delivery") or {}).get("receiver_arrivals", 0) for r in ok
+            ),
+            "receiver_acks": sum((r.get("delivery") or {}).get("receiver_acks", 0) for r in ok),
+            "attempts": sum((r.get("delivery") or {}).get("attempts", 0) for r in ok),
+            "missing_event_ids": [
+                event_id
+                for r in ok
+                for event_id in (r.get("delivery") or {}).get("missing_event_ids", [])
+            ],
+        },
         "pace_lag_p95_s": dist([r["pace_lag"]["p95"] for r in ok
                                 if r.get("pace_lag", {}).get("p95") is not None]),
         "decoder_dropped_total": sum(int(r.get("decoder_dropped") or 0) for r in ok),
@@ -1678,12 +2762,16 @@ def _breakdown_table(rows: dict, key_label: str) -> list[str]:
 
 def _quality_table(rows: dict, overall: dict, key_label: str) -> list[str]:
     """One quality table with BOTH precision units and their chance floors side by side."""
-    L = [f"| {key_label} | GT occ. | Occ. recall | Prec./occurrence | Prec./emission | "
+    L = [f"| {key_label} | strict TP/FP/FN | strict recall | strict precision | GT occ. | "
+         "diagnostic occ. recall | Prec./occurrence | Prec./emission | "
          "chance prec. | Timely recall @2s | Incidents |",
-         "|---|---|---|---|---|---|---|---|"]
+         "|---|---|---|---|---|---|---|---|---|---|---|"]
     for k, q in list(rows.items()) + [("**all**", overall)]:
+        strict = q["strict_one_to_one"]
         L.append(
-            f"| {k} | {q['gt_occurrences']} | {_f(q['occurrence_recall'])} | "
+            f"| {k} | {strict['true_positives']}/{strict['false_positives']}/"
+            f"{strict['false_negatives']} | {_f(strict['recall'])} | {_f(strict['precision'])} | "
+            f"{q['gt_occurrences']} | {_f(q['occurrence_recall'])} | "
             f"{_f(q['precision_per_occurrence'])} | {_f(q['precision_per_emission'])} | "
             f"{_f(q['chance']['precision_per_emission'])} | {_f(q['timely_recall_2s'])} | "
             f"{q['incidents']} |"
@@ -1716,9 +2804,37 @@ def render_md(payload: dict) -> str:
           f"(build, model, deadlines, tag, wall) is inherited from the measuring run, not from the "
           f"environment this re-scoring ran in.")
     A(f"Provider: **{meta['backend']} / `{meta['model']}`**, transport `{meta['transport']}`, "
-      f"evidence shape `video_clip` ({meta['temporal_frames']} frames over "
-      f"{meta['temporal_window_s']} s).  Generated {meta['generated']}.")
+      f"transport cap {meta['temporal_frames']} frames. Temporal shape, source situation, compiled "
+      f"cadence, and capture fps are stamped per case (the fallback evidence contract uses "
+      f"{meta['temporal_window_s']} s). Generated {meta['generated']}.")
     A("")
+    budget = payload.get("provider_budget") or {}
+    allocation = budget.get("global_allocation") or {}
+    budget_state = budget.get("state") or {}
+    if budget:
+        A("## Global provider spend guard")
+        A("")
+        A(
+            f"Total user authorization: **${budget.get('absolute_user_cap_usd', 0):.2f}**; "
+            f"externally committed before this run: "
+            f"**${allocation.get('prior_committed_usd', 0):.2f}**; this live run's immutable "
+            f"allocation: **${allocation.get('live_run_local_max_usd', 0):.2f}**. "
+            f"It has crash-conservatively committed **${budget_state.get('committed_usd', 0):.6f}** "
+            f"across **{budget_state.get('physical_attempts', 0)}** physical attempts."
+        )
+        A("")
+        prior_provenance = allocation.get("prior_commitment_provenance") or {}
+        A(
+            f"Imported prior basis: `{prior_provenance.get('basis')}` from "
+            f"`{prior_provenance.get('source')}`. Official token-price settlement for this run: "
+            f"**{bool((budget.get('settlement') or {}).get('official_token_pricing_enabled'))}**."
+        )
+        A("")
+        A("Every attempt is lock-protected and durably reserved before provider transport; "
+          "only completed responses with complete token usage and the pinned official price stamp "
+          "refund the difference. Failed, cancelled, incomplete, unpriced, and crash-interrupted "
+          "attempts retain their conservative reservation.")
+        A("")
     A(f"**What was actually run:** {meta['n_selected']} of {meta['n_corpus']} corpus cases, "
       f"each in BOTH modes ({meta['selection']}).  "
       f"{meta['media_s']:.0f} s of media per mode, replayed in REAL TIME.  "
@@ -1803,12 +2919,26 @@ def render_md(payload: dict) -> str:
                      else "n/a")
             A(f"| {label} | {_f(a, nd)} | {_f(b, nd)} | {delta} |")
 
-        cmp_row("Occurrence recall", r["quality"]["occurrence_recall"], d["quality"]["occurrence_recall"])
+        cmp_row("Strict one-to-one recall (headline)", r["quality"]["headline"]["recall"],
+                d["quality"]["headline"]["recall"])
+        cmp_row("Strict one-to-one precision (headline)", r["quality"]["headline"]["precision"],
+                d["quality"]["headline"]["precision"])
+        cmp_row("Diagnostic occurrence recall", r["quality"]["occurrence_recall"],
+                d["quality"]["occurrence_recall"])
         cmp_row("Precision (per occurrence)", r["quality"]["precision_per_occurrence"],
                 d["quality"]["precision_per_occurrence"])
         cmp_row("Precision (per emission)", r["quality"]["precision_per_emission"],
                 d["quality"]["precision_per_emission"])
         cmp_row("Timely recall @ 2 s", r["quality"]["timely_recall_2s"], d["quality"]["timely_recall_2s"])
+        cmp_row("Webhook receiver occurrence recall",
+                r["quality_at_webhook_receiver"]["occurrence_recall"],
+                d["quality_at_webhook_receiver"]["occurrence_recall"])
+        cmp_row("Webhook receiver precision (per emission)",
+                r["quality_at_webhook_receiver"]["precision_per_emission"],
+                d["quality_at_webhook_receiver"]["precision_per_emission"])
+        cmp_row("Webhook receiver timely recall @ 2 s",
+                r["quality_at_webhook_receiver"]["timely_recall_2s"],
+                d["quality_at_webhook_receiver"]["timely_recall_2s"])
         cmp_row("Incidents emitted", r["quality"]["incidents"], d["quality"]["incidents"], 0)
         cmp_row("Stage-4 event recall (cumulative)",
                 r["overall"]["stage4_cognition"].get("recall_interval_cumulative"),
@@ -1820,6 +2950,12 @@ def render_md(payload: dict) -> str:
                 d["latency"]["legs"]["onset_to_incident_s"]["p50"])
         cmp_row("action -> Incident p95 (s)", r["latency"]["legs"]["onset_to_incident_s"]["p95"],
                 d["latency"]["legs"]["onset_to_incident_s"]["p95"])
+        cmp_row("action -> webhook receiver p50 (s)",
+                r["latency"]["legs"]["onset_to_webhook_arrival_s"]["p50"],
+                d["latency"]["legs"]["onset_to_webhook_arrival_s"]["p50"])
+        cmp_row("action -> webhook receiver p95 (s)",
+                r["latency"]["legs"]["onset_to_webhook_arrival_s"]["p95"],
+                d["latency"]["legs"]["onset_to_webhook_arrival_s"]["p95"])
         cmp_row("provider call p50 (s)", r["accounting"]["provider_latency"]["p50"],
                 d["accounting"]["provider_latency"]["p50"])
         cmp_row("provider call p95 (s)", r["accounting"]["provider_latency"]["p95"],
@@ -1847,7 +2983,8 @@ def render_md(payload: dict) -> str:
     A("Every wall figure crosses the media clock exactly once, through the replay anchor recorded at "
       "the first decoded frame: `onset_wall = anchor.monotonic + (onset_media - anchor.media)`. "
       "Legs come from the runtime's own `JudgmentTiming` (monotonic, validated non-decreasing) plus "
-      "the instant the `Incident` was observed by the consumer.")
+      "the instant the `Incident` was observed by the consumer and the real loopback HTTP "
+      "receiver's arrival/ACK stamps.")
     A("")
     for mode in payload["modes_run"]:
         lat = payload["modes"][mode]["latency"]
@@ -1860,10 +2997,16 @@ def render_md(payload: dict) -> str:
             A(f"| {label} | {dd['n']} | {_d(dd,'p50')} | {_d(dd,'p95')} | {_d(dd,'max')} | "
               f"{_d(dd,'mean')} |")
         A("")
-        g = lat["fraction_under_gate"]
-        A(f"**Product gate (action -> Incident < {lat['gate_s']} s): "
-          f"{lat['n_under_gate']}/{lat['n_gated_incidents']} matched Incidents clear it "
-          f"({_f(g)}).**")
+        if lat["legs"]["onset_to_webhook_arrival_s"]["n"]:
+            A(f"**User-action gate (action -> webhook receiver <= {lat['gate_s']} s): "
+              f"{lat['receiver_timely_occurrences']}/{lat['gt_occurrences']} ALL GT occurrences "
+              f"clear it (timely recall {_f(lat['receiver_timely_recall_all_gt'])}).**")
+        else:
+            A("**No receiver-observed webhook samples are present; this artifact cannot make an "
+              "action-latency claim.**")
+        A(f"Internal SDK boundary: {lat['n_under_gate']}/{lat['gt_occurrences']} ALL GT "
+          f"occurrences reached Incident within {lat['gate_s']} s "
+          f"(timely recall {_f(lat['timely_recall_all_gt'])}).")
         A("")
         if lat["by_goal_kind"]:
             A("| goal_kind | n | action->Incident p50 | p95 | max |")
@@ -1941,7 +3084,12 @@ def render_md(payload: dict) -> str:
         head, ex = payload["modes"][mode]["quality"], payload["modes"][mode]["quality_excluding_saturated"]
         A("| Measure | all cases | saturated cases removed |")
         A("|---|---|---|")
-        for label, key in (("GT occurrences", "gt_occurrences"), ("Occurrence recall", "occurrence_recall"),
+        A(f"| Strict one-to-one recall (headline) | {_f(head['headline']['recall'])} | "
+          f"{_f(ex['headline']['recall'])} |")
+        A(f"| Strict one-to-one precision (headline) | {_f(head['headline']['precision'])} | "
+          f"{_f(ex['headline']['precision'])} |")
+        for label, key in (("GT occurrences", "gt_occurrences"),
+                           ("Diagnostic occurrence recall", "occurrence_recall"),
                            ("Precision (per occurrence)", "precision_per_occurrence"),
                            ("Precision (per emission)", "precision_per_emission"),
                            ("Timely recall @2s", "timely_recall_2s")):
@@ -2029,6 +3177,11 @@ def render_md(payload: dict) -> str:
         ("Reflex context stamped on call", "reflex_context_stamped"),
         ("Verdicts carrying evidence prose", "verdicts_with_evidence_text"),
         ("Estimated cost (USD)", "estimated_cost_usd"),
+        ("Source-stream hours", "source_stream_hours"),
+        ("Scheduled watch-hours", "scheduled_watch_hours"),
+        ("Estimated provider USD / source-hour", "estimated_provider_cost_usd_per_source_hour"),
+        ("Estimated provider USD / scheduled watch-hour",
+         "estimated_provider_cost_usd_per_scheduled_watch_hour"),
     ):
         cells = " | ".join(
             (f"{acc[m][key]:,}" if isinstance(acc[m][key], int)
@@ -2056,6 +3209,10 @@ def render_md(payload: dict) -> str:
     else:
         A("**No price was declared, so no cost is reported.** Token counts above are measured "
           "exactly; multiply them by a price you trust rather than trusting one invented here.")
+    A(f"The launch ceiling is **${ABSOLUTE_COST_CEILING_USD_PER_SOURCE_HOUR:.2f} per "
+      "source-stream hour all-in**. Every column is `not_eligible` for that gate: this table is a "
+      "provider-token estimate and excludes provider invoice reconciliation plus hosted runtime, "
+      "storage, egress, and webhook delivery cost.")
     A("")
 
     A("## Provider latency, completed vs censored")
@@ -2153,7 +3310,10 @@ def render_md(payload: dict) -> str:
 
 
 async def run_mode(cases: list[dict], mode: str, *, backend: str, concurrency: int,
-                   transport: str = "images", on_done=None, progress: bool = True) -> list[dict]:
+                   provider_budget: GlobalProviderBudget,
+                   transport: str = "images", judge_dispatch: str = "async",
+                   on_done=None, progress: bool = True,
+                   webhook_probe: Any = None) -> list[dict]:
     """Run every case in one mode at bounded concurrency, checkpointing each as it lands.
 
     ``on_done`` is invoked with the finished record BEFORE the next case is admitted to the
@@ -2169,15 +3329,33 @@ async def run_mode(cases: list[dict], mode: str, *, backend: str, concurrency: i
 
     async def one(case: dict) -> dict:
         async with sem:
-            try:
-                r = await run_case(case, mode, backend=backend, transport=transport)
-            except BaseException as exc:  # a crashed case is DATA, never a silent hole
+            if provider_budget.terminal:
                 r = {"case_id": case["case_id"], "dataset": case["dataset"],
                      "goal_kind": case["goal_kind"], "mode": mode, "measurable": False,
-                     "error": f"{type(exc).__name__}: {exc}", "notes": [], "latency_rows": [],
-                     "receipts": []}
-                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                    raise
+                     "error": "ProviderBudgetExceeded: global provider budget exhausted before "
+                              "case admission",
+                     "notes": ["no provider call made for this case"], "latency_rows": [],
+                     "receipts": [],
+                     "provider_budget_at_case_end": provider_budget.snapshot()}
+            else:
+                try:
+                    r = await run_case(
+                        case,
+                        mode,
+                        backend=backend,
+                        provider_budget=provider_budget,
+                        transport=transport,
+                        judge_dispatch=judge_dispatch,
+                        webhook_probe=webhook_probe,
+                    )
+                except BaseException as exc:  # a crashed case is DATA, never a silent hole
+                    r = {"case_id": case["case_id"], "dataset": case["dataset"],
+                         "goal_kind": case["goal_kind"], "mode": mode, "measurable": False,
+                         "error": f"{type(exc).__name__}: {exc}", "notes": [],
+                         "latency_rows": [], "receipts": [],
+                         "provider_budget_at_case_end": provider_budget.snapshot()}
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
             done[0] += 1
             if on_done is not None:
                 on_done(mode, r)
@@ -2190,6 +3368,80 @@ async def run_mode(cases: list[dict], mode: str, *, backend: str, concurrency: i
     return list(await asyncio.gather(*(one(c) for c in cases)))
 
 
+def provider_budget_policy_from_args(args: Any) -> PaidRunPolicy | None:
+    """Validate the explicit paid-run allocation before corpus or provider setup."""
+
+    if args.rescore:
+        return None
+    required = {
+        "--max-provider-usd": args.max_provider_usd,
+        "--max-provider-calls": args.max_provider_calls,
+        "--conservative-usd-per-call": args.conservative_usd_per_call,
+        "--global-prior-committed-usd": args.global_prior_committed_usd,
+        "--global-prior-commitment-source": args.global_prior_commitment_source,
+        "--global-prior-commitment-basis": args.global_prior_commitment_basis,
+    }
+    missing = [flag for flag, value in required.items() if value is None or value == ""]
+    if missing:
+        raise ProviderBudgetInputError(
+            "paid live run requires explicit " + ", ".join(missing)
+        )
+    if (args.price_in is None) != (args.price_out is None):
+        raise ProviderBudgetInputError("--price-in and --price-out must be supplied together")
+    if args.settle_from_official_token_prices and (
+        args.price_in is None or not args.price_source.strip() or not args.price_version.strip()
+    ):
+        raise ProviderBudgetInputError(
+            "--settle-from-official-token-prices requires --price-in, --price-out, "
+            "--price-source, and --price-version"
+        )
+    policy = PaidRunPolicy(
+        max_usd=args.max_provider_usd,
+        max_calls=args.max_provider_calls,
+        conservative_usd_per_call=args.conservative_usd_per_call,
+        request_timeout_s=args.provider_request_timeout_s,
+    )
+    prior = args.global_prior_committed_usd
+    if not isinstance(prior, (int, float)) or isinstance(prior, bool):
+        raise ProviderBudgetInputError(
+            "--global-prior-committed-usd must be finite and non-negative"
+        )
+    prior = float(prior)
+    if not math.isfinite(prior) or prior < 0:
+        raise ProviderBudgetInputError(
+            "--global-prior-committed-usd must be finite and non-negative"
+        )
+    if prior + float(policy.max_usd) > ABSOLUTE_PROVIDER_RUN_CAP_USD + 1e-12:
+        raise ProviderBudgetInputError(
+            f"prior commitment (${prior:.6f}) plus live allocation (${policy.max_usd:.6f}) "
+            f"exceeds the ${ABSOLUTE_PROVIDER_RUN_CAP_USD:.2f} total user cap"
+        )
+    return policy
+
+
+def checkpoint_dispatch_issue(
+    records: Sequence[dict],
+    *,
+    requested: str | None = None,
+    prior_meta_dispatch: str | None = None,
+) -> str | None:
+    """Refuse a checkpoint that would pool different scheduling arms."""
+    observed = {str(rec.get("judge_dispatch") or "unstamped") for rec in records}
+    if len(observed) > 1:
+        return f"checkpoint mixes judge-dispatch arms {sorted(observed)!r}"
+    if not observed:
+        return None
+    only = next(iter(observed))
+    if requested is not None and only != requested:
+        return f"checkpoint judge-dispatch arm {only!r} differs from requested {requested!r}"
+    if prior_meta_dispatch is not None and only != str(prior_meta_dispatch):
+        return (
+            f"checkpoint judge-dispatch arm {only!r} differs from prior artifact metadata "
+            f"{str(prior_meta_dispatch)!r}"
+        )
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Live-provider per-stage + latency run")
     ap.add_argument("--limit", type=int, default=0, help="stratified sample size (0 = full corpus)")
@@ -2200,17 +3452,53 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="'auto' = the qualification bench's own route selection (native video "
                          "whenever the adapter advertises it); 'images' = ordered timestamped "
                          "images; 'native' = force the mp4 clip route")
+    ap.add_argument(
+        "--judge-dispatch",
+        default="async",
+        choices=("async", "inline"),
+        help="runtime judge scheduling arm; async is the qualification headline, inline is a "
+             "diagnostic control and must use a separate checkpoint",
+    )
+    ap.add_argument("--webhook-probe", action=argparse.BooleanOptionalAction, default=True,
+                    help="deliver through a real local HTTP receiver and record arrival/ACK "
+                         "timestamps (default on; --no-webhook-probe is diagnostic-only)")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--price-in", type=float, default=None, help="USD per 1M input tokens")
     ap.add_argument("--price-out", type=float, default=None, help="USD per 1M output tokens")
     ap.add_argument("--price-source", default="")
+    ap.add_argument("--price-version", default="")
+    ap.add_argument("--settle-from-official-token-prices", action="store_true",
+                    help="refund conservative reservations only for completed responses with both "
+                         "token counts, using the explicitly pinned official price stamp")
+    ap.add_argument("--max-provider-usd", type=float, default=None,
+                    help="run-local USD allocation; required for paid runs")
+    ap.add_argument("--max-provider-calls", type=int, default=None,
+                    help="global physical-call cap across all cases/modes; required for paid runs")
+    ap.add_argument("--conservative-usd-per-call", type=float, default=None,
+                    help="amount durably reserved before every provider transport")
+    ap.add_argument("--global-prior-committed-usd", type=float, default=None,
+                    help="provider dollars already committed outside this run; may be the "
+                         "explicitly reconciled token-priced raw-run cost")
+    ap.add_argument("--global-prior-commitment-source", default="",
+                    help="artifact/path identifying where the imported prior commitment came from")
+    ap.add_argument("--global-prior-commitment-basis", default="", choices=(
+                        "official-token-settled", "conservative-reservations",
+                        "mixed-token-settled-and-conservative"),
+                    help="explicit accounting basis of the imported prior commitment")
+    ap.add_argument("--provider-request-timeout-s", type=float, default=120.0)
     ap.add_argument("--out-stem", default="live_run")
     ap.add_argument("--tag", default="")
     ap.add_argument("--expect-commit", default="",
                     help="abort unless build_info().git_commit starts with this — the arm's own "
                          "proof it is the build it claims to be")
     ap.add_argument("--expect-conductor", action="store_true",
-                    help="abort unless a frozen conductor pin is configured")
+                    help="before any provider call, require a complete frozen conductor pin and "
+                         "abort if any selected primitive disagrees with declared goal_kind")
+    ap.add_argument("--qualification", action="store_true",
+                    help="launch-claim run: require an approved --qualification-contract before "
+                         "provider setup")
+    ap.add_argument("--qualification-contract", default="",
+                    help="frozen launch-bar JSON; its exact sha256 is stamped into the artifact")
     ap.add_argument("--resume", action="store_true", default=True,
                     help="reuse cases already in the checkpoint (default on)")
     ap.add_argument("--no-resume", dest="resume", action="store_false")
@@ -2226,6 +3514,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "existing artifact, so re-scored numbers are never attributed to whatever "
                          "wheel happens to be installed today.")
     args = ap.parse_args(argv)
+
+    if args.qualification and not args.qualification_contract:
+        raise SystemExit(
+            "[live_run] ARM ABORTED before provider calls: --qualification requires an approved "
+            "--qualification-contract"
+        )
+    if args.qualification and args.judge_dispatch != "async":
+        raise SystemExit(
+            "[live_run] ARM ABORTED before provider calls: qualification headline requires "
+            "--judge-dispatch async; inline is a diagnostic control"
+        )
+    args._qualification_contract_summary = None
+    if args.qualification_contract:
+        try:
+            _contract, args._qualification_contract_summary = QC.load(
+                args.qualification_contract, require_approved=args.qualification
+            )
+        except Exception as exc:
+            raise SystemExit(
+                f"[live_run] ARM ABORTED before provider calls: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    try:
+        paid_policy = provider_budget_policy_from_args(args)
+    except (ProviderBudgetInputError, ValueError) as exc:
+        raise SystemExit(
+            f"[live_run] ARM ABORTED before provider calls: {type(exc).__name__}: {exc}"
+        ) from exc
 
     # ---- ARM SELF-CHECK ----------------------------------------------------------------------
     # An arm that cannot prove it is configured correctly must ABORT, not run: a silently
@@ -2266,6 +3582,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         selected = list(corpus)
         selection = "full corpus"
 
+    # A configured pin changes the mechanics whether or not the caller also supplied the defensive
+    # ``--expect-conductor`` assertion.  Therefore every pinned paid arm gets the complete zero-call
+    # dry-arm gate; otherwise omitting that flag would rediscover an unsupported route after provider
+    # construction in ``run_case``.
+    if ACTION_CONDUCTOR_PIN and not args.rescore:
+        try:
+            asyncio.run(preflight_authored_plans(selected))
+        except Exception as exc:
+            raise SystemExit(
+                f"[live_run] ARM ABORTED before provider calls: {type(exc).__name__}: {exc}"
+            ) from exc
+        print(
+            f"[live_run] conductor coverage + primitive fidelity + armability verified for "
+            f"{len(selected)} selected cases",
+            file=sys.stderr,
+        )
+
     settings = load_settings()
     model = settings.models.vision_model
     prices: dict[str, dict] = {}
@@ -2282,25 +3615,74 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit(f"unknown mode {m!r}")
 
     print(f"[live_run] backend={args.backend} model={model} transport={args.transport} "
+          f"judge_dispatch={args.judge_dispatch} "
           f"cases={len(selected)} modes={modes_run} concurrency={args.concurrency}",
           file=sys.stderr)
 
     RESULTS.mkdir(parents=True, exist_ok=True)
     ckpt = RESULTS / f"{args.out_stem}.checkpoint.jsonl"
+    budget_ckpt = RESULTS / f"{args.out_stem}.provider-budget.json"
 
     # ---- prior artifact -----------------------------------------------------------------------
     # On --rescore this is where the MEASUREMENT provenance comes from. The wheel that produced the
     # data may not be the wheel installed now (it usually is not), so re-stamping build_info() onto
     # re-scored numbers would attribute the measurement to a build that never saw the corpus.
     prior_meta: dict[str, Any] = {}
+    prior_document: dict[str, Any] = {}
     prior_path = RESULTS / f"{args.out_stem}.json"
     if args.rescore:
         if not prior_path.exists():
             raise SystemExit(f"[live_run] RESCORE ABORTED: no prior artifact at {prior_path}")
-        prior_meta = dict((json.loads(prior_path.read_text()).get("meta") or {}))
+        prior_document = json.loads(prior_path.read_text())
+        prior_meta = dict((prior_document.get("meta") or {}))
         print(f"[live_run] rescore: inheriting measurement provenance from {prior_path.name} "
               f"(build {prior_meta.get('build_commit')}, model {prior_meta.get('model')}, "
               f"measured {prior_meta.get('generated')})", file=sys.stderr)
+
+    args._provider_budget = None
+    args._provider_budget_summary = prior_document.get("provider_budget")
+    if not args.rescore:
+        assert paid_policy is not None
+        pricing = PricingStamp(
+            backend=args.backend,
+            model=str(model),
+            pricing_version=(
+                args.price_version
+                or ("unpriced-conservative" if args.price_in is None else "declared-unsettled")
+            ),
+            pricing_source=(
+                args.price_source
+                or ("declared on command line" if args.price_in is not None
+                    else "unpriced; full conservative reservation retained")
+            ),
+            input_usd_per_million_tokens=float(args.price_in or 0.0),
+            output_usd_per_million_tokens=float(args.price_out or 0.0),
+        )
+        try:
+            args._provider_budget = GlobalProviderBudget.open(
+                policy=paid_policy,
+                pricing=pricing,
+                checkpoint_path=budget_ckpt,
+                global_prior_committed_usd=float(args.global_prior_committed_usd),
+                global_prior_commitment_source=args.global_prior_commitment_source,
+                global_prior_commitment_basis=args.global_prior_commitment_basis,
+                settle_from_official_token_prices=args.settle_from_official_token_prices,
+                resume=args.resume,
+                case_checkpoint_exists=ckpt.exists(),
+            )
+        except (ProviderBudgetInputError, ProviderBudgetExceeded, OSError) as exc:
+            raise SystemExit(
+                f"[live_run] ARM ABORTED before provider calls: {type(exc).__name__}: {exc}"
+            ) from exc
+        allocation = args._provider_budget.provenance()["global_allocation"]
+        print(
+            "[live_run] provider budget: "
+            f"${allocation['prior_committed_usd']:.2f} prior + "
+            f"${allocation['live_run_local_max_usd']:.2f} live allocation <= "
+            f"${ABSOLUTE_PROVIDER_RUN_CAP_USD:.2f} total; "
+            f"{paid_policy.max_calls} physical calls max",
+            file=sys.stderr,
+        )
 
     # ---- resume ---------------------------------------------------------------------------
     # A case already measured is NOT re-run: it costs money and it would change nothing. The
@@ -2321,6 +3703,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raw[m][rec["case_id"]] = rec
         print(f"[live_run] resumed: "
               + ", ".join(f"{m}={len(raw[m])}" for m in modes_run), file=sys.stderr)
+        if args.webhook_probe and not args.rescore:
+            legacy = [
+                rec for mode_rows in raw.values() for rec in mode_rows.values()
+                if not (rec.get("delivery") or {}).get("enabled")
+            ]
+            if legacy:
+                raise SystemExit(
+                    f"[live_run] ARM ABORTED: checkpoint contains {len(legacy)} case(s) without "
+                    "receiver-observed webhook timing. Use a new --out-stem or --no-resume; "
+                    "mixing pre-webhook and webhook-qualified rows would invalidate latency."
+                )
+        dispatch_issue = checkpoint_dispatch_issue(
+            [rec for mode_rows in raw.values() for rec in mode_rows.values()],
+            requested=None if args.rescore else args.judge_dispatch,
+            prior_meta_dispatch=(prior_meta.get("judge_dispatch") if args.rescore else None),
+        )
+        if dispatch_issue:
+            raise SystemExit(
+                f"[live_run] ARM ABORTED: {dispatch_issue}. Use a new --out-stem or --no-resume; "
+                "mixing async and inline rows invalidates the comparison."
+            )
 
     ck_fh = ckpt.open("a")
     t_all = time.monotonic()
@@ -2350,6 +3753,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if written[0] % 5 == 0:
             flush_report()
 
+    webhook_probe = None
+    if args.webhook_probe and not args.rescore:
+        from percept.harness.webhook_probe import LoopbackWebhookProbe
+
+        webhook_probe = LoopbackWebhookProbe(sink_timeout_s=5.0).start()
+        print(f"[live_run] webhook receiver probe: {webhook_probe.url}", file=sys.stderr)
+
     try:
         for m in modes_run:
             todo = [c for c in selected if c["case_id"] not in raw[m]]
@@ -2366,9 +3776,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"a FINISHED run and never makes a provider call. Drop --rescore to measure."
                 )
             asyncio.run(run_mode(todo, m, backend=args.backend, transport=args.transport,
-                                 concurrency=args.concurrency, on_done=on_done))
+                                 judge_dispatch=args.judge_dispatch,
+                                 concurrency=args.concurrency,
+                                 provider_budget=args._provider_budget, on_done=on_done,
+                                 webhook_probe=webhook_probe))
     finally:
         ck_fh.close()
+        if webhook_probe is not None:
+            webhook_probe.close()
     total_wall = time.monotonic() - t_all
 
     ordered = {m: [raw[m][c["case_id"]] for c in selected if c["case_id"] in raw[m]]
@@ -2413,15 +3828,37 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             "model": first.get("model", model),
             "transport": first.get("transport"),
             "transport_selection": args.transport,
+            "judge_dispatch": args.judge_dispatch,
             "temporal_frames": ACTION_TEMPORAL_FRAMES,
             "temporal_window_s": ACTION_TEMPORAL_WINDOW_S,
             # Declared, never inferred: a run whose evidence was shrunk must say so in its own meta.
             "max_dimension": ACTION_MAX_DIMENSION or "runtime default (768)",
             "media_resolution": ACTION_MEDIA_RESOLUTION or "provider default (HIGH)",
             "conductor_pin": ACTION_CONDUCTOR_PIN or "none (corpus-declared fixed watch)",
+            "webhook_probe": (
+                "loopback real HTTP receiver; monotonic arrival + ACK timestamps"
+                if args.webhook_probe and not args.rescore
+                else "disabled or historical rescore"
+            ),
+            "qualification_contract": getattr(args, "_qualification_contract_summary", None),
             "authored_types": dict(Counter(
                 r.get("authored_type") or "none"
                 for m in modes_run for r in (raw.get(m) or []))),
+            "source_motion_contracts": dict(Counter(
+                (r.get("source_motion_contract") or {}).get("camera_motion") or "unstamped"
+                for m in modes_run for r in (raw.get(m) or []))),
+            "situation_profiles": dict(Counter(
+                (r.get("situation_resolution") or {}).get("profile") or "none"
+                for m in modes_run for r in (raw.get(m) or []))),
+            "ego_compensated_cases": sum(
+                bool(r.get("ego_compensate"))
+                for m in modes_run for r in (raw.get(m) or [])
+            ),
+            "gate_refractory_s_observed": sorted({
+                float(r["gate_refractory_s"])
+                for m in modes_run for r in (raw.get(m) or [])
+                if r.get("gate_refractory_s") is not None
+            }),
             "n_corpus": len(corpus),
             "n_selected": len(selected),
             "selection": selection,
@@ -2454,6 +3891,10 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             "economy": "units_passed / units_received",
             "drop_rate": "units lost WITHOUT a receipt / units received; deliberate suppression is NOT a drop",
             "occurrence_recall": "GT occurrences containing >=1 Incident / GT occurrences",
+            "strict_one_to_one_headline": "maximum-cardinality one-to-one temporal overlap, using "
+                                           "the exact raw_vlm_baseline scorer. TP/FP/FN, precision, "
+                                           "and recall therefore share one event unit; duplicate "
+                                           "Incidents are false positives.",
             "timely_recall_2s": "GT occurrences whose Incident arrived <2 s after ONSET / GT occurrences",
             "precision_per_emission": "Incidents inside a (padded) GT occurrence / Incidents "
                                       "emitted. UNIT: one Incident. This is the figure schema 1 "
@@ -2512,10 +3953,10 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             "The corpus revision and its sha256 are stamped beside them.",
         ],
         "limits": [
-            "A 0.95 recall bar is not statistically ratifiable on this corpus. An exact one-sided "
-            "Clopper-Pearson lower bound clearing 0.95 with zero misses needs n=59 positives; the "
-            "duration and transition cells carry 38-40 occurrences in the FULL corpus and fewer in "
-            "any subset. No 0.95 claim is made or implied here.",
+            "The launch owner's <=1% miss-rate constraint is not statistically ratifiable on this "
+            "corpus. An exact one-sided 95% Clopper-Pearson upper miss bound clearing 1% with zero "
+            "misses needs n=299 independent positives per claimed cell; the entire corpus has only "
+            "100 cases and mechanic cells carry fewer. No 99% recall claim is made or implied here.",
             "`state` carries n=4 cases corpus-wide. It is reported and never gated.",
             "Stage 2 is an identity pass-through with no `EvidenceExtractor` armed: its economy of "
             "1.000 cannot distinguish 'lossless' from 'absent'.",
@@ -2529,6 +3970,12 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
         "cases": {m: [{k: v for k, v in r.items() if k not in {"receipts"}}
                       for r in (raw.get(m) or [])] for m in modes_run},
     }
+    provider_budget = getattr(args, "_provider_budget", None)
+    payload["provider_budget"] = (
+        provider_budget.provenance()
+        if provider_budget is not None
+        else getattr(args, "_provider_budget_summary", None)
+    )
     sidecar_path = getattr(args, "sidecar", "")
     if sidecar_path and os.path.exists(sidecar_path):
         payload.update(json.loads(Path(sidecar_path).read_text()))
@@ -2602,6 +4049,13 @@ def harness_provenance() -> dict[str, Any]:
     # `corpus_version` verbatim. Derived, never guessed, so no table can mix two revisions unlabelled.
     corpus_version = str(corpus_doc.get("corpus_version")
                          or ("1.0" if corpus_doc.get("version") == 1 else "unknown"))
+    try:
+        displayed_corpus_path = str(corpus_path.relative_to(REPO))
+    except ValueError:
+        # Diagnostic and adopter-owned corpora are intentionally allowed through
+        # PERCEPT_SV_CORPUS.  Preserve their absolute provenance instead of crashing only after
+        # the paid measurement has completed.
+        displayed_corpus_path = str(corpus_path.resolve())
     return {
         "harness_commit": _git("rev-parse", "HEAD") or None,
         "harness_branch": _git("rev-parse", "--abbrev-ref", "HEAD") or None,
@@ -2610,7 +4064,7 @@ def harness_provenance() -> dict[str, Any]:
         "scorer_sha256": _sha256_file(Path(__file__)),
         "scorer_tree_dirty": bool(dirty),
         "scorer_dirty_paths": [ln[3:] for ln in dirty.splitlines()][:40],
-        "corpus_path": str(corpus_path.relative_to(REPO)),
+        "corpus_path": displayed_corpus_path,
         "corpus_sha256": _sha256_file(corpus_path),
         "corpus_version": corpus_version,
         "corpus_n_cases": corpus_doc.get("n_cases"),
@@ -2642,7 +4096,7 @@ def scoring_parameters() -> dict[str, Any]:
 MEASUREMENT_META_KEYS = (
     "package_version", "build_commit", "contract_version", "interpreter", "backend", "model",
     "transport", "transport_selection", "temporal_frames", "temporal_window_s", "max_dimension",
-    "media_resolution", "conductor_pin", "concurrency", "provider_deadline_s",
+    "media_resolution", "conductor_pin", "concurrency", "judge_dispatch", "provider_deadline_s",
     "decision_deadline_s", "generated", "tag", "total_wall_s",
 )
 

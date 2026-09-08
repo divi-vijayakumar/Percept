@@ -104,8 +104,7 @@ own notification. That is not over-delivery; that is the number of things that h
 The verdict cache short-circuits a judge call when the current frame perceptually matches one already
 judged for the same concern, subject and condition.
 
-The two layers have to compose, and how they compose depends on which path you are on — the same
-split as the table above.
+The two layers compose the same way on every driver in the table above.
 
 An open episode is serialised into the judge context, so a verdict formed under one episode state must
 never be re-served under a different one. The cache handles that by **putting the episode state in the
@@ -118,19 +117,16 @@ place**: it advances "last seen" and appends nothing. So an occurrence that is s
 not disturb the key, and repeat observations of it can be served from cache. A genuine change — a
 close, a reopen, an update, an annotation — changes the key, and the next judgment is a real one.
 
-The practical consequence, **on those drivers**:
+The practical consequence, **on episode-enabled drivers**:
 
 > **A long-running watch pays a model call when the occurrence changes, not on every frame that
 > observes it continuing.**
 
-**On the vision and fused paths there is no episode component in the key at all.** Nothing put the
-episode in the prompt there, so no verdict depends on episode state and none can be re-served
-wrongly — but the converse is that an episode change invalidates nothing. The slot is keyed on the
-frame hash, the concern, the subject and the condition, and **one slot spans a close and a reopen**:
-a new occurrence that looks like the old one can be answered from the verdict formed under the old
-one. What still holds on this path is the weaker, frame-level statement — repeat observations of a
-perceptually unchanged scene are served from cache — with the re-perception audit below as the only
-thing that catches a stale serve.
+Vision and fused Watches under `percept.run()` use that same episode fingerprint. A close, reopen,
+update, or annotation therefore moves them to a different cache slot; a perceptually similar new
+occurrence cannot reuse a verdict formed under the prior occurrence's episode state. The
+re-perception audit remains necessary for changes the frame key itself cannot observe, such as a
+backend answer changing while the pixels remain identical.
 
 Both mechanisms are off unless you turn them on. Episodes need a `SourceProfile`; the cache needs
 `Settings.cache.enabled`, which defaults to `False`.

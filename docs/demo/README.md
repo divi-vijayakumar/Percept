@@ -84,14 +84,15 @@ Everything the pages render is real runtime output:
 | Run manifest | `.ptrace` `manifest` — `percept_version`, `watch_version` 1.1.0, `contract_version` 1.10.0, plan hash |
 | Primary metrics | `.ptrace` `summary` — the `observed → admitted → judge_started → judge_completed → gate` funnel, cost, savings |
 | Timeline / lanes | trace `records` — `source.frame`, `judge.started/finished`, `gate.classified` |
-| Context ledger | `shadow.fold` records — the **advisory** subject + `EpisodeFoldResult` (shadow mode) |
+| Context ledger | `shadow.fold` records — advisory subject/shadow fold plus governing `fold_episode_id` / `fold_match` siblings |
 | Subscriber events | the real `WatchEvent`s the run emitted |
 | `.ptrace` | the exact trace file the run wrote, downloadable |
 
 Two honest caveats:
-- The **context ledger is advisory**. In shadow mode, the identity/episode fold is computed and
-  written to the trace but governs nothing — the gate fires exactly as it would without it. It is shown
-  because it is real trace data, not because it drives behaviour (it doesn't, yet).
+- The nested **shadow fold is advisory**: `data.fold` binds no continuation decision and governs
+  nothing. The same record's `data.fold_episode_id` / `data.fold_match` siblings report the real fold
+  that did govern the gate. The demos use those siblings for episode identity and label the remaining
+  shadow subject/mutation fields as advisory.
 - The **keyless fixture** is a scripted-verdict run. It exercises the real runtime and trace machinery,
   but the judgments are authored, not a model's — the page labels this on every fixture run.
 

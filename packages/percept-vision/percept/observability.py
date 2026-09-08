@@ -59,6 +59,13 @@ class TraceEvent:
     t: float | None = None
     goal_id: str | None = None
     data: dict = field(default_factory=dict)
+    # Producer-side monotonic stamps. Async runtime lanes materialize lifecycle rows at the real
+    # transition and may deliver them to an observability callback on a later owner-loop drain.
+    # Keeping these stamps on the carrier prevents callback-drain time from masquerading as stage
+    # latency. Older/direct producers leave them unset and retain the recorder's arrival-time
+    # behavior.
+    observed_wall_ts: float | None = None
+    emitted_wall_ts: float | None = None
 
 
 # An ``on_trace`` callback: receives each :class:`TraceEvent`. Wire one on ``Percept`` / ``run(...)``.

@@ -823,12 +823,12 @@ class Tier0MotionInterest:
 # ---------------------------------------------------------------------------
 
 _LIVE_CAUSES = frozenset(
-    ("motion", "structural", "semantic", "fixed", "fused", "coast", "audio")
+    ("motion", "structural", "semantic", "fixed", "fused", "coast", "audio", "candidate")
 )
 #: The two causes the *worker* owns rather than the gate: a coasted continuation and an external
 #: audio wake.  Neither is a tier-0 statistic, so an outcome routed through one of them cannot keep
 #: the gate's ``admission_id``/``detector_id`` — see :func:`interest_admission_from_outcome`.
-_WORKER_ROUTE_CAUSES = frozenset(("coast", "audio"))
+_WORKER_ROUTE_CAUSES = frozenset(("coast", "audio", "candidate"))
 #: Everything else: a cause the gate itself decided, whose detector identity is already truthful.
 _GATE_ADMISSION_CAUSES = frozenset(_LIVE_CAUSES - _WORKER_ROUTE_CAUSES)
 #: The active-interval reason each admission cause names.  One table, read by both recorders — the
@@ -845,6 +845,7 @@ _LIVE_ACTIVE_REASONS = {
     "fused": "wake_fusion",
     "coast": "coast",
     "audio": "audio",
+    "candidate": "candidate",
 }
 _LIVE_NON_ADMISSION_REASONS = frozenset(
     (

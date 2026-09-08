@@ -1,0 +1,90 @@
+{
+  "kind": "stage-validation-mechanic-adjudication",
+  "version": 1,
+  "base_corpus": "eval/stage-validation/corpus.v1.1.json",
+  "base_corpus_sha256": "a78bd2e9305ad991bac98043afc60d3d0284b9983005d55351c05e7d7d704c3b",
+  "policy": "Only source-backed mechanic corrections are retained. Composite, narration/process, or visually unresolved cases are excluded from the supported single-primitive qualification corpus rather than coerced to a nearby primitive.",
+  "decisions": [
+    {
+      "case_id": "proactiveqa::f40e0f92-2250-46c9-98a0-8ccf23d164e0-1800-2160::0",
+      "action": "goal_kind_override",
+      "goal_text": "Sprinkling shredded mozzarella cheese on the lasagna mixture.",
+      "from": "transition",
+      "to": "duration",
+      "reason_code": "activity_interval_not_transition",
+      "evidence": "The raw related_timespan is the activity interval [17.96, 37.45]; the goal names an ongoing -ing activity and no concrete before/after states."
+    },
+    {
+      "case_id": "proactiveqa::bd970f5b-3fd9-4ae9-9f2b-738e8ca54c1e-1080-1440::0",
+      "action": "goal_kind_override",
+      "goal_text": "Disposing waste found on the countertop.",
+      "from": "transition",
+      "to": "duration",
+      "reason_code": "activity_interval_not_transition",
+      "evidence": "The raw related_timespan is the activity interval [14.87, 18.9]; the goal declares no concrete completed state."
+    },
+    {
+      "case_id": "proactiveqa::afbab8ce-797a-4c6e-800b-5acd9bf1653e-2160-2520::0",
+      "action": "goal_kind_override",
+      "goal_text": "Carrot stew is being stir fried in the pan.",
+      "from": "transition",
+      "to": "duration",
+      "reason_code": "activity_interval_not_transition",
+      "evidence": "The progressive stative wording and repeated source spans describe an activity that holds, not one discrete state change."
+    },
+    {
+      "case_id": "proactiveqa::13c76616-f168-4af0-8d2a-fe82ce232d6a-1080-1440::0",
+      "action": "goal_kind_override",
+      "goal_text": "The heat is regulated using firewood.",
+      "from": "transition",
+      "to": "duration",
+      "reason_code": "activity_interval_not_transition",
+      "evidence": "The source repeats this condition over five multi-second spans; the goal names a holding state/activity and no alternatives."
+    },
+    {
+      "case_id": "charades::T42IZ::0",
+      "action": "exclude",
+      "goal_text": "Someone is standing up from somewhere",
+      "from": "duration",
+      "reason_code": "human_boundary_review_required",
+      "evidence": "The full 29.33-second clip is labelled positive, while a sparse visual review did not establish the authored sitting/lying start. Full video review and an actual event boundary are required."
+    },
+    {
+      "case_id": "omnipro::TXeVf42sQdM::80",
+      "action": "exclude",
+      "goal_text": "When the boy shouts 'No Rio 2!', count how many children are visible in the screen.",
+      "from": "count",
+      "reason_code": "unsupported_audio_triggered_snapshot_count",
+      "evidence": "The task composes an audio transition with a visual snapshot count and has conflicting 23-second event versus 29-second answer clocks; no shipped single primitive retains both."
+    },
+    {
+      "case_id": "omnipro::LT-FXNMpk0M::47",
+      "action": "exclude",
+      "goal_text": "I've just got this Multi Flask and want to try out the different ways to use it. Please guide me through each setup step by step as shown in the video.",
+      "from": "transition",
+      "reason_code": "unsupported_sequential_instruction",
+      "evidence": "Six editorial setup chapters require six different responses; neither one unnamed transition nor one latching watch defines the requested process."
+    },
+    {
+      "case_id": "omnipro::ln-yFLZ5wcc::33",
+      "action": "exclude",
+      "goal_text": "As you watch, narrate the natural landscapes and local scenes shown as the journey progresses through this Himalayan region.",
+      "from": "transition",
+      "reason_code": "unsupported_open_ended_narration",
+      "evidence": "Four editorial narration checkpoints, including the clip end, do not define a visual condition or concrete transition endpoints."
+    }
+  ],
+  "conductor_override": {
+    "case_id": "omnipro::pvSVznXAbug::210",
+    "goal_text": "Alert me whenever you see a group of people performing an organized, synchronized fitness or wellness routine.",
+    "from_behavior_type": "watch",
+    "to_behavior_type": "transition",
+    "reason_code": "whenever_visible_is_rising_transition",
+    "explicit": {
+      "Goal.state.from": "no organized synchronized group fitness or wellness routine is visible",
+      "Goal.state.to": "an organized synchronized group fitness or wellness routine is visible",
+      "Goal.state.type": "transition"
+    },
+    "evidence": "The authoring contract says 'whenever you see X' is a transition into X, and the source has separated rising occurrences at 18 and 94 seconds."
+  }
+}

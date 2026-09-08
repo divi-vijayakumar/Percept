@@ -2,9 +2,9 @@
   "suite": "sv0_compile",
   "runtime": {
     "percept_version": "1.0.0",
-    "percept_file": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept/__init__.py",
+    "percept_file": "/private/tmp/percept-launch/eval-venv/lib/python3.12/site-packages/percept/__init__.py",
     "python": "3.12.8",
-    "executable": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python"
+    "executable": "/private/tmp/percept-launch/eval-venv/bin/python"
   },
   "corpus": {
     "path": "/Users/dhivyavijayakumar/git/Percept-sdk/eval/stage-validation/corpus.json",
@@ -6719,10 +6719,11 @@
         "subprocess_cwd_tmp_a",
         "subprocess_cwd_tmp_b"
       ],
-      "n_state_paths_probed": 45,
+      "n_state_paths_probed": 46,
       "plan_hash_gaps": [],
       "effective_gaps": [],
       "component_snapshot_hash_gaps": [
+        "Goal.state.authority",
         "Goal.state.cadence.gate_on",
         "Goal.state.cadence.min_judge_interval",
         "Goal.state.cadence_s",
@@ -6815,6 +6816,19 @@
         "effective_moved": true
       },
       "coverage_rows": [
+        {
+          "path": "Goal.state.authority",
+          "probe_value": "['done']",
+          "plan_hash_moved": true,
+          "component_snapshot_hash_moved": false,
+          "effective_moved": true,
+          "compiled_state_moved": true,
+          "armed_state_moved": true,
+          "arm_status": "applied",
+          "arm_dropped": [],
+          "arm_coerced": [],
+          "in_effective": true
+        },
         {
           "path": "Goal.state.cadence.gate_on",
           "probe_value": "'motion'",

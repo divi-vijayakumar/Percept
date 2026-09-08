@@ -1,0 +1,852 @@
+{
+  "corpus": {
+    "n_cases": 100,
+    "n_unique_goals": 72,
+    "path": "eval/stage-validation/corpus.v1.1.json",
+    "sha256": "a78bd2e9305ad991bac98043afc60d3d0284b9983005d55351c05e7d7d704c3b",
+    "version": "1.1"
+  },
+  "entries": {
+    "01e17c4d0ef863d330fea49d413c7fa4": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Someone is cooking something",
+      "key": "01e17c4d0ef863d330fea49d413c7fa4",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "050e5245acb0b19e3763e873658a7c5a": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Carrot stew is being stir fried in the pan.",
+      "key": "050e5245acb0b19e3763e873658a7c5a",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "05567dc815f5626b97bf109587a91724": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Someone is undressing",
+      "key": "05567dc815f5626b97bf109587a91724",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "0785f08122acc9546cd9122ed0dbce6b": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Putting a blanket somewhere",
+      "key": "0785f08122acc9546cd9122ed0dbce6b",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "0971a62213d1604332a14b5b47961edc": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Holding a bag",
+      "key": "0971a62213d1604332a14b5b47961edc",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "0a1991ce4ecd2071148a0163624a5902": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Showing something to the camera",
+      "key": "0a1991ce4ecd2071148a0163624a5902",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "0c95e5a09c0fc7fea7ffe5054c7ca0d7": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Holding a phone/camera",
+      "key": "0c95e5a09c0fc7fea7ffe5054c7ca0d7",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "0d531005c4c1ee00deac16f24568a12e": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "someone is sitting or lying down",
+        "Goal.state.to": "someone is standing up",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Someone is standing up from somewhere",
+      "key": "0d531005c4c1ee00deac16f24568a12e",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "0e4d3f840801817794c1642139353e38": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "nuts are not in the dough",
+        "Goal.state.to": "nuts are in the dough",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Pours nuts into the dough.",
+      "key": "0e4d3f840801817794c1642139353e38",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "11bedcb921ecbb08afc0e36fb4047551": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "beef is not selected",
+        "Goal.state.to": "beef is selected",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Select the beef.",
+      "key": "11bedcb921ecbb08afc0e36fb4047551",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "15ba1103f92bf01e4b427bd7d7321126": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Holding a book",
+      "key": "15ba1103f92bf01e4b427bd7d7321126",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "196e15b858cec91def12893b59f8ba79": {
+      "behavior_type": "rhythm",
+      "explicit": {
+        "Goal.state.rhythm.mode": "discrete",
+        "Goal.state.type": "rhythm"
+      },
+      "goal_text": "a person completes a push-up",
+      "key": "196e15b858cec91def12893b59f8ba79",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "1b019db32607497d9a65e3c17c3a74f9": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Closing something",
+      "key": "1b019db32607497d9a65e3c17c3a74f9",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "1b6c5598dfb9deca64d84d94c855b514": {
+      "behavior_type": "watch",
+      "explicit": {
+        "Goal.state.rearm": "each_event"
+      },
+      "goal_text": "Monitor the charging case lid and update me whenever its state changes between open and closed.",
+      "key": "1b6c5598dfb9deca64d84d94c855b514",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "1d431414183c5a1f78ebe3376e89c010": {
+      "behavior_type": "rhythm",
+      "explicit": {
+        "Goal.state.rhythm.mode": "discrete",
+        "Goal.state.type": "rhythm"
+      },
+      "goal_text": "a person completes a pull-up",
+      "key": "1d431414183c5a1f78ebe3376e89c010",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "2bb10584fd3c9af498745bb9cfb0dde2": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Writing or drawing something on a piece of paper",
+      "key": "2bb10584fd3c9af498745bb9cfb0dde2",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "2cbc2a0b48bf6fcab4a644bb642d9dd7": {
+      "behavior_type": "count",
+      "explicit": {
+        "Goal.state.type": "count"
+      },
+      "goal_text": "Count how many different locations or themed settings the girl actually enters and performs a dance routine in.",
+      "key": "2cbc2a0b48bf6fcab4a644bb642d9dd7",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "2d8349a3316293f87ad825814ad640e6": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Sitting in a chair",
+      "key": "2d8349a3316293f87ad825814ad640e6",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "2f4f6783a0018bcf46208b230348ea91": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "yam is uncut and uncleaned",
+        "Goal.state.to": "yam is cut and cleaned",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Cut and clean the yam.",
+      "key": "2f4f6783a0018bcf46208b230348ea91",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "30101138f7fe7541a5312bea0dda95c0": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "soup has not been checked",
+        "Goal.state.to": "soup has been checked",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Checks the soup.",
+      "key": "30101138f7fe7541a5312bea0dda95c0",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "336e2636d0b8c05b9a12e17ee9219d90": {
+      "behavior_type": "rhythm",
+      "explicit": {
+        "Goal.state.rhythm.mode": "discrete",
+        "Goal.state.type": "rhythm"
+      },
+      "goal_text": "a person completes a bench press repetition",
+      "key": "336e2636d0b8c05b9a12e17ee9219d90",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "355f6a00ae9d8aff185c463df2b4d805": {
+      "behavior_type": "watch",
+      "explicit": {
+        "Goal.state.rearm": "each_event"
+      },
+      "goal_text": "Alert me whenever you see a group of people performing an organized, synchronized fitness or wellness routine.",
+      "key": "355f6a00ae9d8aff185c463df2b4d805",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "3ab49469554551d8339d27979e9dbceb": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "the gas cooker is off",
+        "Goal.state.to": "the gas cooker is on",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "The gas cooker is turned on.",
+      "key": "3ab49469554551d8339d27979e9dbceb",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "3ae22ebf18c08be20515af6aa4f44e58": {
+      "behavior_type": "watch",
+      "explicit": {
+        "Goal.state.rearm": "each_event"
+      },
+      "goal_text": "Monitor the video and let me know whenever the focus shifts between the car's exterior, its interior, or non-vehicle graphics.",
+      "key": "3ae22ebf18c08be20515af6aa4f44e58",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "40888155a05681d93239950c6bfac8bf": {
+      "behavior_type": "count",
+      "explicit": {
+        "Goal.state.type": "count"
+      },
+      "goal_text": "Count how many times the narrator turns the camera to show his face.",
+      "key": "40888155a05681d93239950c6bfac8bf",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "46eb3bff408a094029e0fdb15164d42e": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "sauce is in refrigerator uncollected",
+        "Goal.state.to": "sauce is measured in calibrated jug and refrigerated",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Collect bottle of sauce from refrigerator, measure sauce in calibrated jug, and refrigerate sauce.",
+      "key": "46eb3bff408a094029e0fdb15164d42e",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "4ebe13f4cf4ff67ab28ec5a9cd2092c7": {
+      "behavior_type": "count",
+      "explicit": {
+        "Goal.state.type": "count"
+      },
+      "goal_text": "Count how many times the narrator is shown on screen.",
+      "key": "4ebe13f4cf4ff67ab28ec5a9cd2092c7",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "4f34a89b22e0f8b1f9e77c10af2753b7": {
+      "behavior_type": "count",
+      "explicit": {
+        "Goal.state.type": "count"
+      },
+      "goal_text": "When the first athlete group  celebrate on the podium with their bouquets, count how many gold medals they are wearing.",
+      "key": "4f34a89b22e0f8b1f9e77c10af2753b7",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "568e122e6f7801d42f948b68c02737e0": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "I've just got this Multi Flask and want to try out the different ways to use it. Please guide me through each setup step by step as shown in the video.",
+      "key": "568e122e6f7801d42f948b68c02737e0",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "58b8e6d8f9f6468a1ca765c806e9b761": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "onion is unpeeled",
+        "Goal.state.to": "onion is peeled",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Peel onion.",
+      "key": "58b8e6d8f9f6468a1ca765c806e9b761",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "58d24188ceaa7ad67a873fb4177972c3": {
+      "behavior_type": "rhythm",
+      "explicit": {
+        "Goal.state.rhythm.mode": "discrete",
+        "Goal.state.type": "rhythm"
+      },
+      "goal_text": "a person completes a squat",
+      "key": "58d24188ceaa7ad67a873fb4177972c3",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "58f416834973a717df6d9d289b7eb0aa": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Moving object(s) around",
+      "key": "58f416834973a717df6d9d289b7eb0aa",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "59162bc3c0a9942d86b137a35ea0b8c1": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Holding a vacuum",
+      "key": "59162bc3c0a9942d86b137a35ea0b8c1",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "65f67ad56f12d0e3c7892a87bdee15b7": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "match is ongoing",
+        "Goal.state.to": "victory announcement is made",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Let me know when the match ends with a victory announcement.",
+      "key": "65f67ad56f12d0e3c7892a87bdee15b7",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "68166d62a69ceb7357fbd5e405ece330": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Working at a table",
+      "key": "68166d62a69ceb7357fbd5e405ece330",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "6b2e394e3a7f0dc1747ebf6cc7f2eb9b": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "the reviewer has not started the sound test for the earbuds",
+        "Goal.state.to": "the reviewer is starting the sound test for the earbuds",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Let me know when the reviewer starts the sound test for the earbuds.",
+      "key": "6b2e394e3a7f0dc1747ebf6cc7f2eb9b",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "6b7acec9be04ec25e5ff4f5a15b2d9f3": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Shuffling objects",
+      "key": "6b7acec9be04ec25e5ff4f5a15b2d9f3",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "6c1c73d4478f07cfa55b74c7f7fa3361": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "garlic with outer skin intact",
+        "Goal.state.to": "garlic sliced",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "The outer skin of the garlic is removed and then the garlic is sliced.",
+      "key": "6c1c73d4478f07cfa55b74c7f7fa3361",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "7335551ae18fa6696d8cefb7948692b1": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "onion has outer skin on it",
+        "Goal.state.to": "onion has outer skin removed",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Remove the outer skin from the onion.",
+      "key": "7335551ae18fa6696d8cefb7948692b1",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "73400b1beb8381c6708c33f8f8c9a85f": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "diced carrots are not in the tikka sauce",
+        "Goal.state.to": "diced carrots are in the tikka sauce",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Diced carrots are added to the tikka sauce.",
+      "key": "73400b1beb8381c6708c33f8f8c9a85f",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "7c7add987ac53739e9f44e22de926efc": {
+      "behavior_type": "watch",
+      "explicit": {
+        "Goal.state.rearm": "each_event"
+      },
+      "goal_text": "Monitor whether Amanda is visible on screen or if the video is showing other footage or graphics.",
+      "key": "7c7add987ac53739e9f44e22de926efc",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "7cc3d9c46c02560c1a7825dcc95aac61": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "the boy has his ears covered and is not listening to the movie",
+        "Goal.state.to": "the boy has uncovered his ears and is listening to the movie",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Let me know when the boy finally uncovers his ears and starts listening to the movie.",
+      "key": "7cc3d9c46c02560c1a7825dcc95aac61",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "80d28f5e1e1922e921f9915855994b70": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "The heat is regulated using firewood.",
+      "key": "80d28f5e1e1922e921f9915855994b70",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "8955a678675042559806d8712a7a39e6": {
+      "behavior_type": "count",
+      "explicit": {
+        "Goal.state.type": "count"
+      },
+      "goal_text": "Count how many legendary tribes are introduced.",
+      "key": "8955a678675042559806d8712a7a39e6",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "8c0a8d7f08dc17d7e31319fb44370efb": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Sitting on the floor",
+      "key": "8c0a8d7f08dc17d7e31319fb44370efb",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "8d437554b1be6e23ad4b4e6bdb6d84ad": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "no specific casualty details provided",
+        "Goal.state.to": "specific casualty details provided",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Alert me when the video provides specific details about the number of casualties.",
+      "key": "8d437554b1be6e23ad4b4e6bdb6d84ad",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "92f7ba51a561f4ea9423b95a787c1d6d": {
+      "behavior_type": "watch",
+      "explicit": {
+        "Goal.state.rearm": "each_event"
+      },
+      "goal_text": "Monitor the narrator's presence and let me know whenever he enters or leaves the camera frame.",
+      "key": "92f7ba51a561f4ea9423b95a787c1d6d",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "96a624a2e9d65fc5660ffae30e69f9f6": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Holding a pillow",
+      "key": "96a624a2e9d65fc5660ffae30e69f9f6",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "973843fc86eba92dcd08960fd5c0b644": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Someone is laughing",
+      "key": "973843fc86eba92dcd08960fd5c0b644",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "977b383c71a842cf5198176a54c2dfa4": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "cabbage is whole",
+        "Goal.state.to": "cabbage is sliced",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "The cabbage is sliced.",
+      "key": "977b383c71a842cf5198176a54c2dfa4",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "9b33b9bc6907d80959aa7ae0bb923d8d": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "no plate has been obtained",
+        "Goal.state.to": "a plate has been obtained",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Obtain a plate as part of the preparation process.",
+      "key": "9b33b9bc6907d80959aa7ae0bb923d8d",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "a2aedaa2fe42d3d2302f82d0066270f0": {
+      "behavior_type": "rhythm",
+      "explicit": {
+        "Goal.state.rhythm.mode": "discrete",
+        "Goal.state.type": "rhythm"
+      },
+      "goal_text": "a person completes a jumping jack",
+      "key": "a2aedaa2fe42d3d2302f82d0066270f0",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "ac2ac1a633cd8a6eab0972b6a859de3f": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "skater has fallen",
+        "Goal.state.to": "someone is providing physical assistance or checking on skater's well-being",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Please alert me whenever you see someone providing physical assistance or checking on a skater's well-being immediately after they fall.",
+      "key": "ac2ac1a633cd8a6eab0972b6a859de3f",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "aede291c2eae9bf385abea8b122805da": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Putting a box somewhere",
+      "key": "aede291c2eae9bf385abea8b122805da",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "b1e1fcddf0213dc433bb83a1df681e32": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Sprinkling shredded mozzarella cheese on the lasagna mixture.",
+      "key": "b1e1fcddf0213dc433bb83a1df681e32",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "b60ebebed1e1063810faefaf9bc887e1": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "tamarind pulp is whole",
+        "Goal.state.to": "tamarind pulp is cut",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Cut tamarind pulp with a knife.",
+      "key": "b60ebebed1e1063810faefaf9bc887e1",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "b7d9114cd147d76c6e1208e7a1f2d81e": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "chips without salt added",
+        "Goal.state.to": "salt added to chips",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Add salt to the chips.",
+      "key": "b7d9114cd147d76c6e1208e7a1f2d81e",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "c0f4863ff451400e784135ad5121543d": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "recipe in manual has not been checked",
+        "Goal.state.to": "recipe in manual has been checked",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "Check the recipe in the manual.",
+      "key": "c0f4863ff451400e784135ad5121543d",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "c46ce2529a0d30305bc5b4fad7cc7bb1": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Disposing waste found on the countertop.",
+      "key": "c46ce2529a0d30305bc5b4fad7cc7bb1",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "c80efc3677d796d5d43c03afdfa1e21c": {
+      "behavior_type": "rhythm",
+      "explicit": {
+        "Goal.state.rhythm.mode": "discrete",
+        "Goal.state.type": "rhythm"
+      },
+      "goal_text": "a person completes a sit-up",
+      "key": "c80efc3677d796d5d43c03afdfa1e21c",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "cc31c08563bb439f461e795c13c33281": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "potatoes are rinsed",
+        "Goal.state.to": "potatoes are dried",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "The potatoes are rinsed and then dried as part of the cleaning process.",
+      "key": "cc31c08563bb439f461e795c13c33281",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "ce55d5746d39f2eb7b0f49817bc49908": {
+      "behavior_type": "count",
+      "explicit": {
+        "Goal.state.type": "count"
+      },
+      "goal_text": "Count how many different people are featured in performance or production roles, specifically the rappers and the producer.",
+      "key": "ce55d5746d39f2eb7b0f49817bc49908",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "cfb7f1098a225bd00c4078fe8d2c3d31": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Holding a shoe/shoes",
+      "key": "cfb7f1098a225bd00c4078fe8d2c3d31",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "cfbfb0ced5761e3258b40087e0574785": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "As you watch, narrate the natural landscapes and local scenes shown as the journey progresses through this Himalayan region.",
+      "key": "cfbfb0ced5761e3258b40087e0574785",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "d43f7614b3b65c75f6519fa640b3e6e0": {
+      "behavior_type": "rhythm",
+      "explicit": {
+        "Goal.state.rhythm.mode": "discrete",
+        "Goal.state.type": "rhythm"
+      },
+      "goal_text": "a person completes a front raise",
+      "key": "d43f7614b3b65c75f6519fa640b3e6e0",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "d8ee41226b2a6168cea23323b18f2126": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Indicating a region with the hand",
+      "key": "d8ee41226b2a6168cea23323b18f2126",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "e2755a096d2c43befb4e32caf75be794": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Holding something in a state",
+      "key": "e2755a096d2c43befb4e32caf75be794",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "e380b3566c1a37fbc78316d439e60ed5": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Holding a blanket",
+      "key": "e380b3566c1a37fbc78316d439e60ed5",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "e3bde30d19b3b44ad4165209402d8ca1": {
+      "behavior_type": "count",
+      "explicit": {
+        "Goal.state.type": "count"
+      },
+      "goal_text": "Count how many different toy vehicles are prominently featured in the play area. Only count items on the floor or table that the child or car interacts with, ignoring background toys on shelves.",
+      "key": "e3bde30d19b3b44ad4165209402d8ca1",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "e92d2cb1e90957659bd5f54401bc4f36": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Pouring something from something into something",
+      "key": "e92d2cb1e90957659bd5f54401bc4f36",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "eca4320c84af4abbbaed380143354aab": {
+      "behavior_type": "watch",
+      "explicit": {},
+      "goal_text": "Launching something",
+      "key": "eca4320c84af4abbbaed380143354aab",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    },
+    "f5073836681a716d3c2e3f72fac6abee": {
+      "behavior_type": "transition",
+      "explicit": {
+        "Goal.state.from": "the boy has not yet shouted 'No Rio 2!'",
+        "Goal.state.to": "the boy has shouted 'No Rio 2!'",
+        "Goal.state.type": "transition"
+      },
+      "goal_text": "When the boy shouts 'No Rio 2!', count how many children are visible in the screen.",
+      "key": "f5073836681a716d3c2e3f72fac6abee",
+      "model": "claude-haiku-4-5-20251001",
+      "origin": "model"
+    }
+  },
+  "kind": "percept-authoring-cache",
+  "migration": {
+    "diff": "eval/stage-validation/corpus.version-diff.json",
+    "diff_sha256": "df97415947fdbdf9515c47bb3869fe9c36478a410ba9e360ee77eb66caaf9be0",
+    "invariants": {
+      "case_membership_identical": true,
+      "goal_kind_changed": 0,
+      "positives_identical": true,
+      "video_sha256_identical": true
+    },
+    "kind": "proven-text-normalization",
+    "provider_calls": 0,
+    "rekeyed": [
+      {
+        "after": "a person completes a bench press repetition",
+        "before": "a person completes a bench_pressing",
+        "key": "336e2636d0b8c05b9a12e17ee9219d90"
+      },
+      {
+        "after": "a person completes a jumping jack",
+        "before": "a person completes a jump_jack",
+        "key": "a2aedaa2fe42d3d2302f82d0066270f0"
+      },
+      {
+        "after": "a person completes a pull-up",
+        "before": "a person completes a pull_up",
+        "key": "1d431414183c5a1f78ebe3376e89c010"
+      },
+      {
+        "after": "a person completes a push-up",
+        "before": "a person completes a push_up",
+        "key": "196e15b858cec91def12893b59f8ba79"
+      }
+    ],
+    "reused_exact": 68,
+    "source": "eval/primitive-authoring/corpus-100.frozen.json",
+    "source_sha256": "375c8de31fb30443e71b612a9343e35b5f0f0d704b301b99eec2e7045810d269"
+  },
+  "model": "claude-haiku-4-5-20251001",
+  "prompt_version": "primitive-authoring-1",
+  "scorecard": {
+    "accuracy": 0.91,
+    "hit": 91,
+    "mismatches": [
+      {
+        "behavior_type": "transition",
+        "case_id": "charades::T42IZ::0",
+        "expected": "duration",
+        "goal_text": "Someone is standing up from somewhere",
+        "predicted": "transition"
+      },
+      {
+        "behavior_type": "watch",
+        "case_id": "proactiveqa::f40e0f92-2250-46c9-98a0-8ccf23d164e0-1800-2160::0",
+        "expected": "transition",
+        "goal_text": "Sprinkling shredded mozzarella cheese on the lasagna mixture.",
+        "predicted": "duration"
+      },
+      {
+        "behavior_type": "watch",
+        "case_id": "proactiveqa::bd970f5b-3fd9-4ae9-9f2b-738e8ca54c1e-1080-1440::0",
+        "expected": "transition",
+        "goal_text": "Disposing waste found on the countertop.",
+        "predicted": "duration"
+      },
+      {
+        "behavior_type": "watch",
+        "case_id": "proactiveqa::afbab8ce-797a-4c6e-800b-5acd9bf1653e-2160-2520::0",
+        "expected": "transition",
+        "goal_text": "Carrot stew is being stir fried in the pan.",
+        "predicted": "duration"
+      },
+      {
+        "behavior_type": "watch",
+        "case_id": "proactiveqa::13c76616-f168-4af0-8d2a-fe82ce232d6a-1080-1440::0",
+        "expected": "transition",
+        "goal_text": "The heat is regulated using firewood.",
+        "predicted": "duration"
+      },
+      {
+        "behavior_type": "transition",
+        "case_id": "omnipro::TXeVf42sQdM::80",
+        "expected": "count",
+        "goal_text": "When the boy shouts 'No Rio 2!', count how many children are visible in the screen.",
+        "predicted": "transition"
+      },
+      {
+        "behavior_type": "watch",
+        "case_id": "omnipro::LT-FXNMpk0M::47",
+        "expected": "transition",
+        "goal_text": "I've just got this Multi Flask and want to try out the different ways to use it. Please guide me through each setup step by step as shown in the video.",
+        "predicted": "duration"
+      },
+      {
+        "behavior_type": "watch",
+        "case_id": "omnipro::pvSVznXAbug::210",
+        "expected": "transition",
+        "goal_text": "Alert me whenever you see a group of people performing an organized, synchronized fitness or wellness routine.",
+        "predicted": "state"
+      },
+      {
+        "behavior_type": "watch",
+        "case_id": "omnipro::ln-yFLZ5wcc::33",
+        "expected": "transition",
+        "goal_text": "As you watch, narrate the natural landscapes and local scenes shown as the journey progresses through this Himalayan region.",
+        "predicted": "duration"
+      }
+    ],
+    "n": 100,
+    "per_kind": {
+      "count": {
+        "hit": 27,
+        "n": 28
+      },
+      "duration": {
+        "hit": 39,
+        "n": 40
+      },
+      "state": {
+        "hit": 4,
+        "n": 4
+      },
+      "transition": {
+        "hit": 21,
+        "n": 28
+      }
+    }
+  }
+}

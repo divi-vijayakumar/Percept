@@ -6,10 +6,10 @@ dict, no network, no API keys. Each assertion's threshold is a pre-registered co
 number" (this file only exercises the assertions, it does not re-derive the thresholds).
 
 SLO 4 (``percept/slo.py`` section 6 -- the per-goal judge round-trip p99 launch gate) is the one
-assertion here that is RELEASE-TIME rather than per-merge, and the one that does not pass. Its
-mechanics are asserted unconditionally like everything else in this file; the gate itself runs only
-when ``PERCEPT_RELEASE_GATES=1`` is set, which is how a release run asks for it. It is expected to
-FAIL there. That is deliberate and the ceiling is not moved to hide it -- see section 6's header.
+assertion here that is RELEASE-TIME rather than per-merge. Its mechanics and fail-closed artifact
+preflight are asserted unconditionally like everything else in this file; the gate itself runs only
+when ``PERCEPT_RELEASE_GATES=1`` is set and requires an explicitly pinned current-build artifact.
+Absent, stale, incomplete, or mismatched evidence fails; the ceiling is not moved to hide it.
 """
 
 from __future__ import annotations
@@ -17,12 +17,15 @@ from __future__ import annotations
 import asyncio
 import os
 import unittest
+from dataclasses import replace
+from types import SimpleNamespace
 
 from percept.adapters import Goal
 from percept.agent import Percept
 from percept.contracts import Verdict
 from percept.harness.tier0 import Frame, GatedWatchLoop, MotionGate, compile_watchspec, gray_frame
 from percept.observability import judge_usage
+from percept.observability import TraceEvent
 from percept.slo import (
     DOLLARS_PER_STREAM_HOUR_CEILING_USD,
     FOVEA_CALL_REDUCTION_FLOOR,
@@ -38,6 +41,7 @@ from percept.slo import (
     judge_provider_spans,
     judge_round_trip_p99,
     judge_stage_latencies,
+    qualify_judge_latency_trace,
     measure_reflex_latencies,
     price_usage,
     reflex_p95,
@@ -47,8 +51,10 @@ from percept.tracing import (
     STAGE_JUDGE_DEGRADED,
     STAGE_JUDGE_FINISHED,
     STAGE_JUDGE_STARTED,
+    ComponentIdentity,
     RunTraceManifest,
     TraceRecord,
+    TraceRecorder,
     TraceSummary,
 )
 
@@ -196,12 +202,14 @@ def _judge_span(
     started: float,
     finished: float,
     end_stage: str = STAGE_JUDGE_FINISHED,
+    producer_clock: bool = False,
 ) -> list[TraceRecord]:
     """One goal's judge span as the recorder writes it: a start record and a closing record.
 
     Both inherit the frame's ``observed_wall_ts``, exactly as ``TraceRecorder`` stamps them, so the
     closing record's ``latency_s`` is admitted-frame -> this goal's verdict.
     """
+    data = {"latency_clock": "producer_monotonic_v1"} if producer_clock else {}
     return [
         TraceRecord(
             seq=0,
@@ -211,6 +219,7 @@ def _judge_span(
             observed_wall_ts=observed,
             emitted_wall_ts=started,
             goal_id=goal_id,
+            data=data,
         ),
         TraceRecord(
             seq=0,
@@ -220,6 +229,7 @@ def _judge_span(
             observed_wall_ts=observed,
             emitted_wall_ts=finished,
             goal_id=goal_id,
+            data=data,
         ),
     ]
 
@@ -340,15 +350,272 @@ class TestJudgeRoundTripP99GateMechanics(unittest.TestCase):
 
         self.assertEqual(JUDGE_ROUND_TRIP_P99_CEILING_S, JUDGE_ROUND_TRIP_P95_CEILING_S)
 
-    def test_the_recorded_measurement_is_uncensored_and_reports_no_p99(self):
-        """What the launch gate is judged against, pinned: a real tail, and an honest gap where a
-        p99 was never reported (so the standing verdict must read as a FLOOR)."""
+    def test_no_retracted_historical_number_is_promoted_to_release_evidence(self):
+        """The old callback-drain diagnostic remains red, but is no longer called a measurement."""
         self.assertFalse(MEASURED_JUDGE_ROUND_TRIP.is_censored)
+        self.assertIsNone(MEASURED_JUDGE_ROUND_TRIP.p50_s)
         self.assertIsNone(MEASURED_JUDGE_ROUND_TRIP.p95_s)
-        self.assertEqual(MEASURED_JUDGE_ROUND_TRIP.p50_s, 7.34)
-        self.assertEqual(MEASURED_JUDGE_ROUND_TRIP.max_s, 16.93)
-        self.assertTrue(LAUNCH_GATE_JUDGE_P99.is_floor)
-        self.assertTrue(LAUNCH_GATE_JUDGE_P99.is_decided)
+        self.assertIsNone(MEASURED_JUDGE_ROUND_TRIP.max_s)
+        self.assertFalse(LAUNCH_GATE_JUDGE_P99.passed)
+        self.assertFalse(LAUNCH_GATE_JUDGE_P99.is_decided)
+
+
+class TestJudgeLatencyForRecordPreflight(unittest.TestCase):
+    BUILD = "a" * 40
+    MODEL = "provider/model"
+    PROFILE = "physical_scene@12345678"
+    TRANSPORT = "ordered-timestamped-images"
+
+    def manifest(self, **changes):
+        manifest = RunTraceManifest(
+            run_id="for-record",
+            driver="run",
+            build_commit=self.BUILD,
+            build_timestamp="2026-08-01T00:00:00Z",
+            started_wall_ts=1000.0,
+            source_profile_id=self.PROFILE,
+            components=(
+                ComponentIdentity(role="judge", name="provider", model=self.MODEL),
+            ),
+            labels={
+                "corpus": "frozen-corpus-v1",
+                "judge_transport": self.TRANSPORT,
+                "judge_dispatch": "async",
+                "judge_latency_censoring": "none",
+                "judge_latency_clock": "producer_monotonic_v1",
+            },
+        )
+        return replace(manifest, **changes)
+
+    def records(self, n=100):
+        rows = []
+        for i in range(n):
+            rows.extend(
+                _judge_span(
+                    f"camera@{i}",
+                    "g1",
+                    observed=float(i * 10),
+                    started=float(i * 10) + 0.1,
+                    finished=float(i * 10) + (2.4 if i < 99 else 9.0),
+                    producer_clock=True,
+                )
+            )
+        return rows
+
+    def qualify(self, manifest=None, records=None, **kwargs):
+        return qualify_judge_latency_trace(
+            manifest or self.manifest(),
+            self.records() if records is None else records,
+            expected_build=self.BUILD,
+            expected_model=self.MODEL,
+            expected_profile=self.PROFILE,
+            expected_transport=self.TRANSPORT,
+            **kwargs,
+        )
+
+    def test_current_production_trace_yields_an_observed_p99(self):
+        evidence = self.qualify()
+        self.assertEqual(evidence.gate.percentile_read, 99.0)
+        self.assertEqual(evidence.gate.n, 100)
+        # Nearest-rank p99 ignores one p100 outlier in n=100; this is a real p99, not a p50 floor.
+        self.assertAlmostEqual(evidence.gate.measured_s, 2.4)
+        self.assertTrue(evidence.gate.passed)
+        self.assertEqual(evidence.build, self.BUILD)
+
+    def test_recorder_uses_producer_clocks_instead_of_late_drain_time(self):
+        recorder = TraceRecorder(self.manifest(), wall_clock=lambda: 100.0)
+        recorder.tracer()(
+            TraceEvent(
+                trace_id="camera@1",
+                stage=STAGE_JUDGE_FINISHED,
+                t=1.0,
+                goal_id="g1",
+                data={"latency_clock": "producer_monotonic_v1"},
+                observed_wall_ts=10.0,
+                emitted_wall_ts=12.4,
+            )
+        )
+        record = recorder.records[0]
+        self.assertEqual(record.observed_wall_ts, 10.0)
+        self.assertEqual(record.emitted_wall_ts, 12.4)
+        self.assertAlmostEqual(record.latency_s, 2.4)
+
+    def test_bounded_async_trace_handoff_reports_loss_instead_of_selecting_the_tail(self):
+        core = Percept.create(vision="fake", discover_plugins=False)
+        core.on_trace = lambda _event: None
+        job = SimpleNamespace(
+            token=SimpleNamespace(judgment_trace_id="camera@1:judgment"),
+            source_t=1.0,
+            ingest_observed_ts=10.0,
+        )
+        for index in range(1025):
+            core._queue_judgment_trace(job, "judge.started", goal_id=f"g{index}")
+        rows = core.drain_judgment_trace_rows()
+        dropped = [row for row in rows if row[2] == "trace_dropped"]
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual(dropped[0][3]["dropped"], 1)
+        self.assertEqual(dropped[0][3]["reason"], "judgment_trace_queue_overflow")
+        self.assertEqual(core.drain_judgment_trace_rows(), ())
+
+    def test_paid_watch_trace_freezes_model_profile_and_transport_before_streaming(self):
+        from percept import watch_cli
+
+        core = Percept.create(vision="fake", discover_plugins=False)
+        goal = Goal(id="g1", condition="a person raises a hand", say="raised")
+        core.add_goal(goal)
+        recorder = watch_cli._recorder(
+            core,
+            [goal],
+            source="frozen-corpus.mp4",
+            driver="run",
+            vision="gemini",
+            model="gemini-for-record",
+            fps=1.0,
+        )
+        manifest = recorder.manifest
+        self.assertEqual(manifest.driver, "run")
+        self.assertEqual(manifest.source, "frozen-corpus.mp4")
+        self.assertEqual(
+            manifest.source_profile_id,
+            f"percept-watch-cli@{manifest.profile_hash[:8]}",
+        )
+        self.assertEqual(
+            {(component.role, component.name, component.model) for component in manifest.components},
+            {("judge", "gemini", "gemini-for-record")},
+        )
+        self.assertEqual(
+            manifest.labels["judge_transport"],
+            "gemini-generate-content-inline-images",
+        )
+        self.assertEqual(manifest.labels["judge_dispatch"], "async")
+        self.assertEqual(manifest.labels["judge_latency_censoring"], "none")
+        self.assertEqual(
+            manifest.labels["judge_latency_clock"], "producer_monotonic_v1"
+        )
+
+    def test_preflight_rejects_every_provenance_wildcard(self):
+        from percept.slo import JudgeLatencyEvidenceError
+
+        mutations = {
+            "missing run id": replace(self.manifest(), run_id=""),
+            "manual driver": replace(self.manifest(), driver="perceive_judged"),
+            "unstamped build": replace(self.manifest(), build_commit="unreleased"),
+            "wrong model": replace(
+                self.manifest(),
+                components=(ComponentIdentity(role="judge", name="p", model="other"),),
+            ),
+            "missing profile": replace(self.manifest(), source_profile_id=None),
+            "wrong transport": replace(
+                self.manifest(),
+                labels={**self.manifest().labels, "judge_transport": "other"},
+            ),
+            "censored": replace(
+                self.manifest(),
+                labels={**self.manifest().labels, "judge_latency_censoring": "deadline"},
+            ),
+        }
+        for label, manifest in mutations.items():
+            with self.subTest(label=label), self.assertRaises(JudgeLatencyEvidenceError):
+                self.qualify(manifest=manifest)
+
+    def test_explicit_judge_model_is_selected_over_a_distinct_vision_component(self):
+        manifest = replace(
+            self.manifest(),
+            components=(
+                ComponentIdentity(role="vision", name="detector", model="detector-v2"),
+                ComponentIdentity(role="judge", name="provider", model=self.MODEL),
+            ),
+        )
+        self.assertEqual(self.qualify(manifest=manifest).model, self.MODEL)
+
+    def test_multiple_explicit_judge_components_are_ambiguous(self):
+        from percept.slo import JudgeLatencyEvidenceError
+
+        manifest = replace(
+            self.manifest(),
+            components=(
+                ComponentIdentity(role="judge", name="primary", model=self.MODEL),
+                ComponentIdentity(role="judge", name="fallback", model=self.MODEL),
+            ),
+        )
+        with self.assertRaises(JudgeLatencyEvidenceError):
+            self.qualify(manifest=manifest)
+
+    def test_preflight_rejects_delayed_legacy_clocks_incomplete_and_dropped_populations(self):
+        from percept.slo import JudgeLatencyEvidenceError
+
+        legacy = self.records()
+        legacy[0] = replace(legacy[0], data={})
+        unclosed = self.records()[:-1]
+        dropped = self.records() + [
+            TraceRecord(seq=999, trace_id="camera@drop", stage="judge.dropped")
+        ]
+        for label, rows in (("legacy clock", legacy), ("unclosed", unclosed), ("drop", dropped)):
+            with self.subTest(label=label), self.assertRaises(JudgeLatencyEvidenceError):
+                self.qualify(records=rows)
+
+    def test_deadline_health_is_materialized_as_a_judge_drop(self):
+        recorder = TraceRecorder(self.manifest())
+        sink = recorder.health_sink()
+        for kind in ("judge_deadline_dropped", "judge_deadline_expired", "judge_eos_timeout"):
+            sink(SimpleNamespace(kind=kind, ts=1.0, data={"reason": "test"}))
+        self.assertEqual(
+            [record.stage for record in recorder.records],
+            ["judge.dropped", "judge.dropped", "judge.dropped"],
+        )
+
+    def test_swallowed_recorder_fault_still_materializes_trace_loss(self):
+        recorder = TraceRecorder(self.manifest())
+
+        def fail_record(*_args, **_kwargs):
+            raise RuntimeError("malformed row")
+
+        recorder.record = fail_record
+        recorder.tracer()(TraceEvent(trace_id="t", stage="judge.finished"))
+        recorder.health_sink()(SimpleNamespace(kind="runtime_started", ts=1.0, data={}))
+        self.assertEqual(recorder.lost_records, 2)
+        self.assertEqual([record.stage for record in recorder.records], ["trace_dropped"])
+        self.assertEqual(recorder.records[0].data["dropped"], 2)
+        self.assertEqual(recorder.records[0].data["reasons"], {"recorder_error": 2})
+        from percept.slo import JudgeLatencyEvidenceError
+
+        with self.assertRaises(JudgeLatencyEvidenceError):
+            self.qualify(records=recorder.records)
+
+    def test_age_is_reported_but_only_gated_when_a_window_was_pre_registered(self):
+        from percept.slo import JudgeLatencyEvidenceError
+
+        self.qualify(now_wall_ts=5000.0)  # no invented freshness policy
+        with self.assertRaises(JudgeLatencyEvidenceError):
+            self.qualify(max_age_s=100.0, now_wall_ts=5000.0)
+
+    def test_sample_floor_and_age_inputs_reject_coercions_and_nonfinite_values(self):
+        from percept.slo import JudgeLatencyEvidenceError
+
+        for bad in (True, 100.5, "100"):
+            with self.subTest(field="min_samples", value=bad):
+                with self.assertRaises(JudgeLatencyEvidenceError):
+                    self.qualify(min_samples=bad)
+        for bad in (True, float("nan"), float("inf"), -1.0):
+            with self.subTest(field="max_age_s", value=bad):
+                with self.assertRaises(JudgeLatencyEvidenceError):
+                    self.qualify(max_age_s=bad)
+        for bad in (True, float("nan"), float("inf")):
+            with self.subTest(field="now_wall_ts", value=bad):
+                with self.assertRaises(JudgeLatencyEvidenceError):
+                    self.qualify(now_wall_ts=bad)
+            with self.subTest(field="started_wall_ts", value=bad):
+                with self.assertRaises(JudgeLatencyEvidenceError):
+                    self.qualify(manifest=replace(self.manifest(), started_wall_ts=bad))
+
+    def test_nonfinite_or_boolean_lifecycle_stamps_cannot_enter_the_percentile(self):
+        from percept.slo import JudgeLatencyEvidenceError
+
+        for bad in (True, float("nan"), float("inf")):
+            rows = self.records()
+            rows[-1] = replace(rows[-1], emitted_wall_ts=bad)
+            with self.subTest(value=bad), self.assertRaises(JudgeLatencyEvidenceError):
+                self.qualify(records=rows)
 
 
 @unittest.skipUnless(
@@ -356,16 +623,32 @@ class TestJudgeRoundTripP99GateMechanics(unittest.TestCase):
     f"release-time gate; set {RELEASE_GATES_ENV}=1 to run it",
 )
 class TestJudgeRoundTripP99LaunchGate(unittest.TestCase):
-    """RELEASE-TIME. This gate does not pass, and it is not supposed to be made to.
-
-    The measured per-goal round trip has a median of 7.34s against a 2.5s ceiling. The two honest
-    responses are to make the pipeline faster or to decide at release that the gap is acceptable and
-    say so out loud. Raising the ceiling, or marking this expected-to-fail, would be the third
-    response -- the one that makes the gate stop measuring anything.
-    """
+    """RELEASE-TIME. Only a preflighted current-build production trace may decide this gate."""
 
     def test_per_goal_judge_round_trip_p99_under_ceiling(self):
-        gate = LAUNCH_GATE_JUDGE_P99
+        from percept.replay import load_replayable
+
+        artifact = os.environ.get("PERCEPT_JUDGE_LATENCY_ARTIFACT", "")
+        expected_build = os.environ.get("PERCEPT_JUDGE_LATENCY_BUILD", "")
+        expected_model = os.environ.get("PERCEPT_JUDGE_LATENCY_MODEL", "")
+        expected_profile = os.environ.get("PERCEPT_JUDGE_LATENCY_PROFILE", "")
+        expected_transport = os.environ.get("PERCEPT_JUDGE_LATENCY_TRANSPORT", "")
+        self.assertTrue(
+            artifact,
+            "release gate NOT MEASURED: set PERCEPT_JUDGE_LATENCY_ARTIFACT to a current-build "
+            "production-worker trace; the retracted 2026-07-29 callback-drain diagnostic is not "
+            "release evidence",
+        )
+        manifest, records = load_replayable(artifact)
+        evidence = qualify_judge_latency_trace(
+            manifest,
+            records,
+            expected_build=expected_build,
+            expected_model=expected_model,
+            expected_profile=expected_profile,
+            expected_transport=expected_transport,
+        )
+        gate = evidence.gate
         self.assertTrue(
             gate.passed,
             f"launch gate NOT MET: {gate.describe()}. The ceiling "

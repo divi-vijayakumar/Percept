@@ -47,17 +47,18 @@ per call" is dimensionally broken. The only defensible form needs an EXPLICIT de
 (:class:`BaselineAssumption`, carried in the manifest and echoed in the summary)::
 
     estimated_baseline_calls = declared_baseline_opportunities
-    actual_judge_calls       = judge_completed - judge_direct_hits
-    estimated_saved_calls    = max(0, estimated_baseline_calls - actual_judge_calls)
+    actual_provider_calls    = judge_started - judge_direct_hits
+    estimated_saved_calls    = max(0, estimated_baseline_calls - actual_provider_calls)
     estimated_saved_tokens   = estimated_saved_calls * mean_input_tokens_per_actual_call
 
 With zero judge calls there is no measured mean, so ``estimated_saved_tokens`` is ``None`` — the
 renderer shows ``—``. It is never back-filled from a guess.
 
-``judge.started``/``judge.finished`` fire on EVERY tick that reaches the judge funnel, including
+``judge.started``/``judge.finished`` fire on EVERY per-goal tick that reaches the judge funnel,
+including
 ticks that reached a verdict WITHOUT spending a provider call. The gate still classifies the
 substituted verdict, so the tick is real and belongs in the funnel — but it is not an ACTUAL judge
-call. Counting it as one over-counts ``actual_judge_calls`` and, through the identity above,
+call. Counting it as one over-counts ``actual_provider_calls`` and, through the identity above,
 silently UNDER-reports ``estimated_saved_calls``: a real saving reported as smaller than it is, and
 the error GROWS with the hit rate the mechanism exists to raise.
 
@@ -290,11 +291,18 @@ DEGRADED_HEALTH_KINDS: frozenset[str] = frozenset({
 #: Health-event kinds that CLOSE an unhealthy interval.
 RECOVERED_HEALTH_KINDS: frozenset[str] = frozenset({"judge_scheduler_recovered"})
 
-#: Health-event kinds that mean a candidate was dropped before any judge call was spent.
+#: Health-event kinds that remove admitted work from the complete judgment population. Some are
+#: pre-spend drops; deadline expiry may happen after a provider attempt. Both must stay visible.
 JUDGE_DROP_HEALTH_KINDS: frozenset[str] = frozenset({
     "judge_superseded",
     "judge_revision_dropped",
     "judge_source_discontinuity_dropped",
+    # Absolute-deadline and end-of-stream termination remove admitted work from the latency
+    # population too. If these remained generic source.health rows, a release evaluator filtering
+    # for judge.dropped could unknowingly compute p99 only over the fast survivors.
+    "judge_deadline_dropped",
+    "judge_deadline_expired",
+    "judge_eos_timeout",
 })
 
 #: Gate actions counted in :attr:`TraceSummary.gate_outcomes`. ``fire``/``ask``/``silent`` come from
@@ -985,8 +993,16 @@ def union_seconds(intervals: Iterable[tuple[float, float]]) -> float:
 class TraceSummary:
     """The derived funnel — the ONE place ``doctor``, ``eval`` and the visualizer get their numbers.
 
-    ``observed`` -> ``admitted`` -> ``judge_started`` -> ``judge_completed`` -> gate outcomes ->
-    ``incidents``, plus cost and (only with a declared baseline) savings.
+    There are two adjacent, explicitly different populations rather than one dimensionally-invalid
+    spine:
+
+    * ``observed`` -> ``admitted`` counts evidence units;
+    * ``judge_dispatch_opportunities`` -> ``judge_started`` -> ``judge_completed`` counts
+      ``(evidence, goal)`` pairs.
+
+    The first admitted frame may create N opportunities when N goals are selected.  That expansion
+    is not attrition and therefore has no survival ratio.  ``provider_calls`` is a third, cost-only
+    population: per-goal judgment starts minus verdicts served without a provider.
 
     Three definitions worth stating out loud:
 
@@ -998,8 +1014,11 @@ class TraceSummary:
       ``judge_cache_hits`` is the cache's own share of that subset — carried separately so the
       benefit of the cache is legible in the funnel rather than hidden inside its cost.
     - ``admitted`` carries BOTH a count and ``admitted_evidence_union_s`` — the union of the
-      evidence windows those admissions covered. The count times a nominal interval is *not* a
-      duration and is not reported here.
+      evidence windows those admissions covered. Its unit is named by ``admitted_unit``. The count
+      times a nominal interval is *not* a duration and is not reported here.
+    - ``judge_dispatch_opportunities`` is the exact number of per-goal judgments declared by the
+      admission records. It is ``None`` for a legacy trace that did not carry ``goal_ids``; unknown
+      is never replaced with a global-goal multiplier that may fabricate a dispatch ratio.
     - ``estimated_saved_tokens`` is ``None`` — rendered ``—`` — whenever there is no declared
       baseline or zero actual judge calls. There is no mean input-token figure to multiply by, so
       there is no number to print.
@@ -1019,9 +1038,15 @@ class TraceSummary:
     observed: int = 0
     observed_unit: str = "frames"
     admitted: int = 0
+    admitted_unit: str = "evidence_units"
     admitted_evidence_union_s: float = 0.0
+    judge_dispatch_opportunities: int | None = None
+    judge_dispatch_unit: str = "evidence_goal_pairs"
     judge_started: int = 0
+    judge_started_unit: str = "evidence_goal_pairs"
     judge_completed: int = 0
+    provider_calls: int = 0
+    provider_calls_unit: str = "provider_calls"
     judge_direct_hits: int = 0
     judge_cache_hits: int = 0
     judge_degraded: int = 0
@@ -1102,6 +1127,19 @@ class TraceSummary:
         admitted = int(c.get("admitted", 0))
         if observed == 0:  # a direct perceive_judged() driver never emits edge.decision
             observed = admitted
+        dispatch_metadata_missing = int(
+            c.get(
+                "admission_units_without_goal_ids",
+                # A caller supplying legacy aggregate counters cannot prove the per-goal
+                # denominator. Zero admissions is the sole exact zero without metadata.
+                admitted if admitted and "judge_dispatch_opportunities" not in c else 0,
+            )
+        )
+        judge_dispatch_opportunities = (
+            None
+            if dispatch_metadata_missing
+            else int(c.get("judge_dispatch_opportunities", 0))
+        )
         judge_completed = int(c.get("judge_completed", 0))
         # A perception-cache serve and a confident DirectJudge hit both fire judge.started/
         # judge.finished (the tick is real, the gate still classifies it) while spending ZERO
@@ -1115,7 +1153,19 @@ class TraceSummary:
             watch_duration_s = 0.0
         healthy = max(0.0, float(watch_duration_s) - float(unhealthy_s))
 
-        actual_calls = max(0, (judge_completed or int(c.get("judge_started", 0))) - judge_direct_hits)
+        judge_started = int(c.get("judge_started", 0))
+        # A provider attempt is spent when a per-goal judgment STARTS, including a call that later
+        # degrades or is still open when the trace ends. Finished-only accounting censors exactly
+        # those expensive failures. Served verdicts (cache/direct/fused-local) opened the logical
+        # judgment span but spent no provider call, so subtract their shared marker once.
+        provider_calls = max(0, judge_started - judge_direct_hits)
+        if judge_started == 0 and (judge_completed or int(c.get("judge_degraded", 0))):
+            # Legacy traces may carry closes without starts. This is a floor, but still more honest
+            # than reporting a proven non-zero run as free.
+            provider_calls = max(
+                0,
+                judge_completed + int(c.get("judge_degraded", 0)) - judge_direct_hits,
+            )
         usage_calls = int(usage.get("calls", 0))
         priced_calls = int(usage.get("priced_calls", 0))
         # NO FALSE ZEROS — but a PROVEN zero is still a number. Exactly one case licenses 0.0: the
@@ -1123,7 +1173,7 @@ class TraceSummary:
         # zero spend is measured, not assumed. Once calls were made, silence about their usage is
         # UNKNOWN (None -> "—"), never free: the failure this rule exists to stop is a run that spent
         # 134,946 input tokens across 108 calls and reported usd 0.0, green against a cost bar.
-        no_calls = actual_calls == 0 and usage_calls == 0
+        no_calls = provider_calls == 0 and usage_calls == 0
         if no_calls:
             input_tokens: float | None = 0.0
             output_tokens: float | None = 0.0
@@ -1141,10 +1191,10 @@ class TraceSummary:
         saved_calls: int | None = None
         saved_tokens: float | None = None
         if baseline_calls is not None:
-            saved_calls = max(0, int(baseline_calls) - int(actual_calls))
+            saved_calls = max(0, int(baseline_calls) - int(provider_calls))
             # SAVINGS IS NEVER FABRICATED: with no actual call there is no measured mean input-token
             # cost to project onto the avoided calls, so the token figure stays None ("—").
-            if actual_calls > 0 and mean_in is not None:
+            if provider_calls > 0 and mean_in is not None:
                 saved_tokens = saved_calls * mean_in
 
         lat = sorted(x for x in (r.latency_s for r in records) if x is not None)
@@ -1157,8 +1207,10 @@ class TraceSummary:
             observed_unit=observed_unit,
             admitted=admitted,
             admitted_evidence_union_s=union_seconds(evidence_windows),
-            judge_started=int(c.get("judge_started", 0)),
+            judge_dispatch_opportunities=judge_dispatch_opportunities,
+            judge_started=judge_started,
             judge_completed=judge_completed,
+            provider_calls=provider_calls,
             judge_direct_hits=judge_direct_hits,
             judge_cache_hits=judge_cache_hits,
             judge_degraded=int(c.get("judge_degraded", 0)),
@@ -1231,9 +1283,17 @@ class TraceSummary:
             "observed": self.observed,
             "observed_unit": self.observed_unit,
             "admitted": self.admitted,
+            "admitted_unit": self.admitted_unit,
+            # Explicit alias: old readers keep `admitted`; new readers never have to infer its unit.
+            "admitted_evidence_units": self.admitted,
             "admitted_evidence_union_s": self.admitted_evidence_union_s,
+            "judge_dispatch_opportunities": self.judge_dispatch_opportunities,
+            "judge_dispatch_unit": self.judge_dispatch_unit,
             "judge_started": self.judge_started,
+            "judge_started_unit": self.judge_started_unit,
             "judge_completed": self.judge_completed,
+            "provider_calls": self.provider_calls,
+            "provider_calls_unit": self.provider_calls_unit,
             "judge_direct_hits": self.judge_direct_hits,
             "judge_cache_hits": self.judge_cache_hits,
             "judge_degraded": self.judge_degraded,
@@ -1325,6 +1385,45 @@ class _Aggregate:
         self._last_ts: float | None = None
         self._seen_observed: set[str] = set()
         self._seen_admitted: set[str] = set()
+        # Exact unit bridge: one admission is an evidence unit, while each named goal is one
+        # downstream dispatch opportunity. Edge decisions already name the per-frame selected
+        # goals in worker traces; source.frame/source.audio now carry the same declaration so a
+        # direct driver is self-contained too.
+        self._goal_ids_by_trace: dict[str, tuple[str, ...]] = {}
+        self._dispatch_declared: set[str] = set()
+        self._seen_dispatch_opportunities: set[tuple[str, str]] = set()
+
+    @staticmethod
+    def _declared_goal_ids(data: Mapping[str, Any]) -> tuple[str, ...] | None:
+        """Validated ordered goal ids, or ``None`` when this legacy record declares no unit bridge.
+
+        An empty sequence is a real declaration of zero opportunities. Strings are rejected rather
+        than iterated character-by-character; malformed metadata remains unknown, never zero.
+        """
+        if "goal_ids" not in data:
+            return None
+        raw = data.get("goal_ids")
+        if not isinstance(raw, (list, tuple)):
+            return None
+        if any(not isinstance(goal_id, str) or not goal_id for goal_id in raw):
+            return None
+        return tuple(dict.fromkeys(raw))
+
+    def _declare_dispatch_opportunities(
+        self, trace_id: str, goal_ids: tuple[str, ...]
+    ) -> None:
+        if trace_id not in self._seen_admitted:
+            self._goal_ids_by_trace[trace_id] = goal_ids
+            return
+        if trace_id not in self._dispatch_declared:
+            self._dispatch_declared.add(trace_id)
+            self.counters["admission_units_without_goal_ids"] -= 1
+        for goal_id in goal_ids:
+            key = (trace_id, goal_id)
+            if key in self._seen_dispatch_opportunities:
+                continue
+            self._seen_dispatch_opportunities.add(key)
+            self.counters["judge_dispatch_opportunities"] += 1
 
     # counters are ints; usage is float — kept apart so a token count can't land in a funnel field
     def fold(self, r: TraceRecord) -> None:
@@ -1336,11 +1435,21 @@ class _Aggregate:
             if r.trace_id not in self._seen_observed:  # one unit of evidence, however many records
                 self._seen_observed.add(r.trace_id)
                 self.counters["observed"] += 1
+            declared = self._declared_goal_ids(r.data)
+            if declared is not None:
+                self._goal_ids_by_trace[r.trace_id] = declared
+                self._declare_dispatch_opportunities(r.trace_id, declared)
         elif stage in ADMISSION_STAGES:  # one per modality — source.frame AND source.audio
             if r.trace_id not in self._seen_admitted:
                 self._seen_admitted.add(r.trace_id)
                 self.counters["admitted"] += 1
+                self.counters["admission_units_without_goal_ids"] += 1
                 self.windows.append(self._window_for(r))
+            declared = self._declared_goal_ids(r.data)
+            if declared is None:
+                declared = self._goal_ids_by_trace.get(r.trace_id)
+            if declared is not None:
+                self._declare_dispatch_opportunities(r.trace_id, declared)
         elif stage == STAGE_JUDGE_STARTED:
             self.counters["judge_started"] += 1
         elif stage == STAGE_JUDGE_FINISHED:
@@ -1351,6 +1460,10 @@ class _Aggregate:
                     self.counters["judge_cache_hits"] += 1
         elif stage == STAGE_JUDGE_DEGRADED:
             self.counters["judge_degraded"] += 1
+            if judge_call_was_served(r.data):
+                self.counters["judge_direct_hits"] += 1
+                if judge_served_from(r.data) == "cache":
+                    self.counters["judge_cache_hits"] += 1
         elif stage == STAGE_JUDGE_DROPPED:
             self.counters["judge_dropped"] += 1
             if r.data.get("kind") == "judge_superseded" or str(r.data.get("reason", "")).startswith("superseded"):
@@ -1709,11 +1822,20 @@ class TraceRecorder:
                     trace_id=getattr(ev, "trace_id", None),
                     source_ts=getattr(ev, "t", None),
                     goal_id=getattr(ev, "goal_id", None),
+                    observed_wall_ts=getattr(ev, "observed_wall_ts", None),
+                    emitted_wall_ts=getattr(ev, "emitted_wall_ts", None),
                     **data,
                 )
             except Exception:  # noqa: BLE001 — observability must not crash perception
                 self._dropped += 1
                 self._drop_reasons["recorder_error"] += 1
+                # The callback swallowed the fault by design, but the artifact must not look
+                # complete afterward. Materialize the same retained loss marker used by ring/byte
+                # overflow so a for-record evaluator can reject it without trusting a summary.
+                try:
+                    self._write_drop_marker()
+                except Exception:  # noqa: BLE001 — observability still must not break perception
+                    pass
         return _cb
 
     def health_sink(self) -> Callable[[Any], None]:
@@ -1756,6 +1878,10 @@ class TraceRecorder:
             except Exception:  # noqa: BLE001
                 self._dropped += 1
                 self._drop_reasons["recorder_error"] += 1
+                try:
+                    self._write_drop_marker()
+                except Exception:  # noqa: BLE001 — observability still must not break perception
+                    pass
         return _cb
 
     def record_usage(

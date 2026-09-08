@@ -359,6 +359,31 @@ describe("Edge — salience modes (per-condition) + energy on the signal", () =>
     expect(ego.edge.processFrame(cur)).toBeNull(); // ego suppresses it
   });
 
+  it("an ego block_max condition compares an aligned block score to its block threshold", () => {
+    const w = 16, h = 16;
+    const base = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) base[y * w + x] = (x * 17 + y * 31) % 256;
+    const before = new Uint8Array(base);
+    const after = new Uint8Array(base);
+    for (let y = 0; y < 2; y++)
+      for (let x = 0; x < 2; x++) {
+        before[y * w + x] = 0;
+        after[y * w + x] = 255;
+      }
+
+    const ego = makeEdge();
+    ego.edge.applyWatchSpec({
+      conditions: [{
+        goal_id: "g", anchor_text: "x", threshold: 0.2,
+        salience_stat: "block_max", ego_compensate: true,
+      }],
+      version: 1,
+    });
+    ego.edge.processFrame({ width: w, height: h, data: before });
+    expect(ego.edge.processFrame({ width: w, height: h, data: after })).not.toBeNull();
+  });
+
   it("an ego_compensate condition still honours its watch-out zone", () => {
     // A watch-out zone is a promise that movement elsewhere is ignored. Turning ego compensation on
     // used to revoke it silently: `conditionMotion` returned the WHOLE-FRAME residual while the

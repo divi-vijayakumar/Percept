@@ -30,9 +30,11 @@ percentiles                   :func:`percept.slo.measure_judge_latency`, which i
 
 1. ``downstream / upstream`` for a pair of adjacent funnel points. A zero denominator has NO ratio
    and reads ``None`` — ``0.0`` and ``1.0`` are both a wrong number that a bar would pass.
-2. **Restating the upstream count in the downstream unit** before either of those is taken. One
-   step of the funnel changes what it is counting — evidence in, (evidence x concern) out — and a
-   pair of counts in different units is not a ratio at all. See :data:`PER_CONCERN_STEPS`.
+2. **Keeping the unit-changing expansion out of the ratio.** Admission counts evidence units;
+   dispatch counts ``(evidence, goal)`` opportunities declared by each admission record. One frame
+   may create N opportunities. That expansion is not attrition, so the dispatch survival ratio is
+   ``judge_started / judge_dispatch_opportunities`` — never ``judge_started / admitted`` and never
+   a global-goal multiplier. See :data:`FUNNEL_POINT_UNITS`.
 3. ``end.emitted_wall_ts - start.emitted_wall_ts`` for one segment, clamped at zero exactly as
    :func:`percept.slo.judge_provider_spans` already clamps it, with the clamped count reported
    rather than swallowed.
@@ -81,6 +83,7 @@ __all__ = [
     "UnmeasuredSegmentError",
     "FUNNEL_POINTS",
     "FUNNEL_STEPS",
+    "FUNNEL_POINT_UNITS",
     "PER_CONCERN_STEPS",
     "SEGMENTS",
     "SEGMENT_NAMES",
@@ -126,40 +129,41 @@ class UnmeasuredSegmentError(StageAttributionError):
 # 1. The funnel spine
 # ---------------------------------------------------------------------------
 
-#: The funnel points, most upstream first. These are :class:`~percept.tracing.TraceSummary` field
-#: names (``fired`` reads its ``incidents``), not a second vocabulary: ``seen >= gated >= judged >=
-#: fired`` is derived once, in ``percept.tracing``, and only re-labelled here.
+#: The funnel points, most upstream first. ``admitted`` and
+#: ``judge_dispatch_opportunities`` are deliberately adjacent but are NOT one survival step: the
+#: former is evidence, the latter is the exact per-goal expansion that evidence created.
 FUNNEL_POINTS: tuple[str, ...] = (
     "observed",
     "admitted",
+    "judge_dispatch_opportunities",
     "judge_started",
     "judge_completed",
     "fired",
 )
+
+#: Unit of each named point. Kept in the object returned to renderers so a table can never display a
+#: ratio between two populations merely because their counts happen to sit next to each other.
+FUNNEL_POINT_UNITS: Mapping[str, str] = {
+    "observed": "evidence_units",
+    "admitted": "evidence_units",
+    "judge_dispatch_opportunities": "evidence_goal_pairs",
+    "judge_started": "evidence_goal_pairs",
+    "judge_completed": "evidence_goal_pairs",
+    "fired": "goal_outcomes",
+}
 
 #: Each adjacent pair of funnel points, and the name of the transition between them. The first three
 #: names deliberately match the latency segment of the same name, so a count ratio and a duration
 #: line up on one row of a report.
 FUNNEL_STEPS: tuple[tuple[str, str, str], ...] = (
     ("admission", "observed", "admitted"),
-    ("dispatch", "admitted", "judge_started"),
+    ("dispatch", "judge_dispatch_opportunities", "judge_started"),
     ("judge", "judge_started", "judge_completed"),
     ("outcome", "judge_completed", "fired"),
 )
 
-#: The steps whose two points are counted in DIFFERENT units, and which therefore have to be
-#: restated before they can be compared.
-#:
-#: ``observed`` and ``admitted`` count UNITS OF EVIDENCE — ``source.frame`` is emitted once per
-#: admitted unit (``percept/agent.py``). ``judge_started`` onwards count (unit x CONCERN) pairs —
-#: ``judge.started`` is emitted once per goal. With M watches on one source those are two different
-#: populations, and ``dispatch`` is the one step that crosses between them: comparing them raw makes
-#: the judged count outnumber the admitted count by exactly the fan-out, reads as a negative drop
-#: and a ratio of M, and buries the one signal ``dropped`` exists to carry — a real record loss —
-#: under ordinary multi-watch traffic. ADR-002:41 defines the funnel as "per-concern, per-camera
-#: counters", which is the level at which ``seen >= gated >= judged >= fired`` actually holds;
-#: :func:`stage_funnel` aggregates across goals, so it restates the upstream count in the downstream
-#: unit instead (see :attr:`FunnelStep.fan_out`).
+#: Compatibility/export marker: dispatch is the per-concern step. It no longer licenses a global
+#: multiplication; its upstream point is already measured in ``evidence_goal_pairs``.
 PER_CONCERN_STEPS: frozenset[str] = frozenset({"dispatch"})
 
 #: The percentiles a :class:`~percept.slo.LatencyDistribution` actually carries. Asking for anything
@@ -276,13 +280,13 @@ _UNSTATED = "unstated"
 # ---------------------------------------------------------------------------
 
 
-def _ratio(numerator: int, denominator: int) -> float | None:
+def _ratio(numerator: int | None, denominator: int | None) -> float | None:
     """``numerator / denominator``, or ``None`` when the denominator is zero.
 
     Arithmetic this module owns (see the module docstring). The ``None`` matters: with nothing
     upstream there is no ratio, and both ``0.0`` and ``1.0`` are numbers a bar would happily pass.
     """
-    if denominator == 0:
+    if numerator is None or denominator in (None, 0):
         return None
     return numerator / denominator
 
@@ -291,29 +295,27 @@ def _ratio(numerator: int, denominator: int) -> float | None:
 class FunnelStep:
     """One transition between adjacent funnel points: the two counts, and the ratio between them.
 
-    ``upstream_count`` is always the raw count at the upstream point, so it agrees with
-    :attr:`StageFunnel.counts` and with the :class:`~percept.tracing.TraceSummary` field behind it.
-    ``fan_out`` restates it in the DOWNSTREAM point's unit for the one step that crosses units — see
-    :data:`PER_CONCERN_STEPS` — and is ``1`` everywhere else, where the two points are already the
-    same population.
+    Both endpoints are in the units named by ``upstream_unit`` / ``downstream_unit``. Dispatch's
+    upstream is already the exact per-admission ``(evidence, goal)`` population, so no multiplier or
+    clamp participates in either the ratio or the signed drop. A legacy trace without goal metadata
+    carries ``None`` at that point; its dispatch ratio/drop are unknown rather than fabricated.
     """
 
     name: str
     upstream: str
     downstream: str
-    upstream_count: int
-    downstream_count: int
+    upstream_count: int | None
+    downstream_count: int | None
+    upstream_unit: str = "units"
+    downstream_unit: str = "units"
+    # Backward-compatible field. Exact dispatch accounting has already expanded the upstream count,
+    # so this is always 1; callers should read the explicit unit fields.
     fan_out: int = 1
 
     @property
-    def upstream_dispatches(self) -> int:
-        """``upstream_count`` restated in the downstream point's unit — what may be compared.
-
-        For every step but ``dispatch`` this IS ``upstream_count``. For ``dispatch`` it is the
-        admitted units times the concerns each one was offered to, i.e. the number of judge calls a
-        lossless run would have started.
-        """
-        return self.upstream_count * self.fan_out
+    def upstream_dispatches(self) -> int | None:
+        """Compatibility alias for the already-unit-coherent upstream population."""
+        return self.upstream_count
 
     @property
     def ratio(self) -> float | None:
@@ -322,29 +324,31 @@ class FunnelStep:
         return _ratio(self.downstream_count, self.upstream_dispatches)
 
     @property
-    def dropped(self) -> int:
+    def dropped(self) -> int | None:
         """Units that entered this step and did not leave it. SIGNED, and never clamped.
 
-        Measured in the DOWNSTREAM unit (:attr:`upstream_dispatches`), which is what makes the sign
-        readable: ordinary fan-out — M watches on one source, the shape any multi-watch deployment
-        runs — is not a drop and no longer registers as one.
+        Measured in the explicitly named common unit. Ordinary fan-out is represented by
+        ``judge_dispatch_opportunities`` before this step and therefore never registers as a drop.
 
-        A negative value therefore means the downstream point outnumbers an upstream count already
-        restated in its own unit. Two things do that, and both are worth an investigation:
-
-        * records were lost between the two stages (the signal this field exists for); or
-        * the trace does not NAME its concerns, so the fan-out could not be read off it and was
-          taken as 1 (see :func:`_concerns`). An untellable trace still shows the anomaly rather
-          than hiding it — which is the conservative direction.
+        A negative value means downstream outnumbered upstream in the same unit and records are
+        inconsistent. ``None`` means the legacy trace did not declare its dispatch population.
         """
+        if self.upstream_count is None or self.downstream_count is None:
+            return None
         return self.upstream_dispatches - self.downstream_count
 
     def describe(self) -> str:
         pct = "—" if self.ratio is None else f"{self.ratio * 100:.1f}%"
-        fan = f" x{self.fan_out} concerns" if self.fan_out != 1 else ""
+        upstream = "—" if self.upstream_count is None else str(self.upstream_count)
+        downstream = "—" if self.downstream_count is None else str(self.downstream_count)
+        units = (
+            f" [{self.upstream_unit}]"
+            if self.upstream_unit == self.downstream_unit
+            else f" [{self.upstream_unit} -> {self.downstream_unit}]"
+        )
         return (
-            f"{self.name}: {self.upstream}={self.upstream_count}{fan} -> "
-            f"{self.downstream}={self.downstream_count} ({pct})"
+            f"{self.name}: {self.upstream}={upstream} -> "
+            f"{self.downstream}={downstream} ({pct}){units}"
         )
 
 
@@ -358,11 +362,11 @@ class StageFunnel:
     """
 
     summary: TraceSummary
-    counts: Mapping[str, int]
+    counts: Mapping[str, int | None]
     steps: tuple[FunnelStep, ...]
-    #: How many concerns (goals) this trace shows evidence of — the fan-out applied to the steps in
-    #: :data:`PER_CONCERN_STEPS`. ``1`` when the trace names none, which is both the single-watch
-    #: answer and the honest fallback for a trace that cannot state it.
+    units: Mapping[str, str]
+    #: Distinct named concerns, for description only. Dispatch arithmetic uses each admission's
+    #: declared goal ids and never this run-global cardinality.
     concerns: int = 1
 
     @property
@@ -400,7 +404,10 @@ class StageFunnel:
         return self.step(name).ratio
 
     def describe(self) -> str:
-        head = " · ".join(f"{p}={self.counts[p]}" for p in FUNNEL_POINTS)
+        head = " · ".join(
+            f"{p}={'—' if self.counts[p] is None else self.counts[p]} [{self.units[p]}]"
+            for p in FUNNEL_POINTS
+        )
         body = "\n".join(f"  {s.describe()}" for s in self.steps)
         union = f"{self.admitted_evidence_union_s:g}s"
         return (
@@ -410,14 +417,7 @@ class StageFunnel:
 
 
 def _concerns(records: Sequence[TraceRecord]) -> int:
-    """How many distinct concerns this trace shows — the fan-out from evidence onto judged units.
-
-    Read off the records' own ``goal_id``, which every per-goal stage stamps, so it is the trace's
-    account of itself rather than a caller's assertion. A trace that names none reads ``1``: that is
-    the single-watch answer, it leaves a single-goal funnel byte-for-byte unchanged, and where a
-    fan-out really did happen without being named it leaves the mismatch VISIBLE as a negative drop
-    instead of explaining it away with an invented multiplier.
-    """
+    """Distinct named concerns for description only; never a dispatch multiplier."""
     return len({r.goal_id for r in records if r.goal_id}) or 1
 
 
@@ -438,19 +438,28 @@ def stage_funnel(
     declares no savings baseline and a zero nominal evidence window — so no window is invented for
     an admission that did not declare its own.
 
-    The counts are left exactly as the summary derived them — ``judge_started`` is the raw number of
-    model calls that opened, fan-out included, because that is what a spend figure has to read. The
-    fan-out is applied to the STEP that crosses the unit boundary (:data:`PER_CONCERN_STEPS`), not
-    to the points, so a caller reading ``counts`` and a caller reading ``steps`` cannot disagree.
+    The counts are left exactly as the summary derived them. ``admitted`` remains evidence units;
+    ``judge_dispatch_opportunities`` is the exact per-admission goal expansion;
+    ``judge_started`` remains logical per-goal judgment starts; and ``provider_calls`` remains the
+    cost population after zero-spend serves are removed. No point is multiplied by a run-global
+    concern count.
     """
     seq: Sequence[TraceRecord] = tuple(records)
     summary = TraceSummary.derive(manifest or RunTraceManifest(run_id=_UNIDENTIFIED_RUN), seq)
     counts = {
         "observed": summary.observed,
         "admitted": summary.admitted,
+        "admitted_evidence_units": summary.admitted,
+        "judge_dispatch_opportunities": summary.judge_dispatch_opportunities,
         "judge_started": summary.judge_started,
         "judge_completed": summary.judge_completed,
+        "provider_calls": summary.provider_calls,
         "fired": summary.incidents,
+    }
+    units = {
+        **FUNNEL_POINT_UNITS,
+        "admitted_evidence_units": summary.admitted_unit,
+        "provider_calls": summary.provider_calls_unit,
     }
     concerns = _concerns(seq)
     steps = tuple(
@@ -460,11 +469,18 @@ def stage_funnel(
             down,
             counts[up],
             counts[down],
-            fan_out=concerns if name in PER_CONCERN_STEPS else 1,
+            upstream_unit=units[up],
+            downstream_unit=units[down],
         )
         for name, up, down in FUNNEL_STEPS
     )
-    return StageFunnel(summary=summary, counts=counts, steps=steps, concerns=concerns)
+    return StageFunnel(
+        summary=summary,
+        counts=counts,
+        steps=steps,
+        units=units,
+        concerns=concerns,
+    )
 
 
 # ---------------------------------------------------------------------------

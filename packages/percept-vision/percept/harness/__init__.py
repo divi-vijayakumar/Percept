@@ -65,10 +65,13 @@ from .tier0 import (
     motion_score,
     run_gated_watch,
 )
+from .candidates import CollisionCandidateReceipt, FixedCameraCollisionCandidate
 
 __all__ = [
     "Frame",
     "gray_frame",
+    "CollisionCandidateReceipt",
+    "FixedCameraCollisionCandidate",
     "motion_score",
     "compile_watchspec",
     "MotionGate",

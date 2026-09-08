@@ -1,0 +1,86 @@
+{
+  "kind": "percept-stage-validation-corpus",
+  "corpus_version": "traffic-collision-target-watch-control-2026-08-02",
+  "version": "traffic-collision-target-watch-control-2026-08-02",
+  "note": "Diagnostic-only corrected single-shot control. The semantic arm is intentionally a one-call target-state Watch; cognition, not a second VLM call, owns the false-to-true edge.",
+  "source_motion_contract": {
+    "schema": "percept.stage-validation.source-motion/1",
+    "datasets": {
+      "traffic-control-single-shot": {
+        "camera_motion": "fixed",
+        "evidence": "One fixed intersection-camera shot. Automated scan found zero scene-cut candidates at scene score > 0.10 and zero black intervals of at least one frame."
+      }
+    }
+  },
+  "situation_contract": {
+    "schema": "percept.stage-validation.situation/1",
+    "datasets": {
+      "traffic-control-single-shot": {
+        "goal_temporality": "dynamic",
+        "camera_mount": "fixed",
+        "start_state": "transition",
+        "evidence": "One vehicle-collision transition in a continuous fixed-camera shot, with 2.266667 seconds of pre-impact evidence and 5.033333 seconds of post-impact evidence."
+      }
+    }
+  },
+  "evidence_contract": {
+    "schema": "percept.stage-validation.evidence-shape/1",
+    "default": {
+      "sense": {},
+      "perception": {
+        "temporal": "strip",
+        "sampling": "uniform",
+        "n_frames": 5,
+        "window_s": 2.0
+      },
+      "rationale": "Ordered context for a dynamic target-state judgment."
+    },
+    "goal_kinds": {
+      "duration": {
+        "sense": {},
+        "perception": {
+          "temporal": "strip",
+          "sampling": "uniform",
+          "n_frames": 5,
+          "window_s": 2.0
+        },
+        "rationale": "The VLM judges the one-call target state; deterministic cognition detects its false-to-true edge."
+      }
+    }
+  },
+  "cases": [
+    {
+      "case_id": "traffic-control-single-shot::collision-target-watch::0",
+      "dataset": "traffic-control-single-shot",
+      "duration_s": 7.3,
+      "goal_kind": "duration",
+      "goal_text": "Two or more vehicles collide in the intersection.",
+      "positives": [[2.2666666667, 7.3]],
+      "provenance": {
+        "source_path": "/Users/dhivyavijayakumar/Downloads/Traffic_Data.mp4",
+        "source_sha256": "fe1cb8a775a20d2fdd0a12955b840362febeb7a38fcad65bbd4d5304bde90e3c",
+        "source_fps": 30.0,
+        "source_frame_interval_half_open": [3673, 3892],
+        "source_interval_s_half_open": [122.4333333333, 129.7333333333],
+        "human_onset_source_s": 124.7,
+        "human_onset_source_frame": 3741,
+        "human_onset_subclip_s": 2.2666666667,
+        "human_onset_subclip_frame": 68,
+        "onset_resolution_s": 0.0333333333,
+        "adjudication": "Onset shifted arithmetically from the existing frame-by-frame human review at source 124.70s. Shot bounds were corrected after visual inspection and automated cut/black scans exposed edits in the prior control.",
+        "scene_cut_scan": {
+          "filter": "select='gt(scene,0.10)',showinfo",
+          "candidate_count": 0,
+          "artifact": "/private/tmp/traffic-review-corrected/scene-cuts-threshold-0p10.txt"
+        },
+        "black_scan": {
+          "filter": "blackdetect=d=0.03:pix_th=0.10",
+          "interval_count": 0,
+          "artifact": "/private/tmp/traffic-review-corrected/black-detect.txt"
+        }
+      },
+      "video_path": "/private/tmp/traffic-review-corrected/Traffic_Data_collision_single_shot_122p433_129p733.mp4",
+      "video_sha256": "5fdb62e5392b0d412dee673dde6944c3e7ae15ce717dff72a47b3742892120bd"
+    }
+  ]
+}

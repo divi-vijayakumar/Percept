@@ -322,6 +322,7 @@ _INCIDENT_RECEIPT_KEYS = {
 _ASK_RECEIPT_KEYS = {"goal_id", "action", "text"}
 _TRACE_RECEIPT_KEYS = {"trace_id", "stage", "t", "goal_id", "data"}
 _HEALTH_RECEIPT_KEYS = {"kind", "ts", "data"}
+_PRODUCER_LATENCY_CLOCK = "producer_monotonic_v1"
 _EDGE_DECISION_KEYS = {
     "threshold",
     "motion",
@@ -345,7 +346,7 @@ _EDGE_DECISION_KEYS = {
 }
 _TRACE_DATA_KEYS = {
     "edge.decision": _EDGE_DECISION_KEYS,
-    "source.frame": set(),
+    "source.frame": {"goal_ids", "latency_clock"},
     "transition.decision": {
         "armed",
         "enriched",
@@ -363,6 +364,7 @@ _TRACE_DATA_KEYS = {
         "to_confidence",
         "to_evidence",
         "to_truth",
+        "latency_clock",
     },
     "judgment.event": {
         "action",
@@ -370,10 +372,11 @@ _TRACE_DATA_KEYS = {
         "entity_id",
         "evidence_origin",
         "judgment_event_id",
+        "latency_clock",
     },
-    "judge.started": {"temporal", "roi"},
-    "judge.finished": {"satisfied", "confidence"},
-    "judge.degraded": {"cause"},
+    "judge.started": {"temporal", "roi", "latency_clock"},
+    "judge.finished": {"satisfied", "confidence", "latency_clock"},
+    "judge.degraded": {"cause", "latency_clock"},
     "gate.classified": {
         "truth",
         "action",
@@ -384,6 +387,7 @@ _TRACE_DATA_KEYS = {
         "confidence",
         "freshness",
         "hold_s",
+        "latency_clock",
     },
     "shadow.fold": {
         "subject",
@@ -399,6 +403,7 @@ _TRACE_DATA_KEYS = {
         # of ``"unbound"`` means one ran and bound nothing — a different answer.
         "fold_episode_id",
         "fold_match",
+        "latency_clock",
     },
     "incident.created": {
         "entity_id",
@@ -413,6 +418,7 @@ _DEGRADED_GATE_TRACE_DATA_KEYS = {
     "action",
     "entity_id",
     "degraded",
+    "latency_clock",
 }
 #: The VARIANT shape of ``judge.finished`` for a tick that reached its verdict WITHOUT spending a
 #: provider call — a perception-cache serve or a confident DirectJudge substitution. The two marker
@@ -553,6 +559,12 @@ def _thaw(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_thaw(item) for item in value]
     return value
+
+
+def _producer_clocked(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the exact shared-lane trace payload emitted by the current runtime."""
+
+    return {**data, "latency_clock": _PRODUCER_LATENCY_CLOCK}
 
 
 def _json_shape(value: Any) -> Any:
@@ -1794,6 +1806,22 @@ def _parse_arm_receipt(
             else _TRACE_DATA_KEYS[stage]
         )
         _exact(trace_data, trace_data_keys, f"{context}.traces[{index}].data")
+        if "latency_clock" in trace_data:
+            _require(
+                trace_data["latency_clock"] == _PRODUCER_LATENCY_CLOCK,
+                f"{context}.traces[{index}].data.latency_clock is unsupported",
+            )
+        if stage == "source.frame":
+            goal_ids = trace_data["goal_ids"]
+            _require(
+                isinstance(goal_ids, tuple),
+                f"{context}.traces[{index}].data.goal_ids must be a JSON array",
+            )
+            for goal_index, goal_id in enumerate(goal_ids):
+                _strict_string(
+                    goal_id,
+                    f"{context}.traces[{index}].data.goal_ids[{goal_index}]",
+                )
         _require(
             trace["t"] is None or isinstance(trace["t"], float),
             f"{context}.traces[{index}].t must be an exact JSON floating-point number or null",
@@ -3799,7 +3827,9 @@ def _validate_v2_arm_reconstruction(
                 "stage": "source.frame",
                 "t": candidate.t,
                 "goal_id": None,
-                "data": {},
+                "data": _producer_clocked(
+                    {"goal_ids": [] if route == "transition" else [goal_id]}
+                ),
             }
             for candidate in dispatched
         ],
@@ -3864,6 +3894,7 @@ def _validate_v2_arm_reconstruction(
                         "to_confidence": None,
                         "from_evidence": None,
                         "to_evidence": None,
+                        "latency_clock": _PRODUCER_LATENCY_CLOCK,
                     },
                     f"{arm.arm} degraded transition trace retained an unexecuted claim",
                 )
@@ -3944,6 +3975,7 @@ def _validate_v2_arm_reconstruction(
                     "to_confidence": to_call.confidence,
                     "from_evidence": from_call.evidence,
                     "to_evidence": to_call.evidence,
+                    "latency_clock": _PRODUCER_LATENCY_CLOCK,
                 },
                 f"{arm.arm} transition trace does not reconstruct from oracle/state",
             )
@@ -4037,7 +4069,7 @@ def _validate_v2_arm_reconstruction(
                 == {
                     **coordinate,
                     "stage": "judge.started",
-                    "data": {"temporal": "single", "roi": False},
+                    "data": _producer_clocked({"temporal": "single", "roi": False}),
                 },
                 f"{arm.arm} judge-started trace does not reconstruct from dispatch",
             )
@@ -4054,22 +4086,26 @@ def _validate_v2_arm_reconstruction(
                     == {
                         **coordinate,
                         "stage": "judge.degraded",
-                        "data": {
-                            "cause": repr(
-                                RuntimeError("judgment provider unavailable")
-                            )
-                        },
+                        "data": _producer_clocked(
+                            {
+                                "cause": repr(
+                                    RuntimeError("judgment provider unavailable")
+                                )
+                            }
+                        ),
                     }
                     and _thaw(gate_by_t.get(candidate.t))
                     == {
                         **coordinate,
                         "stage": "gate.classified",
-                        "data": {
-                            "truth": "unknown",
-                            "action": "ask",
-                            "entity_id": None,
-                            "degraded": True,
-                        },
+                        "data": _producer_clocked(
+                            {
+                                "truth": "unknown",
+                                "action": "ask",
+                                "entity_id": None,
+                                "degraded": True,
+                            }
+                        ),
                     },
                     f"{arm.arm} degraded judge traces do not reconstruct from provider failure",
                 )
@@ -4081,10 +4117,12 @@ def _validate_v2_arm_reconstruction(
                 == {
                     **coordinate,
                     "stage": "judge.finished",
-                    "data": {
-                        "satisfied": call.satisfied,
-                        "confidence": call.confidence,
-                    },
+                    "data": _producer_clocked(
+                        {
+                            "satisfied": call.satisfied,
+                            "confidence": call.confidence,
+                        }
+                    ),
                 },
                 f"{arm.arm} judge-finished trace does not reconstruct from oracle result",
             )
@@ -4145,6 +4183,7 @@ def _validate_v2_arm_reconstruction(
                     "confidence": call.confidence,
                     "freshness": 1.0,
                     "hold_s": hold_s,
+                    "latency_clock": _PRODUCER_LATENCY_CLOCK,
                 }
             else:
                 if (
@@ -4178,6 +4217,7 @@ def _validate_v2_arm_reconstruction(
                     "confidence": call.confidence,
                     "freshness": 1.0,
                     "hold_s": hold_s,
+                    "latency_clock": _PRODUCER_LATENCY_CLOCK,
                 }
                 if fold is not None and fold.episode_id is not None and outcome.action == "fire":
                     # The emission the delivered incident records — what makes the NEXT re-statement
@@ -4230,6 +4270,7 @@ def _validate_v2_arm_reconstruction(
                             key_turned_over=key_turned_over,
                             scene_key_turnovers=scene_key_turnovers,
                         ),
+                        "latency_clock": _PRODUCER_LATENCY_CLOCK,
                     },
                 },
                 f"{arm.arm} shadow-fold trace does not reconstruct from ordinary Watch state",
@@ -4366,6 +4407,7 @@ def _validate_v2_arm_reconstruction(
                     "entity_id": expected_entity,
                     "judgment_event_id": expected_judgment_id,
                     "evidence_origin": expected_trace_origin,
+                    "latency_clock": _PRODUCER_LATENCY_CLOCK,
                 },
                 f"{arm.arm} judgment trace does not reconstruct from its FIRE candidate",
             )

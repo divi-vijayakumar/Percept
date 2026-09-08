@@ -93,11 +93,12 @@ class HandheldTests(unittest.TestCase):
         self.assertEqual(p.gate.refractory_s, 15.0)
 
     def test_ego_compensation_is_documented(self):
-        # No typed ego_compensate field on WatchProfile yet (the implementation scope) -- the binding is the note.
+        # No typed ego_compensate field on WatchProfile; the note names the situation-resolver binding.
         notes = profiles_default.HANDHELD.notes
         self.assertIn("ego_compensate", notes)
-        self.assertIn("98%", notes)
-        self.assertIn("30%", notes)
+        self.assertIn("global camera motion", notes)
+        self.assertIn("situation=", notes)
+        self.assertIn("did not prove a universal admission-rate claim", notes)
 
 
 # ---------------------------------------------------------------------------

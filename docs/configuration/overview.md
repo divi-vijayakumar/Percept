@@ -188,8 +188,9 @@ mean, each with its own cutoff, so the mean-tuned `0.10` over-fires them. `salie
 `motion_gate=0.10` reproduces the legacy whole-frame gate byte-for-byte, but it is **not** the default
 any more and is rarely what you want: a whole-frame average dilutes a small mover against a still
 background, and on a 100-case corpus it admitted **zero frames on 24 cases** (0.572 recall) versus
-`block_max@0.20`'s 2 (0.947). `ego_compensate` subtracts
-global camera motion before diffing — for a **moving** camera only. See
+`block_max@0.20`'s 2 (0.947). `ego_compensate` subtracts global camera motion before scoring — for a
+**moving** camera only. It estimates one global shift from mean error, then applies the selected
+`salience_stat` to the aligned residual, so the per-stat threshold above stays in the correct unit. See
 [reference/edge-policy.md](../admission/wake-policy.md).
 
 ---

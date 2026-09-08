@@ -34,15 +34,15 @@ Design rationale (grounded in this repo's measured tuning results — cited, not
   ``Settings.edge.salience_stat`` -> owner ``"SourceProfile"``), not to this axis-derived layer, so
   :func:`resolve_situation` no longer emits ``"salience_stat"``/``"stat_thresholds"`` and
   :func:`resolve_profile` passes the resolved profile's own value through untouched. A profile that
-  declares nothing still gets the SDK default (``"mean"``, byte-for-byte legacy); every SHIPPED
-  profile still resolves to ``block_max``/0.20 because that is what it declares, not because this
-  module forces it.
+  declares nothing still gets the SDK default (``"block_max"``); every SHIPPED profile also resolves
+  to ``block_max``/0.20 because that is what it declares, not because this module forces it.
 - **ego-compensation follows camera motion.** A moving, uncompensated camera drove tier-0 sampler
-  escalation to ~98% of frames (global motion never lets cheap-motion settle below the escalate threshold)
-  vs. ~30% with ego-compensation on (see ``percept.profiles_default.EGO_COMPENSATION_NOTE``). Enabling it
-  on a genuinely fixed camera is a no-op (no global motion to compensate), so when the mount is UNKNOWN
-  this module defaults ``ego_compensate`` to ``True`` — the failure mode of guessing "fixed" and being
-  wrong (98% escalation) is far worse than the failure mode of guessing "moving" and being wrong (a no-op).
+  escalation toward every sampled frame (global motion never lets cheap-motion settle below the
+  threshold). Ego compensation aligns out the global shift before applying the selected statistic.
+  Its economy is mount-dependent: a three-clip EGO replay preserved event-window reachability but two
+  clips still admitted 70–72% of frames at native 6 fps, so there is no universal ~30% claim. When the mount is UNKNOWN
+  this module defaults ``ego_compensate`` to ``True`` because failing to compensate a moving camera is
+  generally the more expensive error; deployments must still measure admission on their own mount.
 - **window beats sprite, unconditionally.** An ordered-window plan (the judge sees ``frames=[...]``) beats
   a sprite montage; sprite is strictly worse and must never be selected. ``resolve_situation`` has no code
   path that can produce ``plan_mode="sprite"`` for any input, including unrecognized/wildcard axis values.

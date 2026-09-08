@@ -535,13 +535,14 @@ ignores movement outside the zone. The shift search stays whole-frame on purpose
 whole-frame property, and a zone too small, too flat, or too busy to identify a translation would
 otherwise report its own private opinion of how the camera moved.
 
-Two current limits, stated because they change what a trace means:
+Two details change what a trace means:
 
-- **Ego and the block statistics do not compose.** `_condition_motion` checks `ego_compensate`
-  first, so an ego-compensated goal gates on the (optionally region-masked) residual and
-  `block_max` / `p95` are not consulted. `percept doctor` says so explicitly with an
-  `EGO_COMPENSATED_GATE` finding — the admitted counts are still the real gate's, but the value
-  columns describe the *uncompensated* frames.
+- **Ego alignment composes with the selected statistic.** The global shift is estimated by minimizing
+  whole-frame mean residual, independent of the goal. The aligned residual is then summarized with
+  the condition's `salience_stat` (and optional region), so `block_max@0.20`, `p95@0.15`, and
+  `mean@0.10` remain on their calibrated scales. `Tier0Signal.motion` still reports the uncompensated
+  whole-frame mean as the configuration-independent gauge; the per-condition comparison value is the
+  ego-compensated statistic.
 - **No IMU fast path.** Device angular velocity is not wired in; the shift search is the only
   estimator.
 

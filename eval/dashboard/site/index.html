@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8"><title>Percept · evaluation layers</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#0f1115;--fg:#e6e8ec;--dim:#8b93a1;--line:#222733;--card:#151922;
+--pass:#2f9e6b;--fail:#c8483f;--run:#c98a2b;--idle:#4a5163}
+@media(prefers-color-scheme:light){:root{--bg:#fbfbfd;--fg:#14171c;--dim:#666e7d;
+--line:#e3e6ec;--card:#fff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:14px/1.55 ui-sans-serif,-apple-system,"SF Pro Text",Segoe UI,sans-serif}
+header{padding:22px 26px 0;max-width:1040px;margin:0 auto}
+h1{font-size:19px;margin:0 0 4px;font-weight:600;letter-spacing:-.01em}
+.meta{color:var(--dim);font-size:12.5px;margin:0 0 18px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line);
+padding:0 26px;max-width:1040px;margin:0 auto}
+.tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);
+padding:9px 12px;cursor:pointer;font:inherit;font-weight:500;display:flex;align-items:center;gap:7px}
+.tab.active{color:var(--fg);border-bottom-color:var(--fg)}
+.tsub{color:var(--dim);font-weight:400;font-size:12px}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
+.d-run{background:var(--run)}.d-done{background:var(--pass)}
+.d-fail{background:var(--fail)}.d-idle{background:var(--idle)}
+main{max-width:1040px;margin:0 auto;padding:20px 26px 60px}
+.panel{display:none} .panel.active{display:block}
+h2{font-size:16px;margin:6px 0 3px;font-weight:600}
+.sub{color:var(--dim);margin:0 0 12px;font-size:13px}
+.fixture{margin:0 0 16px;font-size:12.5px}
+table{width:100%;border-collapse:collapse;background:var(--card);
+border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--dim);font-weight:500;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
+tr:last-child td{border-bottom:0}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg)}
+.dim{color:var(--dim)}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11.5px;font-weight:500}
+.tag-pass{background:color-mix(in srgb,var(--pass) 18%,transparent);color:var(--pass)}
+.tag-fail{background:color-mix(in srgb,var(--fail) 18%,transparent);color:var(--fail)}
+.tag-missing,.tag-none,.tag-idle{background:color-mix(in srgb,var(--idle) 22%,transparent);color:var(--dim)}
+.tag-running{background:color-mix(in srgb,var(--run) 18%,transparent);color:var(--run)}
+.tag-done{background:color-mix(in srgb,var(--pass) 18%,transparent);color:var(--pass)}
+.r-missing td{opacity:.72}
+.caveat{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--run);
+padding:14px 16px;border-radius:8px;font-size:13.5px}
+.missing{color:var(--dim);font-size:13px;padding:14px 0}
+.note{max-width:1040px;margin:0 auto;padding:0 26px 8px;color:var(--dim);font-size:12.5px}
+footer{max-width:1040px;margin:0 auto;padding:0 26px 40px;color:var(--dim);font-size:12px;
+border-top:1px solid var(--line);padding-top:14px}
+</style>
+<header>
+  <h1>Percept · evaluation layers</h1>
+  <p class="meta">Rendered 2026-09-08 12:15:01 · refreshes every 15 min · no model is in this loop —
+  cron scans the results directory and publishes what is there.</p>
+</header>
+<p class="note">finished 2026-08-01 15:09:18</p>
+<div class="tabs"><button class="tab active" onclick="show('L0')" id="t-L0"><span class="dot d-done"></span>L0<span class="tsub">Capability</span></button><button class="tab" onclick="show('L1')" id="t-L1"><span class="dot d-done"></span>L1<span class="tsub">Quality</span></button><button class="tab" onclick="show('L1a')" id="t-L1a"><span class="dot d-done"></span>L1a<span class="tsub">Audio</span></button><button class="tab" onclick="show('L2')" id="t-L2"><span class="dot d-done"></span>L2<span class="tsub">Temporal</span></button><button class="tab" onclick="show('L3')" id="t-L3"><span class="dot d-idle"></span>L3<span class="tsub">Long-horizon</span></button><button class="tab" onclick="show('L4')" id="t-L4"><span class="dot d-idle"></span>L4<span class="tsub">Trust</span></button></div>
+<main><section class="panel active" id="p-L0"><h2>L0 · Capability</h2><p class="sub">Deterministic. Belongs in unit tests — never a quality claim.</p><p class="fixture"><span class="dim">fixture</span> <code>eval/synthetic/ — 7 corpora, 22 cases</code> &nbsp; <span class="dim">lane</span> <span class="tag tag-done">done</span></p><table><thead><tr><th>result</th><th>stage</th><th>verdict</th><th class="num">cases</th><th>file mtime</th></tr></thead><tbody><tr><td><code>sv0_ingest.json</code></td><td>STAGE 0</td><td><span class="tag tag-pass">6/6 pass</span></td><td class="num">6</td><td class="dim">2026-08-01 12:22</td></tr><tr><td><code>sv0_compile.json</code></td><td>sv0_compile</td><td><span class="tag tag-pass">0/4 pass</span></td><td class="num">4</td><td class="dim">2026-08-01 12:22</td></tr></tbody></table></section><section class="panel" id="p-L1"><h2>L1 · Quality</h2><p class="sub">Statistical. 100 cases, 2.98 h of media.</p><p class="fixture"><span class="dim">fixture</span> <code>eval/stage-validation/corpus.v1.1.json</code> &nbsp; <span class="dim">lane</span> <span class="tag tag-done">done</span></p><table><thead><tr><th>result</th><th>stage</th><th>verdict</th><th class="num">cases</th><th>file mtime</th></tr></thead><tbody><tr><td><code>sv1_admission.json</code></td><td>Stage-1 ADMISSION</td><td><span class="tag tag-fail">2 failed</span></td><td class="num">4</td><td class="dim">2026-08-01 12:22</td></tr><tr><td><code>sv2_senses.json</code></td><td>sv2_senses</td><td><span class="tag tag-pass">0/4 pass</span></td><td class="num">4</td><td class="dim">2026-08-01 12:22</td></tr><tr><td><code>sv3_pool.json</code></td><td>SV-3.x judge pool boundedness</td><td><span class="tag tag-none">no verdicts</span></td><td class="num">0</td><td class="dim">2026-08-01 12:23</td></tr><tr><td><code>sv4_cognition.json</code></td><td>SV-4 COGNITION + DISPOSITION</td><td><span class="tag tag-none">no verdicts</span></td><td class="num">0</td><td class="dim">2026-08-01 12:23</td></tr></tbody></table></section><section class="panel" id="p-L1a"><h2>L1a · Audio</h2><p class="sub">53 cases, 0.472 h. No key required.</p><p class="fixture"><span class="dim">fixture</span> <code>eval/stage-validation/audio_corpus.json</code> &nbsp; <span class="dim">lane</span> <span class="tag tag-done">done</span></p><table><thead><tr><th>result</th><th>stage</th><th>verdict</th><th class="num">cases</th><th>file mtime</th></tr></thead><tbody><tr><td><code>sv_audio.json</code></td><td>sv_audio</td><td><span class="tag tag-fail">3 failed</span></td><td class="num">7</td><td class="dim">2026-08-01 12:23</td></tr></tbody></table></section><section class="panel" id="p-L2"><h2>L2 · Temporal</h2><p class="sub">long_run_all.mp4, 81.6 min, 73 goals — run twice.</p><p class="fixture"><span class="dim">fixture</span> <code>eval/stage-validation/long_sources/long_run_all.mp4</code> &nbsp; <span class="dim">lane</span> <span class="tag tag-done">done</span></p><div class="caveat"><strong>Read the per-goal-kind breakdown as invalid.</strong> The long runs arm every goal from plain condition text, and SV-0.7 measured that path at 4/100: nothing in the compile chain reads the condition for meaning, so all four goal kinds produce a byte-identical boolean presence Watch (type=&#x27;watch&#x27;). Verified through long_run&#x27;s own plan builder — count, duration, transition and state all compile to the same primitive. Every goal here therefore executes as &#x27;is it present&#x27;, while the results still stamp each one with its manifest goal_kind. Entity tracks, episode state, ledger reconciliation, judge allocation, RSS, latency and cost are unaffected: none of them depend on which primitive compiled. The per-goal-kind accuracy view is the part that is measuring the wrong thing. funnel.dropped is separately unreliable — SV-4.8-D1 found _JudgeScheduler carries no funnel reference at all (worker.py:1417); read the primary ledger, not the mirror.</div><div class="caveat"><strong>The two files are one measurement, run twice.</strong> Both files are the SAME source and the same configuration — long_run_2h was an unintended second pass, not a distinct fixture. Read as a reproducibility check it is a real result: two independent live-provider runs agreed exactly on incidents (6 vs 6), frames yielded and emitted (24,484 vs 24,484) and drops (0 with receipt, 0 without), with provider calls differing 0.07% (5,722 vs 5,726). One number did NOT reproduce: rss_end_mb was 132.9 on the first pass and 253.3 on the second, from near-identical starts (223.0 / 223.2). Same source, same frame count, same work — unexplained, and it lands on the run whose stated purpose includes bounded retention.</div><table><thead><tr><th>result</th><th>stage</th><th>verdict</th><th class="num">cases</th><th>file mtime</th></tr></thead><tbody><tr><td><code>long_run.json</code></td><td>—</td><td><span class="tag tag-none">no verdicts</span></td><td class="num">0</td><td class="dim">2026-08-01 13:46</td></tr><tr><td><code>long_run_2h.json</code></td><td>—</td><td><span class="tag tag-none">no verdicts</span></td><td class="num">0</td><td class="dim">2026-08-01 15:09</td></tr></tbody></table></section><section class="panel" id="p-L3"><h2>L3 · Long-horizon</h2><p class="sub">Fixture not built.</p><p class="fixture"><span class="dim">fixture</span> <code>eval/stage-validation/long_sources/ — no 2 h source present</code> &nbsp; <span class="dim">lane</span> <span class="tag tag-no fixture">no fixture</span></p><div class="caveat"><strong>Never ran.</strong> No 2 h fixture exists in this repo. The layer was declared here against &#x27;long_sources/inject_2h_v1.mp4&#x27;, and that file is referenced by nothing else in the tree — no builder, no manifest, no corpus entry. It was never built. The runner that filled this lane passed no --manifest, so it silently re-ran L2&#x27;s default source under a different output name; that result is shown under L2 as the repeat it actually is, and is NOT shown here. Building a genuine long-horizon source is real work (build_long_sources.py concatenates same-goal cases) and a fresh provider spend, so this tab stays empty until that is a decision someone has made. An empty tab is the honest rendering; L2&#x27;s number relabelled would not be.</div></section><section class="panel" id="p-L4"><h2>L4 · Trust</h2><p class="sub"></p><p class="fixture"><span class="dim">fixture</span> <code>eval/fixtures-golden/</code> &nbsp; <span class="dim">lane</span> <span class="tag tag-idle">idle</span></p><div class="caveat"><strong>Not a metric.</strong> 180 of 205 gate cases are unreviewed, and all 48 scenes are uncleared third-party media. No number is shown here because any figure computed over this fixture would have no ground truth behind it. This tab stays empty until the labels are reviewed — an empty tab is the honest rendering, a percentage would not be.</div></section></main>
+<footer>
+  A layer with no result file reads <em>not run</em>, never zero. Capability (L0) is deterministic
+  and can never answer a quality question; quality (L1) is statistical and needs its stated coverage
+  beside it. L4 carries no number by design.
+</footer>
+<script>
+function show(id){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('p-'+id).classList.add('active');
+  document.getElementById('t-'+id).classList.add('active');
+  try{localStorage.setItem('percept-eval-tab',id)}catch(e){}
+}
+try{var s=localStorage.getItem('percept-eval-tab');if(s&&document.getElementById('p-'+s))show(s)}catch(e){}
+setTimeout(()=>location.reload(), 15*60*1000);
+</script>

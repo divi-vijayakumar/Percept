@@ -1,0 +1,25 @@
+{
+  "kind": "percept-authoring-cache",
+  "prompt_version": "primitive-authoring-1",
+  "model": "human-candidate-first-v1",
+  "entries": {
+    "5d23f59bced8388ad3d8da8e978c0168": {
+      "behavior_type": "watch",
+      "explicit": {
+        "Goal.state.type": "watch",
+        "Goal.state.detectors": [
+          "fixed-camera-collision-candidate"
+        ],
+        "Goal.state.cadence.gate_on": "semantic",
+        "Goal.state.perception.temporal": "strip",
+        "Goal.state.perception.sampling": "uniform",
+        "Goal.state.perception.n_frames": 5,
+        "Goal.state.perception.window_s": 2.0
+      },
+      "goal_text": "Two or more vehicles collide in the intersection.",
+      "key": "5d23f59bced8388ad3d8da8e978c0168",
+      "model": "human-candidate-first-v1",
+      "origin": "human"
+    }
+  }
+}

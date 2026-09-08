@@ -1,12 +1,12 @@
 {
   "suite": "sv2_senses",
-  "generated_at": "2026-07-26T15:42:43-0700",
-  "elapsed_s": 4.677,
+  "generated_at": "2026-08-01T12:22:55-0700",
+  "elapsed_s": 0.874,
   "runtime": {
     "percept_version": "1.0.0",
-    "percept_path": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept/__init__.py",
+    "percept_path": "/private/tmp/percept-launch/eval-venv/lib/python3.12/site-packages/percept/__init__.py",
     "python": "3.12.8",
-    "executable": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python",
+    "executable": "/private/tmp/percept-launch/eval-venv/bin/python",
     "is_repo_tree": false
   },
   "senseprobe": {
@@ -337,17 +337,17 @@
         {
           "name": "span association is idempotent under denser observation (3x candidates -> 1x events)",
           "passed": true,
-          "detail": "{\"sense\": \"span\", \"probe_path\": \"senseprobe\", \"units_in\": 120, \"units_out\": 20, \"economy_ratio\": 0.16666666666666666, \"probe_units_fed\": 120, \"probe_reads\": 1, \"wall_time_s\": 0.000206, \"errors\": 0, \"note\": \"raw event candidates -> deduped event spans (denser observation adds no events)\"}"
+          "detail": "{\"sense\": \"span\", \"probe_path\": \"senseprobe\", \"units_in\": 120, \"units_out\": 20, \"economy_ratio\": 0.16666666666666666, \"probe_units_fed\": 120, \"probe_reads\": 1, \"wall_time_s\": 0.000212, \"errors\": 0, \"note\": \"raw event candidates -> deduped event spans (denser observation adds no events)\"}"
         },
         {
           "name": "the Stage-2 funnel strictly narrows (frames >= reps >= spans >= episodes >= delivered)",
           "passed": true,
-          "detail": "{\"stage1_frames_in\": 600, \"rhythm_reps\": 30, \"span_events\": 30, \"episodes_opened\": 1, \"episode_continuations\": 29, \"stage3_delivered\": 1, \"overall_ratio\": 0.0016666666666666668}"
+          "detail": "{\"stage1_frames_in\": 600, \"rhythm_reps\": 31, \"span_events\": 31, \"episodes_opened\": 1, \"episode_continuations\": 30, \"stage3_delivered\": 1, \"overall_ratio\": 0.0016666666666666668}"
         },
         {
           "name": "Stage-2 delivers strictly fewer units to Stage 3 than it received from Stage 1",
           "passed": true,
-          "detail": "{\"stage1_frames_in\": 600, \"rhythm_reps\": 30, \"span_events\": 30, \"episodes_opened\": 1, \"episode_continuations\": 29, \"stage3_delivered\": 1, \"overall_ratio\": 0.0016666666666666668}"
+          "detail": "{\"stage1_frames_in\": 600, \"rhythm_reps\": 31, \"span_events\": 31, \"episodes_opened\": 1, \"episode_continuations\": 30, \"stage3_delivered\": 1, \"overall_ratio\": 0.0016666666666666668}"
         }
       ],
       "data": {
@@ -390,7 +390,7 @@
             "economy_ratio": 0.05,
             "probe_units_fed": 600,
             "probe_reads": 1,
-            "wall_time_s": 0.001378,
+            "wall_time_s": 0.002454,
             "errors": 0,
             "note": "eye frames observed -> confirmed reps on the selected channel"
           },
@@ -402,7 +402,7 @@
             "economy_ratio": 0.0016666666666666668,
             "probe_units_fed": 600,
             "probe_reads": 1,
-            "wall_time_s": 0.002109,
+            "wall_time_s": 0.002135,
             "errors": 0,
             "note": "detections ingested -> distinct tracked entities handed up"
           },
@@ -414,7 +414,7 @@
             "economy_ratio": 0.16666666666666666,
             "probe_units_fed": 120,
             "probe_reads": 1,
-            "wall_time_s": 0.000206,
+            "wall_time_s": 0.000212,
             "errors": 0,
             "note": "raw event candidates -> deduped event spans (denser observation adds no events)"
           },
@@ -438,7 +438,7 @@
             "economy_ratio": 0.54,
             "probe_units_fed": 150,
             "probe_reads": 0,
-            "wall_time_s": 6.8e-05,
+            "wall_time_s": 4.9e-05,
             "errors": 0,
             "note": "judge results submitted (via .sense.submit) -> decisions DELIVERED to Stage 3 (FIRE / ASK)"
           },
@@ -450,7 +450,7 @@
             "economy_ratio": 0.005,
             "probe_units_fed": 200,
             "probe_reads": 0,
-            "wall_time_s": 0.000132,
+            "wall_time_s": 0.000125,
             "errors": 0,
             "note": "match() calls -> distinct ids minted (199 re-identified, 1 new)"
           },
@@ -474,7 +474,7 @@
             "economy_ratio": 0.1,
             "probe_units_fed": 600,
             "probe_reads": 0,
-            "wall_time_s": 0.000415,
+            "wall_time_s": 0.000426,
             "errors": 0,
             "note": "frames offered -> non-empty Enrichments forwarded as judge context"
           }
@@ -484,10 +484,10 @@
         ],
         "funnel": {
           "stage1_frames_in": 600,
-          "rhythm_reps": 30,
-          "span_events": 30,
+          "rhythm_reps": 31,
+          "span_events": 31,
           "episodes_opened": 1,
-          "episode_continuations": 29,
+          "episode_continuations": 30,
           "stage3_delivered": 1,
           "overall_ratio": 0.0016666666666666668
         }
@@ -617,8 +617,7 @@
           "subsample_stability": 1.0,
           "channel_score": 14.8108
         },
-        "oracle_elapsed_s": 0.3,
-        "pixel_eye_elapsed_s": 3.62,
+        "oracle_elapsed_s": 0.18,
         "per_case": [
           {
             "case_id": "repcount::stu6_15::0",
@@ -649,11 +648,7 @@
             "rhythm_noise0.05": 14,
             "rhythm_noise0.05_err": 2,
             "rhythm_noise0.15": 14,
-            "rhythm_noise0.15_err": 2,
-            "pixel_eye": 1,
-            "pixel_eye_err": 11,
-            "pixel_eye_selected": "motion_cx",
-            "pixel_eye_samples": 179
+            "rhythm_noise0.15_err": 2
           },
           {
             "case_id": "repcount::stu9_34::0",
@@ -684,11 +679,7 @@
             "rhythm_noise0.05": 9,
             "rhythm_noise0.05_err": 1,
             "rhythm_noise0.15": 9,
-            "rhythm_noise0.15_err": 1,
-            "pixel_eye": 5,
-            "pixel_eye_err": 3,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 149
+            "rhythm_noise0.15_err": 1
           },
           {
             "case_id": "repcount::stu4_63::0",
@@ -719,11 +710,7 @@
             "rhythm_noise0.05": 18,
             "rhythm_noise0.05_err": 4,
             "rhythm_noise0.15": 18,
-            "rhythm_noise0.15_err": 4,
-            "pixel_eye": 8,
-            "pixel_eye_err": 6,
-            "pixel_eye_selected": "motion_cx",
-            "pixel_eye_samples": 349
+            "rhythm_noise0.15_err": 4
           },
           {
             "case_id": "repcount::stu4_12::0",
@@ -754,11 +741,7 @@
             "rhythm_noise0.05": 5,
             "rhythm_noise0.05_err": 1,
             "rhythm_noise0.15": 5,
-            "rhythm_noise0.15_err": 1,
-            "pixel_eye": 6,
-            "pixel_eye_err": 2,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 159
+            "rhythm_noise0.15_err": 1
           },
           {
             "case_id": "repcount::test2025::0",
@@ -789,11 +772,7 @@
             "rhythm_noise0.05": 5,
             "rhythm_noise0.05_err": 0,
             "rhythm_noise0.15": 5,
-            "rhythm_noise0.15_err": 0,
-            "pixel_eye": 5,
-            "pixel_eye_err": 0,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 99
+            "rhythm_noise0.15_err": 0
           },
           {
             "case_id": "repcount::stu8_49::0",
@@ -823,12 +802,8 @@
             "rhythm_err@30": 0,
             "rhythm_noise0.05": 9,
             "rhythm_noise0.05_err": 0,
-            "rhythm_noise0.15": 22,
-            "rhythm_noise0.15_err": 13,
-            "pixel_eye": 4,
-            "pixel_eye_err": 5,
-            "pixel_eye_selected": "motion_cx",
-            "pixel_eye_samples": 599
+            "rhythm_noise0.15": 21,
+            "rhythm_noise0.15_err": 12
           },
           {
             "case_id": "repcount::stu6_13::0",
@@ -858,12 +833,8 @@
             "rhythm_err@30": 0,
             "rhythm_noise0.05": 10,
             "rhythm_noise0.05_err": 1,
-            "rhythm_noise0.15": 10,
-            "rhythm_noise0.15_err": 1,
-            "pixel_eye": 7,
-            "pixel_eye_err": 2,
-            "pixel_eye_selected": "motion_cx",
-            "pixel_eye_samples": 312
+            "rhythm_noise0.15": 11,
+            "rhythm_noise0.15_err": 2
           },
           {
             "case_id": "repcount::stu7_13::0",
@@ -894,11 +865,7 @@
             "rhythm_noise0.05": 13,
             "rhythm_noise0.05_err": 2,
             "rhythm_noise0.15": 25,
-            "rhythm_noise0.15_err": 14,
-            "pixel_eye": 17,
-            "pixel_eye_err": 6,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 599
+            "rhythm_noise0.15_err": 14
           },
           {
             "case_id": "repcount::stu7_17::0",
@@ -929,11 +896,7 @@
             "rhythm_noise0.05": 5,
             "rhythm_noise0.05_err": 0,
             "rhythm_noise0.15": 6,
-            "rhythm_noise0.15_err": 1,
-            "pixel_eye": 1,
-            "pixel_eye_err": 4,
-            "pixel_eye_selected": "motion_energy",
-            "pixel_eye_samples": 159
+            "rhythm_noise0.15_err": 1
           },
           {
             "case_id": "repcount::stu9_45::0",
@@ -964,11 +927,7 @@
             "rhythm_noise0.05": 14,
             "rhythm_noise0.05_err": 2,
             "rhythm_noise0.15": 16,
-            "rhythm_noise0.15_err": 4,
-            "pixel_eye": 15,
-            "pixel_eye_err": 3,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 329
+            "rhythm_noise0.15_err": 4
           },
           {
             "case_id": "repcount::stu2_6::0",
@@ -996,14 +955,10 @@
             "edges_err@30": 0,
             "rhythm@30": 3,
             "rhythm_err@30": 1,
-            "rhythm_noise0.05": 10,
-            "rhythm_noise0.05_err": 6,
+            "rhythm_noise0.05": 8,
+            "rhythm_noise0.05_err": 4,
             "rhythm_noise0.15": 13,
-            "rhythm_noise0.15_err": 9,
-            "pixel_eye": 5,
-            "pixel_eye_err": 1,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 412
+            "rhythm_noise0.15_err": 9
           },
           {
             "case_id": "repcount::stu3_57::0",
@@ -1034,11 +989,7 @@
             "rhythm_noise0.05": 21,
             "rhythm_noise0.05_err": 2,
             "rhythm_noise0.15": 21,
-            "rhythm_noise0.15_err": 2,
-            "pixel_eye": 18,
-            "pixel_eye_err": 1,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 259
+            "rhythm_noise0.15_err": 2
           },
           {
             "case_id": "repcount::stu10_48::0",
@@ -1066,14 +1017,10 @@
             "edges_err@30": 0,
             "rhythm@30": 5,
             "rhythm_err@30": 0,
-            "rhythm_noise0.05": 14,
-            "rhythm_noise0.05_err": 9,
+            "rhythm_noise0.05": 10,
+            "rhythm_noise0.05_err": 5,
             "rhythm_noise0.15": 16,
-            "rhythm_noise0.15_err": 11,
-            "pixel_eye": 7,
-            "pixel_eye_err": 2,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 299
+            "rhythm_noise0.15_err": 11
           },
           {
             "case_id": "repcount::test538::0",
@@ -1104,11 +1051,7 @@
             "rhythm_noise0.05": 5,
             "rhythm_noise0.05_err": 0,
             "rhythm_noise0.15": 5,
-            "rhythm_noise0.15_err": 0,
-            "pixel_eye": 11,
-            "pixel_eye_err": 6,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 99
+            "rhythm_noise0.15_err": 0
           },
           {
             "case_id": "repcount::stu2_62::0",
@@ -1139,11 +1082,7 @@
             "rhythm_noise0.05": 21,
             "rhythm_noise0.05_err": 2,
             "rhythm_noise0.15": 21,
-            "rhythm_noise0.15_err": 2,
-            "pixel_eye": 20,
-            "pixel_eye_err": 1,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 609
+            "rhythm_noise0.15_err": 2
           },
           {
             "case_id": "repcount::stu2_34::0",
@@ -1174,11 +1113,7 @@
             "rhythm_noise0.05": 18,
             "rhythm_noise0.05_err": 1,
             "rhythm_noise0.15": 17,
-            "rhythm_noise0.15_err": 0,
-            "pixel_eye": 13,
-            "pixel_eye_err": 4,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 289
+            "rhythm_noise0.15_err": 0
           },
           {
             "case_id": "repcount::stu5_27::0",
@@ -1209,11 +1144,7 @@
             "rhythm_noise0.05": 15,
             "rhythm_noise0.05_err": 1,
             "rhythm_noise0.15": 17,
-            "rhythm_noise0.15_err": 3,
-            "pixel_eye": 2,
-            "pixel_eye_err": 12,
-            "pixel_eye_selected": "motion_energy",
-            "pixel_eye_samples": 209
+            "rhythm_noise0.15_err": 3
           },
           {
             "case_id": "repcount::stu2_14::0",
@@ -1241,14 +1172,10 @@
             "edges_err@30": 1,
             "rhythm@30": 7,
             "rhythm_err@30": 0,
-            "rhythm_noise0.05": 7,
-            "rhythm_noise0.05_err": 0,
-            "rhythm_noise0.15": 8,
-            "rhythm_noise0.15_err": 1,
-            "pixel_eye": 12,
-            "pixel_eye_err": 5,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 359
+            "rhythm_noise0.05": 8,
+            "rhythm_noise0.05_err": 1,
+            "rhythm_noise0.15": 9,
+            "rhythm_noise0.15_err": 2
           },
           {
             "case_id": "repcount::stu6_63::0",
@@ -1279,11 +1206,7 @@
             "rhythm_noise0.05": 17,
             "rhythm_noise0.05_err": 0,
             "rhythm_noise0.15": 17,
-            "rhythm_noise0.15_err": 0,
-            "pixel_eye": 14,
-            "pixel_eye_err": 3,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 369
+            "rhythm_noise0.15_err": 0
           },
           {
             "case_id": "repcount::stu8_57::0",
@@ -1314,11 +1237,7 @@
             "rhythm_noise0.05": 7,
             "rhythm_noise0.05_err": 0,
             "rhythm_noise0.15": 7,
-            "rhythm_noise0.15_err": 0,
-            "pixel_eye": 3,
-            "pixel_eye_err": 4,
-            "pixel_eye_selected": "motion_cy",
-            "pixel_eye_samples": 129
+            "rhythm_noise0.15_err": 0
           }
         ],
         "distributions": {
@@ -1414,39 +1333,35 @@
           },
           "RhythmTracker@6Hz+noise0.05": {
             "n": 20,
-            "mae": 1.7,
-            "exact": 7,
+            "mae": 1.45,
+            "exact": 6,
             "obo": 12,
             "obo_pct": 60.0,
             "median": 1.0,
             "p90": 4,
-            "max": 9,
+            "max": 5,
             "histogram": {
-              "0": 7,
-              "1": 5,
+              "0": 6,
+              "1": 6,
               "2": 5,
               "3": 0,
-              "4": 1,
-              "5": 0,
-              "6": 1,
-              "7": 0,
-              "8": 0,
-              "9": 1
+              "4": 2,
+              "5": 1
             }
           },
           "RhythmTracker@6Hz+noise0.15": {
             "n": 20,
-            "mae": 3.45,
+            "mae": 3.5,
             "exact": 5,
-            "obo": 10,
-            "obo_pct": 50.0,
-            "median": 1.5,
+            "obo": 8,
+            "obo_pct": 40.0,
+            "median": 2.0,
             "p90": 11,
             "max": 14,
             "histogram": {
               "0": 5,
-              "1": 5,
-              "2": 3,
+              "1": 3,
+              "2": 5,
               "3": 1,
               "4": 2,
               "5": 0,
@@ -1456,34 +1371,9 @@
               "9": 1,
               "10": 0,
               "11": 1,
-              "12": 0,
-              "13": 1,
+              "12": 1,
+              "13": 0,
               "14": 1
-            }
-          },
-          "RhythmTracker@10Hz+crude-pixel-eye": {
-            "n": 20,
-            "mae": 4.05,
-            "exact": 1,
-            "obo": 4,
-            "obo_pct": 20.0,
-            "median": 3.5,
-            "p90": 6,
-            "max": 12,
-            "histogram": {
-              "0": 1,
-              "1": 3,
-              "2": 3,
-              "3": 3,
-              "4": 3,
-              "5": 2,
-              "6": 3,
-              "7": 0,
-              "8": 0,
-              "9": 0,
-              "10": 0,
-              "11": 1,
-              "12": 1
             }
           }
         }

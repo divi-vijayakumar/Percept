@@ -48,6 +48,12 @@ _DEFAULT_MODEL = {  # a sensible default model per provider (the demo forces the
     "claude": "claude-sonnet-5",
 }
 
+_JUDGE_TRANSPORT = {
+    "openrouter": "openrouter-chat-completions-inline-images",
+    "gemini": "gemini-generate-content-inline-images",
+    "claude": "anthropic-messages-image-blocks",
+}
+
 
 def _load_dotenv() -> None:
     """Best-effort: pull only API KEYS from a repo .env — never the demo-controlled PERCEPT_* config
@@ -68,8 +74,8 @@ def _apply_good_defaults(refractory_s: float, vision: str, model: str | None, eg
     os.environ.setdefault("PERCEPT_BENCH_BLOCKMAX_THRESHOLD", "0.20")
     os.environ["PERCEPT_GATE_REFRACTORY_S"] = str(refractory_s)   # one notification per episode
     # EGOMOTION (glasses / body-cam / any MOVING camera): subtract the global head/camera shift before
-    # measuring motion. Without this, a moving camera makes the whole frame "move" every tick and the gate
-    # escalates on ~every frame (measured 98% on real first-person footage; ego-comp drops it to ~30%).
+    # measuring the aligned residual with the selected stat. Without this, a moving camera makes the
+    # whole frame "move" every tick. The savings are mount-dependent; validate admission on target video.
     os.environ["PERCEPT_EGO_COMPENSATE"] = "true" if egomotion else "false"
     os.environ["PERCEPT_VISION_BACKEND"] = vision                 # force the chosen provider…
     os.environ["PERCEPT_VISION_MODEL"] = model or _DEFAULT_MODEL.get(vision, "")  # …and its model
@@ -78,7 +84,16 @@ def _apply_good_defaults(refractory_s: float, vision: str, model: str | None, eg
     os.environ.setdefault("PERCEPT_NO_BANNER", "1")
 
 
-def _recorder(core, goals, *, source: str, driver: str):
+def _recorder(
+    core,
+    goals,
+    *,
+    source: str,
+    driver: str,
+    vision: str | None = None,
+    model: str | None = None,
+    fps: float | None = None,
+):
     """Build the TraceRecorder for ``--trace``: full retention + the Gate's knobs in the manifest.
 
     The gate_config is the load-bearing part. ``percept.replay`` rebuilds a Gate from EXACTLY these
@@ -86,14 +101,55 @@ def _recorder(core, goals, *, source: str, driver: str):
     (``ReplayReport.gate_config_recorded is False``) — honest, but not a replay of this run.
     """
     from percept.replay import gate_config_of
-    from percept.tracing import RunTraceManifest, TracePolicy, TraceRecorder
+    from percept.tracing import (
+        ComponentIdentity,
+        RunTraceManifest,
+        TracePolicy,
+        TraceRecorder,
+        content_hash,
+    )
+
+    gate_config = gate_config_of(core.gate)
+    components = ()
+    profile_hash = None
+    source_profile_id = None
+    labels = {}
+    if driver == "run" and vision and model:
+        profile_payload = {
+            "entrypoint": "percept-watch",
+            "gate_config": gate_config,
+            "fps": fps,
+            "salience_stat": os.environ.get("PERCEPT_SALIENCE_STAT"),
+            "salience_threshold": os.environ.get("PERCEPT_BENCH_BLOCKMAX_THRESHOLD"),
+            "egomotion": os.environ.get("PERCEPT_EGO_COMPENSATE"),
+        }
+        profile_hash = content_hash(profile_payload)
+        source_profile_id = f"percept-watch-cli@{profile_hash[:8]}"
+        # This backend is the semantic condition judge. Call it ``judge`` so a trace that also has
+        # a detector/specialist vision component can select the latency path without ambiguity.
+        components = (ComponentIdentity(role="judge", name=vision, model=model),)
+        labels = {
+            "corpus": source,
+            "judge_transport": _JUDGE_TRANSPORT.get(vision, f"{vision}-adapter-default"),
+            "judge_dispatch": "async",
+            "observation_dispatch": "inline",
+            "judge_latency_censoring": "none",
+            # Scoped narrowly: only the async judgment lifecycle is producer-stamped. Other trace
+            # stages may still use callback-arrival clocks and are not release-latency evidence.
+            "judge_latency_clock": "producer_monotonic_v1",
+            "profile_payload": profile_payload,
+        }
 
     manifest = RunTraceManifest.create(
         source=source,
         driver=driver,
         goals=goals,
+        components=components,
         policy=TracePolicy(level="full", max_duration_s=None),
-        gate_config=gate_config_of(core.gate),
+        gate_config=gate_config,
+        profile_hash=profile_hash,
+        source_profile_id=source_profile_id,
+        labels=labels,
     )
     return TraceRecorder(manifest)
 
@@ -173,7 +229,15 @@ async def _run(args) -> int:
         core = Percept.create(vision=args.vision)
         for g in goals:
             core.add_goal(g)
-        rec = _recorder(core, goals, source="camera", driver="run")
+        rec = _recorder(
+            core,
+            goals,
+            source=args.source,
+            driver="run",
+            vision=args.vision,
+            model=os.environ.get("PERCEPT_VISION_MODEL"),
+            fps=args.fps,
+        )
         stream = percept.run(core, source=args.source, fps=args.fps,
                              on_trace=rec.tracer(), on_health=rec.health_sink())
     else:

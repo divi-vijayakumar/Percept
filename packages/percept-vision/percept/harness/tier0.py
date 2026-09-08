@@ -59,6 +59,7 @@ from .detectors import (
     DetectorBank,
     WakePolicy,
     detectors_for,
+    manifest_of,
     partition_by_capability,
     wake_score,
 )
@@ -450,16 +451,29 @@ def _nearest_rank_p95(scores: list[float]) -> float:
 
 
 def ego_residual_score(
-    prev_frame: Any, frame: Any, *, k: int = 4, region: Box | None = None
+    prev_frame: Any,
+    frame: Any,
+    *,
+    k: int = 4,
+    region: Box | None = None,
+    stat: str = "mean",
+    block_grid: tuple[int, int] = (8, 6),
 ) -> float:
-    """Ego-motion-compensated salience: the minimum mean-abs-diff over an integer-pixel global shift.
+    """Ego-motion-compensated salience after a mean-estimated integer global shift.
 
     Estimates and removes whole-frame translation (camera pan / head turn) by searching integer
-    shifts ``(dx, dy)`` in ``[-k, k]`` and taking the *residual* — the smallest MAD between ``prev``
-    shifted by ``(dx, dy)`` and ``frame`` over their overlap. A pure camera pan is explained by some
-    shift, so its residual is ``~0`` (no false escalate); a subject entering the frame cannot be
-    shifted away, so its residual stays high. Deterministic and O(k**2 * pixels); the ``(0, 0)`` shift
-    equals the uncompensated mean, so the residual is always ``<=`` the full-frame :func:`motion_score`.
+    shifts ``(dx, dy)`` in ``[-k, k]`` and choosing the shift with the smallest whole-frame MAD.
+    That mean-based estimate is independent of the goal and therefore remains a statement about
+    camera motion rather than about whichever local block happens to be active. The already-aligned
+    residual is then summarized with ``stat`` (``mean`` / ``block_max`` / ``p95``), on the same value
+    scale as :func:`motion_score`. A pure camera pan is explained by some shift, so every residual
+    statistic is ``~0``; localized subject motion remains localized after alignment and can therefore
+    clear a block-stat threshold. Deterministic and O(k**2 * pixels).
+
+    The default ``stat="mean"`` path is byte-for-byte the legacy result. Its ``(0, 0)`` candidate
+    equals the uncompensated mean, so that result is always ``<=`` the full-frame mean
+    :func:`motion_score`. Block statistics intentionally make no such cross-stat comparison: they
+    live on their own calibrated scales and must be compared to their own cutoffs.
 
     ``region`` (the watch-out zone) restricts **what is measured**, never **what is estimated**. The
     shift search still runs over the whole frame, because a pan is a whole-frame property: a zone
@@ -469,13 +483,14 @@ def ego_residual_score(
     movement outside the zone can no longer escalate the goal. ``region=None`` (the default) is the
     whole-frame path, byte-for-byte unchanged. A zone that misses the winning shift's overlap
     entirely -> ``0.0`` (nothing in-zone to measure), matching :func:`_motion_score_region`.
+    ``block_grid`` has the same meaning and validation as on :func:`motion_score`.
 
     Without ``region`` this silently discarded the zone: the gate's ego branch returns before its
     localized branch, so a goal carrying BOTH ego compensation and a watch-out zone escalated on
     motion entirely outside the zone, while still reporting the zone to the caller.
 
     ``prev_frame is None`` -> ``0.0`` (no predecessor). Mirrors the JS ``egoResidualScore`` bit-for-bit
-    (integer overlap sums, integer overlap denominator).
+    (mean-estimated shift, then identical aligned-residual partitioning).
     """
     if prev_frame is None:
         return 0.0
@@ -523,29 +538,43 @@ def ego_residual_score(
                 best_shift = (dx, dy)
     if best is None or best_shift is None:
         return 0.0
-    if region is None:
+    if stat == "mean" and region is None:
         return best
-    return _ego_region_residual(a, b, grid_a, grid_b, region, *best_shift)
+    return _ego_aligned_residual(
+        a,
+        b,
+        region=region,
+        stat=stat,
+        block_grid=block_grid,
+        dx=best_shift[0],
+        dy=best_shift[1],
+    )
 
 
-def _ego_region_residual(
+def _ego_aligned_residual(
     a: Frame,
     b: Frame,
-    grid_a: Any,
-    grid_b: Any,
-    region: Box,
+    *,
+    region: Box | None,
+    stat: str,
+    block_grid: tuple[int, int],
     dx: int,
     dy: int,
 ) -> float:
-    """The residual of the ALREADY-CHOSEN shift ``(dx, dy)``, measured over ``region ∩ overlap``.
+    """Summarize an ALREADY-ALIGNED residual over ``region ∩ overlap`` using ``stat``.
 
     Two rectangles in ``frame`` (``b``) coordinates: the overlap the shift leaves behind, and the
     watch-out zone. Their intersection is the only place the zone's promise ("movement elsewhere is
-    ignored") and the shift's validity ("both frames have a pixel here") both hold. Integer sum over
-    an integer denominator, exactly like the unmasked path, so numpy and stdlib agree and so does JS.
+    ignored") and the shift's validity ("both frames have a pixel here") both hold. Cropping that
+    intersection into two same-size frames lets :func:`motion_score` be the single implementation of
+    mean / block_max / p95 partition semantics. The shift was chosen globally before this function;
+    a local block can affect the residual statistic but can never choose the camera transform.
     """
     w, h = a.w, a.h
-    rx0, ry0, rx1, ry1 = _region_bounds(region, w, h)
+    if region is None:
+        rx0, ry0, rx1, ry1 = 0, 0, w, h
+    else:
+        rx0, ry0, rx1, ry1 = _region_bounds(region, w, h)
     # The overlap rectangle in frame coordinates: x in [fx0, fx0+ow), y in [fy0, fy0+oh).
     ox0 = dx if dx > 0 else 0
     oy0 = dy if dy > 0 else 0
@@ -560,21 +589,17 @@ def _ego_region_residual(
     # leave standing in a denominator.
     if mw <= 0 or mh <= 0:
         return 0.0
-    npx = mw * mh
-    if grid_a is not None:
-        fb = grid_b[my0:my1, mx0:mx1]
-        pa = grid_a[my0 - dy:my1 - dy, mx0 - dx:mx1 - dx]
-        total = int(_np.abs(pa - fb).sum())
-    else:
-        total = 0
-        for fy in range(my0, my1):
-            fb_base = fy * w
-            pa_base = (fy - dy) * w
-            for fx in range(mx0, mx1):
-                pav = a.pixels[pa_base + (fx - dx)]
-                pbv = b.pixels[fb_base + fx]
-                total += pav - pbv if pav >= pbv else pbv - pav
-    return total / (npx * 255.0)
+    aligned_prev: list[int] = []
+    aligned_cur: list[int] = []
+    for fy in range(my0, my1):
+        fb_base = fy * w
+        pa_base = (fy - dy) * w
+        for fx in range(mx0, mx1):
+            aligned_prev.append(a.pixels[pa_base + (fx - dx)])
+            aligned_cur.append(b.pixels[fb_base + fx])
+    prev_crop = Frame(w=mw, h=mh, pixels=tuple(aligned_prev))
+    cur_crop = Frame(w=mw, h=mh, pixels=tuple(aligned_cur))
+    return motion_score(prev_crop, cur_crop, stat=stat, block_grid=block_grid)
 
 
 # ---------------------------------------------------------------------------
@@ -1010,19 +1035,16 @@ def _condition_motion(
 
     The default (``salience_stat == "mean"``, no ``region_hint``, no ``ego_compensate``) returns the
     precomputed full-frame ``full_motion`` unchanged — byte-for-byte the pre-mode path. Otherwise ego
-    compensation takes precedence; else the localized block statistic (optionally masked to
-    ``region_hint``).
+    compensation aligns the frames before applying that same statistic (optionally masked to
+    ``region_hint``); the non-ego branch applies it directly.
 
-    **Ego composes with the zone, not with the block statistic.** The ego branch passes
-    ``region_hint`` through, because a watch-out zone is a promise that movement elsewhere is
-    ignored, and turning on ego compensation must not quietly convert the goal back into a
-    whole-frame watch (it used to: the residual was always whole-frame while the condition still
-    carried and reported its zone). Ego + ``block_max``/``p95`` composition stays deferred — an ego
-    goal gets the region-masked residual, not the localized block statistic; that deferral is pinned
-    by ``test_an_ego_goal_falls_back_to_the_whole_frame_and_loses_its_localization``.
+    Ego alignment and the salience statistic are deliberately separate operations: the global shift
+    is estimated with whole-frame mean residual, then the aligned residual is summarized with the
+    condition's selected statistic. That keeps ``block_max@0.20`` and ``p95@0.15`` on the scales their
+    compiled thresholds name instead of silently comparing a mean residual to a block cutoff.
     """
     if c.ego_compensate:
-        return ego_residual_score(prev, f, region=c.region_hint)
+        return ego_residual_score(prev, f, region=c.region_hint, stat=c.salience_stat)
     if c.salience_stat != "mean" or c.region_hint is not None:
         return motion_score(prev, f, region=c.region_hint, stat=c.salience_stat)
     return full_motion
@@ -2005,6 +2027,7 @@ class GatedWatchLoop:
                 # is fed to the brain as a distinct occurrence (edge proposes · brain counts), firing per the
                 # goal's accumulate.fire_when without spending a vision call.
                 count_boundary = getattr(self._core, "perceive_boundary", None)
+                candidate_proposals: list[tuple[str, Boundary]] = []
                 for goal_id, bank in self._banks.items():
                     # feed every channel the loop has: motion (always) + the raw frame (for frame-backed
                     # detectors like pose) + audio energy (for acoustic-onset).
@@ -2015,10 +2038,21 @@ class GatedWatchLoop:
                         energy=energy,
                     ):
                         report.boundaries.append((goal_id, b))
-                        if count_boundary is not None:
+                        if manifest_of(b.detector).route == "admission":
+                            if b.kind == "candidate":
+                                candidate_proposals.append((goal_id, b))
+                        elif count_boundary is not None:
                             fired = count_boundary(goal_id, t=b.t)
                             if fired is not None:
                                 report.fire_events.append(fired)
+                candidate_goal_ids = self._gate.admit_external(
+                    [goal_id for goal_id, _ in candidate_proposals], ts=item.ts
+                ) if candidate_proposals else ()
+                for goal_id in candidate_goal_ids:
+                    report.admission_by_goal[goal_id] = report.admission_by_goal.get(goal_id, 0) + 1
+                    report.admission_by_cause["candidate"] = (
+                        report.admission_by_cause.get("candidate", 0) + 1
+                    )
                 # The rhythm sense: MEASURE this frame's channels and let the brain count reps. Runs
                 # on every frame at native rate (never gated, never judged) — the count comes from
                 # the signal, so it is bounded by the frame rate, not by judgment density.
@@ -2052,7 +2086,7 @@ class GatedWatchLoop:
                             ))
                     for goal_id in self._rhythm.goal_ids:
                         report.rhythm_counts[goal_id] = self._rhythm.count(goal_id)
-                if decision.escalate:
+                if decision.escalate or candidate_goal_ids:
                     report.escalations += 1
                     report.vision_calls += 1
                     if self._funnel is not None:
@@ -2061,13 +2095,14 @@ class GatedWatchLoop:
                     accepts_goal_ids = _accepts_keyword(
                         self._core.perceive_judged, "goal_ids"
                     )
+                    admitted_goal_ids = tuple(dict.fromkeys((*decision.goal_ids, *candidate_goal_ids)))
                     if accepts_goal_ids:
-                        kwargs["goal_ids"] = decision.goal_ids
+                        kwargs["goal_ids"] = admitted_goal_ids
                     fired = await self._core.perceive_judged(
                         item.frame, self._source, **kwargs
                     )
                     if not accepts_goal_ids:
-                        admitted = frozenset(decision.goal_ids)
+                        admitted = frozenset(admitted_goal_ids)
                         fired = [
                             event
                             for event in (fired or ())

@@ -900,6 +900,18 @@ def overdue_text(goal) -> str:  # mirrors agent._overdue_text
 #: occurrence and not a re-report.
 INCIDENT_MERGE_WINDOW_S: float = 0.7
 
+#: Absolute provider-enumeration safety rail for an explicit ``each_event`` Watch.  A temporal
+#: window containing more events than this is not a trustworthy occurrence list: delivering a
+#: prefix would silently turn provider ordering into notification priority, while delivering all of
+#: it lets one malformed reply create a notification flood.  The whole list therefore fails closed.
+#:
+#: A Watch that can legitimately contain more occurrences in one evidence window may raise the
+#: bound with ``Goal.state["each_event_max_events_per_window"]``.  There is deliberately no
+#: disable value: this is the final bounded-output rail after provider parsing.  Raising it trades a
+#: larger worst-case notification burst for recall on unusually dense event streams, and the
+#: ``event_chain_window_overflow`` metric/log makes every suppression attributable.
+EACH_EVENT_MAX_EVENTS_PER_WINDOW: int = 16
+
 #: Backstop bound on the merge's per-key memory, mirroring the gate's own "cannot grow without
 #: bound" discipline (ADR-001 §9). Stamps older than the window are pruned on every delivery, so in
 #: real time the map holds only the keys that fired within the last window; this cap covers the
@@ -1339,18 +1351,77 @@ class BehaviorExecutor:
             )
         aligned.sort(key=lambda item: (item[1], item[2], item[0].label))
 
+        configured_cap = goal.state.get(
+            "each_event_max_events_per_window",
+            EACH_EVENT_MAX_EVENTS_PER_WINDOW,
+        )
+        if isinstance(configured_cap, bool):
+            max_events = EACH_EVENT_MAX_EVENTS_PER_WINDOW
+        else:
+            try:
+                max_events = max(1, int(configured_cap))
+            except (TypeError, ValueError, OverflowError):
+                max_events = EACH_EVENT_MAX_EVENTS_PER_WINDOW
+        if len(aligned) > max_events:
+            self.metrics.incr(f"{metric}.event_chain_window_overflow")
+            log(
+                get_logger("percept.behavior"),
+                "event_chain.window_overflow",
+                goal_id=goal.id,
+                events=len(aligned),
+                max_events=max_events,
+            )
+            return []
+
+        # A provider list used to bypass the phase-owned occurrence lifecycle completely: every
+        # timestamp the model invented became a new episode.  On a sliding window, a model that
+        # restated one continuing action at the latest visible timestamp could therefore emit one
+        # notification per judgment forever.
+        #
+        # Require IDENTITY evidence when an occurrence is already open.  An overlapping event from
+        # history anchors this judgment's timeline; novel siblings in that SAME list are then
+        # genuinely new according to one coherent enumeration and remain observable however close
+        # together they are.  With no anchor at all, the list is indistinguishable from the provider
+        # moving the timestamp of the already-open occurrence, so it is folded as a continuation
+        # until a sustained ``pre`` phase closes the episode.  This deliberately risks missing a
+        # rapid event seen only in a later, disjoint judgment with no intervening pre boundary.  There
+        # is no fact in the Verdict stream that can distinguish that event from timestamp drift; the
+        # metric/log below makes the precision-over-recall choice explicit instead of guessing with
+        # a wall-clock refractory.
+        history = tuple(state.recent_events)
+        history_matches = [
+            any(
+                self._same_clip_occurrence(prior, source_start_t, source_end_t)
+                for prior in history
+            )
+            for _event, source_start_t, source_end_t in aligned
+        ]
+        if (
+            aligned
+            and state.episode_id is not None
+            and not any(history_matches)
+        ):
+            self.metrics.incr(f"{metric}.event_chain_unanchored_continuation_suppressed")
+            log(
+                get_logger("percept.behavior"),
+                "event_chain.unanchored_continuation_suppressed",
+                goal_id=goal.id,
+                events=len(aligned),
+                prior_events=len(history),
+            )
+            return []
+
         fired_events: list[Fired] = []
         non_chain_program = replace(
             program,
             key=replace(program.key, each_event=False),
         )
-        # The delivery-merge anchor for this ENTIRE list, pinned before the first event is delivered.
-        # Occurrences the provider enumerated in ONE look are its explicit testimony that they are
-        # separate — a look that resolves three actions 0.3s apart is not the same action re-reported —
-        # so they are compared only against what was delivered BEFORE this judgment, never against each
-        # other. The merge still applies across judgments, which is where a sliding window restating a
-        # continuing action produces the duplicate this guard exists for.
-        merge_anchor = self._merge_anchors.get(base_key)
+        # Clip events now own source-aligned semantic identity above, so the coarse delivery timer
+        # must not second-guess them.  In particular, a newly appended event in a window that also
+        # re-identifies prior history is a distinct rapid occurrence even when it is <0.7s later.
+        # Passing ``None`` disables only that timer comparison for these already-governed events;
+        # ordinary level/rising-edge Watches retain the delivery merge unchanged.
+        merge_anchor = None
         for event, source_start_t, source_end_t in aligned:
             if any(
                 self._same_clip_occurrence(

@@ -1205,14 +1205,14 @@ class EgoResidualBoundaryTests(unittest.TestCase):
             Frame(w=self.w, h=self.h, pixels=tuple(cur_px)),
         )
 
-    def test_an_ego_goal_falls_back_to_the_whole_frame_and_loses_its_localization(self):
-        # Documented deferral, pinned so a future composition change is a deliberate one: the ego
-        # branch returns before the localized branch, so an ego goal cannot also be a BLOCK goal.
-        # (Ego + REGION is a different composition and now works — see the test below. Region is
-        # not block_max, and only the block statistic stays deferred.)
+    def test_an_ego_goal_keeps_its_selected_residual_statistic_and_threshold_scale(self):
+        # The global shift is estimated with mean residual, but the ALIGNED residual is summarized
+        # with the condition's stat. That separation is the configuration contract: a condition
+        # compiled as block_max@0.20 must never compare a mean-scale number to the block cutoff.
         prev, cur = self._ego_localized_pair()
         self.assertEqual(motion_score(prev, cur, stat="block_max"), 1.0)
         self.assertAlmostEqual(ego_residual_score(prev, cur), 0.015625, places=12)
+        self.assertEqual(ego_residual_score(prev, cur, stat="block_max"), 1.0)
 
         def _gate(**overrides):
             spec = WatchSpec(conditions=[WatchCondition(
@@ -1223,7 +1223,13 @@ class EgoResidualBoundaryTests(unittest.TestCase):
             return gate.evaluate(cur, ts=1.0).escalate
 
         self.assertTrue(_gate(salience_stat="block_max"))
-        self.assertFalse(_gate(salience_stat="block_max", ego_compensate=True))
+        self.assertTrue(_gate(salience_stat="block_max", ego_compensate=True))
+
+    def test_ego_block_stats_still_suppress_a_pure_pan(self):
+        # Applying a localizing stat happens AFTER global alignment; it must not reintroduce the
+        # camera pan that alignment explained away.
+        self.assertEqual(ego_residual_score(self.prev, self.pan4, k=4, stat="block_max"), 0.0)
+        self.assertEqual(ego_residual_score(self.prev, self.pan4, k=4, stat="p95"), 0.0)
 
     def _out_of_zone_pair(self) -> tuple[Frame, Frame]:
         """A 6x6 patch in the BOTTOM-RIGHT quadrant — outside a top-left watch-out zone."""

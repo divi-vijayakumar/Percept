@@ -231,6 +231,14 @@ class WebhookSink:
         self.max_attempt_age_s = max_attempt_age_s
         self.signing_secret = signing_secret.encode("utf-8") if isinstance(signing_secret, str) else signing_secret
         self.dead_letter = dead_letter
+        # Durable delivery stores only this opaque route handle.  In particular, the outbox never
+        # receives the URL, authorization headers, or signing secret.  A digest of the endpoint is
+        # stable across process restarts and lets the runtime refuse to replay a row through a
+        # differently configured webhook without turning the persistence layer into a credential
+        # store.
+        self.outbox_sink_config_ref = (
+            "webhook-" + hashlib.sha256(url.encode("utf-8")).hexdigest()
+        )
 
     def _headers(self, body: bytes) -> dict[str, str]:
         headers = dict(self.headers)

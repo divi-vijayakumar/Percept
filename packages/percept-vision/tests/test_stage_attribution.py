@@ -135,6 +135,7 @@ def build_trace(
             trace_id=tid,
             source_ts=float(i),
             observed_wall_ts=arrival,
+            goal_ids=("watch",),
             **window,
         )
         if stop_after == "admission":
@@ -241,11 +242,20 @@ class TestComposition(unittest.TestCase):
         funnel = stage_funnel(self.records, manifest=_manifest())
         self.assertEqual(funnel.counts["observed"], summary.observed)
         self.assertEqual(funnel.counts["admitted"], summary.admitted)
+        self.assertEqual(
+            funnel.counts["judge_dispatch_opportunities"],
+            summary.judge_dispatch_opportunities,
+        )
         self.assertEqual(funnel.counts["judge_started"], summary.judge_started)
         self.assertEqual(funnel.counts["judge_completed"], summary.judge_completed)
         self.assertEqual(funnel.counts["fired"], summary.incidents)
         self.assertEqual(funnel.counts["observed"], 9)
         self.assertEqual(funnel.counts["admitted"], 3)
+        self.assertEqual(funnel.counts["admitted_evidence_units"], 3)
+        self.assertEqual(funnel.counts["judge_dispatch_opportunities"], 3)
+        self.assertEqual(funnel.counts["provider_calls"], 3)
+        self.assertEqual(funnel.units["admitted_evidence_units"], "evidence_units")
+        self.assertEqual(funnel.units["provider_calls"], "provider_calls")
         self.assertEqual(funnel.counts["fired"], 3)
 
     def test_fired_counts_delivered_events_not_gate_fires(self):

@@ -72,6 +72,20 @@ STATE_SPECS = tuple(s for s in REGISTRY if s.path.startswith("Goal.state."))
 LEGAL_OWNER_LAYERS = frozenset(PRECEDENCE) | {"Gate"}
 
 
+def _settings_tree(settings: Any) -> dict[str, Any]:
+    """Every compiled ``Settings`` value, as a plain nested dict.
+
+    ``Settings`` is mostly section dataclasses (``gate``, ``episodes``, …) but not entirely:
+    ``env_rejections`` is a plain tuple, and ``vars()`` on a tuple raises. Descend only into the
+    fields that are themselves sections, and carry the rest through as leaves so the fingerprint
+    still covers them.
+    """
+    return {
+        name: dict(vars(val)) if dataclasses.is_dataclass(val) else val
+        for name, val in sorted(vars(settings).items())
+    }
+
+
 # ============================================================================================
 # Shared helpers
 # ============================================================================================
@@ -235,9 +249,7 @@ def sv_0_7(cases: list[dict]) -> dict[str, Any]:
         if comp_a is not None:
             fp = content_hash(
                 {
-                    "settings": {
-                        sec: dict(vars(val)) for sec, val in vars(comp_a.settings).items()
-                    },
+                    "settings": _settings_tree(comp_a.settings),
                     "state": state_a,
                     "watchspec": dict(comp_a.watchspec_kwargs),
                     "plan_mode": comp_a.plan_mode,
@@ -473,12 +485,20 @@ DETERMINISM_PLANS: tuple[dict[str, Any], ...] = (
 
 #: Executed in a FRESH interpreter. Prints one JSON line of compile digests.
 _SUBPROCESS_SRC = r"""
-import json, sys
+import dataclasses, json, sys
 from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
 from percept.resolver import ConfigResolver
 from percept.runtime_compiler import runtime_compile
 from percept.tracing import content_hash
+
+# Must stay byte-for-byte equivalent to _settings_tree() in the parent — the cross-process
+# determinism check compares hashes produced by the two, so they have to walk Settings the same way.
+def _settings_tree(settings):
+    return {
+        name: dict(vars(val)) if dataclasses.is_dataclass(val) else val
+        for name, val in sorted(vars(settings).items())
+    }
 
 specs = json.loads(sys.argv[1])
 out = []
@@ -499,7 +519,7 @@ for spec in specs:
         "goal_id": c.goal.id,
         "state_hash": content_hash(c.goal.state),
         "settings_hash": content_hash(
-            {s: dict(vars(v)) for s, v in sorted(vars(c.settings).items())}
+            _settings_tree(c.settings)
         ),
         "watchspec_hash": content_hash(dict(c.watchspec_kwargs)),
     })
@@ -528,7 +548,7 @@ def _compile_digests(specs) -> list[dict[str, str]]:
                 "goal_id": c.goal.id,
                 "state_hash": content_hash(c.goal.state),
                 "settings_hash": content_hash(
-                    {s: dict(vars(v)) for s, v in sorted(vars(c.settings).items())}
+                    _settings_tree(c.settings)
                 ),
                 "watchspec_hash": content_hash(dict(c.watchspec_kwargs)),
             }
@@ -883,9 +903,12 @@ def sv_0_9() -> dict[str, Any]:
         blank_reasons = [k for k, o in provenance.items() if not str(o.reason).strip()]
 
         # Compiled Settings leaves.
+        # Only the section dataclasses carry knobs. Plain fields on Settings (env_rejections is a
+        # diagnostic tuple) are not tunables and have no provenance entry to find.
         settings_leaves = {
             f"Settings.{sec}.{name}": val
             for sec, secval in vars(compiled.settings).items()
+            if dataclasses.is_dataclass(secval)
             for name, val in vars(secval).items()
         }
         settings_unattributed = sorted(k for k in settings_leaves if k not in effective)

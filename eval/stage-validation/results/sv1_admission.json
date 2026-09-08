@@ -3,7 +3,7 @@
   "stage": "Stage-1 ADMISSION",
   "runtime": {
     "percept_version": "1.0.0",
-    "percept_path": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept",
+    "percept_path": "/private/tmp/percept-launch/eval-venv/lib/python3.12/site-packages/percept",
     "python": "3.12.8",
     "provider_calls": 0,
     "network": false
@@ -10918,7 +10918,7 @@
       "name": "Dwell under a monotonous signal \u2014 does the interval hold?",
       "verdict": "FAIL",
       "checks_total": 20,
-      "checks_failed": 7,
+      "checks_failed": 4,
       "checks": [
         {
           "case": "M1.constant-at-enter",
@@ -11043,22 +11043,22 @@
           "case": "M7.live-coast-oscillating",
           "assertion": "exactly one enter over the whole positive",
           "expected": 1,
-          "actual": 40,
-          "ok": false
+          "actual": 1,
+          "ok": true
         },
         {
           "case": "M7.live-coast-oscillating",
           "assertion": "zero mid-positive exits",
           "expected": 0,
-          "actual": 39,
-          "ok": false
+          "actual": 0,
+          "ok": true
         },
         {
           "case": "M7.live-coast-oscillating",
           "assertion": "one stable interval id",
           "expected": 1,
-          "actual": 40,
-          "ok": false
+          "actual": 1,
+          "ok": true
         }
       ],
       "measurements": {
@@ -11113,20 +11113,18 @@
           },
           "M7_oscillating_coasting_watch": {
             "frames": 60,
-            "entered": 40,
-            "updated": 20,
-            "exited": 40,
-            "mid_exits": 39,
+            "entered": 1,
+            "updated": 59,
+            "exited": 1,
+            "mid_exits": 0,
             "exit_reasons": {
-              "admission_changed": 39,
               "end_of_stream": 1
             },
             "admission_causes": {
-              "coast": 41,
-              "motion": 59
+              "coast": 61
             },
-            "interval_ids": 40,
-            "re_enters": 39
+            "interval_ids": 1,
+            "re_enters": 0
           }
         }
       },
@@ -11137,9 +11135,9 @@
     {
       "test_id": "SV-1.7",
       "name": "Per-Watch attribution \u2014 N Watches, one source, zero cross-dispatch",
-      "verdict": "PASS",
+      "verdict": "FAIL",
       "checks_total": 11,
-      "checks_failed": 0,
+      "checks_failed": 2,
       "checks": [
         {
           "case": "0.fixture",
@@ -11285,7 +11283,7 @@
               "interest.entered",
               1,
               "tier0_motion",
-              0.39215686274509803
+              0.7843137254901961
             ],
             [
               "w-left",
@@ -11299,7 +11297,7 @@
               "interest.exited",
               2,
               "signal_lost",
-              0.39215686274509803
+              0.7843137254901961
             ],
             [
               "w-left",
@@ -11313,7 +11311,7 @@
               "interest.entered",
               3,
               "tier0_motion",
-              0.39215686274509803
+              0.7843137254901961
             ],
             [
               "w-right",
@@ -11327,7 +11325,7 @@
               "interest.updated",
               4,
               "tier0_motion",
-              0.39215686274509803
+              0.7843137254901961
             ],
             [
               "w-left",
@@ -11348,7 +11346,7 @@
               "interest.exited",
               5,
               "signal_lost",
-              0.39215686274509803
+              0.7843137254901961
             ],
             [
               "w-left",
@@ -11400,7 +11398,7 @@
               0.7843137254901961
             ]
           ],
-          "ok": true
+          "ok": false
         },
         {
           "case": "A.attribution",
@@ -11421,8 +11419,24 @@
           "case": "A.attribution",
           "assertion": "each event carries its OWN Watch's threshold",
           "expected": [],
-          "actual": [],
-          "ok": true
+          "actual": [
+            [
+              "w-any",
+              0.1,
+              0.2
+            ],
+            [
+              "w-left",
+              0.1,
+              0.2
+            ],
+            [
+              "w-right",
+              0.1,
+              0.2
+            ]
+          ],
+          "ok": false
         },
         {
           "case": "B.no-cross-dispatch",
@@ -11527,7 +11541,7 @@
             "interest.entered",
             1,
             "tier0_motion",
-            0.39215686274509803
+            0.7843137254901961
           ],
           [
             "w-left",
@@ -11541,7 +11555,7 @@
             "interest.exited",
             2,
             "signal_lost",
-            0.39215686274509803
+            0.7843137254901961
           ],
           [
             "w-left",
@@ -11555,7 +11569,7 @@
             "interest.entered",
             3,
             "tier0_motion",
-            0.39215686274509803
+            0.7843137254901961
           ],
           [
             "w-right",
@@ -11569,7 +11583,7 @@
             "interest.updated",
             4,
             "tier0_motion",
-            0.39215686274509803
+            0.7843137254901961
           ],
           [
             "w-left",
@@ -11590,7 +11604,7 @@
             "interest.exited",
             5,
             "signal_lost",
-            0.39215686274509803
+            0.7843137254901961
           ],
           [
             "w-left",
@@ -12026,7 +12040,7 @@
   "verdicts": {
     "SV-1.4": "PASS",
     "SV-1.5": "FAIL",
-    "SV-1.7": "PASS",
+    "SV-1.7": "FAIL",
     "CHAR": "PASS"
   }
 }

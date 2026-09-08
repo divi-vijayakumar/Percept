@@ -163,7 +163,7 @@ takes effect.
 | `PoseOpenness.min_height` | float | `0.6` | 0.0 – inf | — | ✅ | low | inner MotionPeriodicity floor on the openness waveform. |
 | `PoseOpenness.refractory_s` | float | `0.4` | 0.0 – inf | — | ✅ | low | detector-level debounce between counted reps. |
 | `PoseOpenness.rel_drop` | float | `0.4` | 0.0 – 1.0 | — | ✅ | low | inner MotionPeriodicity descent-confirmation fraction. |
-| `Settings.edge.ego_compensate` | bool | `false` | — | `PERCEPT_EGO_COMPENSATE` | — | medium | remove global camera motion before diffing. |
+| `Settings.edge.ego_compensate` | bool | `false` | — | `PERCEPT_EGO_COMPENSATE` | — | medium | moving cameras only: estimate and remove global translation, then summarize the aligned residual with salience_stat so its per-stat threshold remains in the correct unit. |
 | `Settings.edge.motion_gate` | float | `0.1` | 0.0 – 1.0 | `PERCEPT_MOTION_GATE` | ✅ | medium | mean-stat motion escalation cutoff. |
 | `Settings.edge.motion_gate_block_max` | float | `0.2` | 0.0 – 1.0 | `PERCEPT_MOTION_GATE_BLOCK_MAX` | ✅ | medium | block_max-scale escalation cutoff (calibrated: 0.20 -> 0.85 recall). |
 | `Settings.edge.motion_gate_p95` | float | `0.15` | 0.0 – 1.0 | `PERCEPT_MOTION_GATE_P95` | ✅ | medium | p95-scale escalation cutoff (calibrated: 0.15 -> 0.79 recall). |

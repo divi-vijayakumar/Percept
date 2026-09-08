@@ -300,6 +300,17 @@ EGO_PAIRS = [
     {"w": 13, "h": 11, "a": _NDA, "b": _NDB, "k": 3,
      "region": {"x": 0.5, "y": 0.0, "w": 0.5, "h": 1.0}},
 ]
+
+# Ego/stat COMPOSITION lives beside (not inside) EGO_PAIRS so the historical ego-search mutation
+# matrix remains a pure test of shift estimation. These vectors prove the second operation: after
+# the mean-based global shift is fixed, both runtimes summarize the aligned residual on the selected
+# block-stat scale.
+EGO_STAT_PAIRS = [
+    {"w": 48, "h": 36, "a": _GRAD, "b": _pan(_GRAD, 48, 36, 2), "k": 4,
+     "stat": "block_max"},  # pure pan remains zero after block summarization
+    {"w": 48, "h": 36, "a": _GRAD, "b": _patch(_GRAD, 48, 10, 10, 6, 6, 255), "k": 4,
+     "stat": "block_max"},  # localized aligned residual remains localized
+]
 # --- the GATE: same media + same authored WatchSpec -> the same ADMITTED FRAMES ------------------
 # Everything above compares a FUNCTION. A deployment does not buy a number, it buys a judge call, and
 # the decision to buy one runs through per-goal cadence and through what an APPLIED-but-empty spec
@@ -471,6 +482,7 @@ def main():
         "framePairs": [{"w": w, "h": h, "a": a, "b": b} for (w, h, a, b) in FRAME_PAIRS],
         "saliencePairs": SALIENCE_PAIRS,
         "egoPairs": EGO_PAIRS,
+        "egoStatPairs": EGO_STAT_PAIRS,
         "wakeCases": WAKE_CASES,
         "gateCases": [
             {
@@ -517,6 +529,13 @@ def main():
             region=_box(c.get("region")),
         )
         for c in EGO_PAIRS
+    ]
+    py_ego_stat = [
+        ego_residual_score(
+            (c["w"], c["h"], tuple(c["a"])), (c["w"], c["h"], tuple(c["b"])),
+            k=c["k"], stat=c["stat"], block_grid=tuple(c.get("blockGrid") or (8, 6)),
+        )
+        for c in EGO_STAT_PAIRS
     ]
     py_wake = [wake_score(c["signals"], c.get("policy")) for c in WAKE_CASES]
     py_gate = [py_gate_admissions(case) for case in GATE_CASES]
@@ -574,6 +593,9 @@ def main():
     for i, (ps, jsc) in enumerate(zip(py_ego, js["egoScores"])):
         roi = "+roi" if EGO_PAIRS[i].get("region") else ""
         checks.append(bit_identical(f"ego-residual[{i}]{roi} (k={EGO_PAIRS[i]['k']})", ps, jsc))
+    for i, (ps, jsc) in enumerate(zip(py_ego_stat, js["egoStatScores"])):
+        stat = EGO_STAT_PAIRS[i]["stat"]
+        checks.append(bit_identical(f"ego-residual-stat[{i}] {stat}", ps, jsc))
     for i, (ps, jsc) in enumerate(zip(py_wake, js["wakeScores"])):
         weights = sorted((WAKE_CASES[i].get("policy") or {}).get("weights", {}))
         label = f"wake-score[{i}] {sorted(WAKE_CASES[i]['signals'])} x {weights}"

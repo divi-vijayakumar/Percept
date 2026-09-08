@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from percept.adapters import Box, Goal, Observation
+from percept.adapters import Box, Goal, Observation, Verdict
 from percept.agent import Percept
 from percept.consent import ActionRecord
 from percept.persistence import InMemoryPersistence, SqlitePersistence
@@ -82,6 +82,66 @@ class TestSnapshotRestore(unittest.TestCase):
     def test_load_state_false_when_empty(self):
         b = Percept.create(discover_plugins=False)
         self.assertFalse(b.load_state(InMemoryPersistence()))
+
+    def test_corrupt_v2_deadline_rolls_back_every_populated_store(self):
+        destination = _populated_agent()
+        destination.gate.evaluate(("g1", "e1"), Verdict(True, 0.99, "seen"))
+        binding = object()
+        destination._watch_runtime_bindings["g1"] = (binding, None)
+        destination._watch_runtime_keys["g1"] = "application"
+        destination._judge_bindings["g1"] = binding
+        destination._judge_binding_tokens["g1"] = id(binding)
+        destination._judge_requesting_goal_ids.add("g1")
+        destination._audio_judge_bindings["g1"] = binding
+        destination._audio_judge_binding_tokens["g1"] = binding
+        destination._watchplan_applied_hashes = {"application": ("g1", binding)}
+        destination._restore_health_log.append(("existing", {"preserve": True}))
+        goals_before = destination.goals.snapshot()
+        entities_before = destination.graph.snapshot()
+        gate_before = destination.gate.snapshot()
+        action_log_before = destination.action_log
+        action_records_before = destination.action_log.entries()
+        watch_runtime_before = dict(destination._watch_runtime_bindings)
+        watch_keys_before = dict(destination._watch_runtime_keys)
+        judge_bindings_before = dict(destination._judge_bindings)
+        judge_tokens_before = dict(destination._judge_binding_tokens)
+        judge_requesting_before = set(destination._judge_requesting_goal_ids)
+        audio_bindings_before = dict(destination._audio_judge_bindings)
+        audio_tokens_before = dict(destination._audio_judge_binding_tokens)
+        ledger_before = dict(destination._watchplan_applied_hashes)
+        restore_health_before = list(destination._restore_health_log)
+
+        source = Percept.create(discover_plugins=False, clock=lambda: 100.0)
+        deadline = Goal(
+            id="deadline",
+            condition="the package has arrived",
+            say="still waiting",
+            state={"rearm": "deadline", "deadline_after_s": 60.0},
+        )
+        source.add_goal(deadline)
+        corrupt = source.snapshot()
+        corrupt["goals"][0]["goal"]["state"]["deadline_at_epoch"] = "not-an-epoch"
+
+        with self.assertRaises(TypeError):
+            destination.restore(corrupt)
+
+        self.assertEqual(destination.goals.snapshot(), goals_before)
+        self.assertEqual(destination.graph.snapshot(), entities_before)
+        self.assertEqual(destination.gate.snapshot(), gate_before)
+        self.assertIs(destination.action_log, action_log_before)
+        self.assertEqual(destination.action_log.entries(), action_records_before)
+        self.assertEqual(destination._watch_runtime_bindings, watch_runtime_before)
+        self.assertEqual(destination._watch_runtime_keys, watch_keys_before)
+        self.assertEqual(destination._judge_bindings, judge_bindings_before)
+        self.assertEqual(destination._judge_binding_tokens, judge_tokens_before)
+        self.assertEqual(destination._judge_requesting_goal_ids, judge_requesting_before)
+        self.assertEqual(destination._audio_judge_bindings, audio_bindings_before)
+        self.assertEqual(destination._audio_judge_binding_tokens, audio_tokens_before)
+        self.assertEqual(destination._watchplan_applied_hashes, ledger_before)
+        self.assertEqual(destination._restore_health_log, restore_health_before)
+        self.assertEqual(
+            destination.metrics.snapshot().get("snapshot.restore_rolled_back"), 1
+        )
 
 
 if __name__ == "__main__":

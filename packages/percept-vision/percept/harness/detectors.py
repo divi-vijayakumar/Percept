@@ -287,6 +287,14 @@ class DetectorManifest:
     when_to_use: str  # so the conductor can author it / the preset can default to it
     output: str  # the boundary it emits (e.g. "a 'peak' per motion oscillation = one rep")
     category: str = ""  # the coarse sense class: CATEGORY_MOTION | CATEGORY_AUDIO | CATEGORY_FRAME
+    # ``boundary`` preserves the historical count/no-cloud route. ``admission`` means that a
+    # rising-edge candidate asks the ordinary judge to verify this goal once. Additive/defaulted so
+    # existing third-party manifests and their wire representation remain valid.
+    route: str = "boundary"
+
+    def __post_init__(self) -> None:
+        if self.route not in ("boundary", "admission"):
+            raise ValueError("DetectorManifest.route must be 'boundary' or 'admission'")
 
 
 @dataclass(frozen=True)
@@ -753,6 +761,7 @@ def register_detector(
     when_to_use: str = "",
     output: str = "",
     category: str = "",
+    route: str = "boundary",
 ) -> DetectorManifest:
     """Ergonomic façade over :func:`register` — register a detector, deriving its manifest.
 
@@ -767,7 +776,8 @@ def register_detector(
     """
     if manifest is None:
         manifest = DetectorManifest(
-            name=name, senses=senses, when_to_use=when_to_use, output=output, category=category
+            name=name, senses=senses, when_to_use=when_to_use, output=output,
+            category=category, route=route,
         )
     register(manifest.name if manifest.name else name, detector, manifest)
     return manifest
