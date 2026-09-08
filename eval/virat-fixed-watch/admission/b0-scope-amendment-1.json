@@ -1,0 +1,33 @@
+{
+  "schema": "percept.benchmark.b0-scope-amendment.v1",
+  "status": "pass",
+  "approved_at": "2026-09-08",
+  "supersedes_launch_watch": "F1",
+  "effective_launch_watch": {
+    "id": "F2-Z1",
+    "goal": "Fire when an eligible person enters the monitored area.",
+    "candidate_family": "virat-f2-z1-v1",
+    "eligibility": {
+      "class": "Person",
+      "location_test": "bounding-box footpoint inside frozen normalized polygon",
+      "minimum_bbox_height_fraction": 0.025,
+      "excluded_occlusion": "mostly",
+      "initial_positive": "left_censored",
+      "dwell_candidates_seconds": [0.0, 0.25, 0.5]
+    }
+  },
+  "whole_frame_f1": {
+    "launch_blocking": false,
+    "role": "non-blocking adversarial/stress scorecard",
+    "qualification_condition": "independently exhaustive whole-frame labels"
+  },
+  "unchanged_bars": true,
+  "paid_provider_calls_authorized": false,
+  "paid_benchmarks_authorized": false,
+  "soak_72h_authorized": false,
+  "plan_amendment": {
+    "path": "../PLAN_AMENDMENT_1_ZONE_ENTRY.md",
+    "bytes": 4755,
+    "sha256": "b7f4919c4e0ebec9f50a87c9f48af65350707cfe255e291da56e8ee455be1cac"
+  }
+}

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import pathlib
 import unittest
@@ -7,6 +8,21 @@ ROOT = pathlib.Path(__file__).resolve().parent
 
 
 class AdmissionReceiptTests(unittest.TestCase):
+    def test_effective_scope_promotes_zone_entry_and_demotes_whole_frame(self):
+        amendment = json.loads((ROOT / "b0-scope-amendment-1.json").read_text())
+        self.assertEqual("pass", amendment["status"])
+        self.assertEqual("F2-Z1", amendment["effective_launch_watch"]["id"])
+        self.assertFalse(amendment["whole_frame_f1"]["launch_blocking"])
+        self.assertFalse(amendment["paid_provider_calls_authorized"])
+        self.assertFalse(amendment["paid_benchmarks_authorized"])
+        self.assertFalse(amendment["soak_72h_authorized"])
+        plan = (ROOT / amendment["plan_amendment"]["path"]).resolve()
+        self.assertEqual(amendment["plan_amendment"]["bytes"], plan.stat().st_size)
+        self.assertEqual(
+            amendment["plan_amendment"]["sha256"],
+            hashlib.sha256(plan.read_bytes()).hexdigest(),
+        )
+
     def test_scope_and_feasibility_stop_at_first_failed_gate(self):
         b0 = json.loads((ROOT / "b0-scope-freeze.json").read_text())
         b1 = json.loads((ROOT / "b1-feasibility.json").read_text())
