@@ -18,7 +18,7 @@ class AdmissionReceiptTests(unittest.TestCase):
             b1["annotation_semantics"]["whole_frame_negative_intervals_exhaustive"]
         )
 
-    def test_projection_is_exact_and_fits_but_rights_block_download(self):
+    def test_projection_is_exact_and_fits_with_rights_admitted(self):
         b1 = json.loads((ROOT / "b1-feasibility.json").read_text())
         corpus = b1["official_corpus"]
         self.assertEqual(
@@ -29,8 +29,9 @@ class AdmissionReceiptTests(unittest.TestCase):
             b1["preflight"]["evidence_volume"]["available_bytes"],
             corpus["exact_projected_acquisition_bytes"],
         )
-        self.assertFalse(b1["rights"]["signed_acceptance_receipt_verified"])
-        self.assertFalse(b1["rights"]["protected_download_admitted"])
+        self.assertTrue(b1["rights"]["signed_acceptance_founder_confirmed"])
+        self.assertTrue(b1["rights"]["protected_acquisition_rights_admitted"])
+        self.assertFalse(b1["rights"]["protected_download_performed"])
 
     def test_exposure_registry_is_ordered_and_disjoint_from_holdout(self):
         records = [

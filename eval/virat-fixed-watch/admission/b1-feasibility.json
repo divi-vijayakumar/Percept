@@ -50,8 +50,10 @@
     "protected_media": true,
     "agreement_requires_each_operator_to_sign": true,
     "redistribution": "only to signatories; limited publication/lecture excerpts are permitted",
-    "signed_acceptance_receipt_verified": false,
-    "protected_download_admitted": false
+    "signed_acceptance_founder_confirmed": true,
+    "confirmation_recorded_at": "2026-09-08T19:36:07Z",
+    "protected_acquisition_rights_admitted": true,
+    "protected_download_performed": false
   },
   "local_media": {
     "official_files": 8,
@@ -85,9 +87,8 @@
   "blocking_findings": [
     "Official DIVA semantics do not provide exhaustive whole-frame negative occupancy intervals or scorer-ready ignore masks.",
     "Only two clean physical scene groups remain, insufficient for separate clean validation and qualification across at least two sites.",
-    "No signed VIRAT protection-agreement acceptance receipt was verified for every operator.",
-    "Full-corpus media hash and source-clock alignment cannot be verified before protected acquisition."
+    "Full-corpus media hash and source-clock alignment is not yet verified; acquisition was unnecessary after the earlier annotation-semantics NO-GO."
   ],
   "gate_reason": "The first finding independently triggers the plan's immediate NO-GO for missing or non-exhaustive ground-truth negatives.",
-  "precise_next_action": "Do not start B2. Obtain operator-specific signed VIRAT agreement receipts and a license-cleared exhaustive whole-frame person-occupancy annotation supplement with scorer-ready ignore regions, plus at least one additional never-exposed physical scene/site group. Then freeze one or more clean validation groups and at least two distinct clean qualification groups under an independent label custodian, verify every media hash and source clock, and rerun B1."
+  "precise_next_action": "Do not start B2. Obtain a license-cleared exhaustive whole-frame person-occupancy annotation supplement with scorer-ready ignore regions, plus at least one additional never-exposed physical scene/site group. Then freeze one or more clean validation groups and at least two distinct clean qualification groups under an independent label custodian, acquire the protected media under the founder-confirmed signed agreement, verify every media hash and source clock, and rerun B1."
 }

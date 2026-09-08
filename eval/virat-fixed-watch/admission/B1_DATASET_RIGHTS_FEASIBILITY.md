@@ -3,9 +3,9 @@
 Status: **FAIL — stop before B2**
 Recorded: `2026-09-08T19:23:34Z`
 
-No provider call, paid benchmark, or soak was run. Capacity is sufficient for the identified package,
-but the ground-truth contract fails independently of capacity and the protected-media acquisition is
-not rights-admitted.
+No provider call, paid benchmark, or soak was run. Capacity and rights are sufficient for the
+identified package, but the ground-truth contract fails independently and protected-media
+acquisition was unnecessary after that earlier gate failure.
 
 ## Preflight receipt
 
@@ -52,15 +52,17 @@ files covering 119 stems: 64 train and 55 validation stems. Each stem has activi
 region, and type data; there is no scene/ignore-mask file. Two failed exFAT Git clone attempts were
 retained on the evidence volume as forensic acquisition evidence and were not used as authorities.
 
-Protected video packages were not downloaded.
+Protected video packages were not downloaded because the annotation-semantics NO-GO already stops
+B1, not because of a rights restriction.
 
 ## Rights and redistribution
 
 The official [VIRAT protection agreement](https://viratdata.org/resources/VIRAT-Video-Data-Set-Protection-Agreement-1-4-11.pdf)
 requires every person with access to sign, requires protection of personally identifying
 information, prohibits attempts to identify people, and restricts redistribution to other
-signatories (apart from limited scientific-publication or lecture excerpts). No operator-specific
-signed acceptance receipt was found or verified, so protected acquisition is blocked.
+signatories (apart from limited scientific-publication or lecture excerpts). At
+`2026-09-08T19:36:07Z`, the founder confirmed that the VIRAT agreement is already signed. Rights
+acceptance is therefore admitted and is not a B1 blocker. Protected media remains non-redistributable.
 
 ## Annotation semantics and ignore policy
 
@@ -128,13 +130,13 @@ claims, build identity, and holdout cleanliness are not assumed. Execution remai
 
 1. Whole-frame negative occupancy labels are not exhaustive and no usable ignore masks exist.
 2. Only two clean scene groups remain; validation plus two-site qualification cannot be disjoint.
-3. Operator-specific signed protection-agreement acceptance has not been verified.
-4. Full-corpus hashes and source clocks cannot yet be verified.
+3. Full-corpus hashes and source clocks are not yet verified; acquisition was unnecessary after the
+   earlier annotation-semantics NO-GO.
 
-**Stop before B2.** Obtain operator-specific signed agreement receipts and a license-cleared,
-exhaustive whole-frame person-occupancy annotation supplement with scorer-ready ignore regions, plus
-at least one additional never-exposed physical scene/site group. Then freeze clean validation and
-two-site qualification partitions under an independent label custodian, verify every media hash and
-source clock, and rerun B1. No later milestone is admitted until B1 passes.
+**Stop before B2.** Obtain a license-cleared, exhaustive whole-frame person-occupancy annotation
+supplement with scorer-ready ignore regions, plus at least one additional never-exposed physical
+scene/site group. Then freeze clean validation and two-site qualification partitions under an
+independent label custodian, acquire under the signed agreement, verify every media hash and source
+clock, and rerun B1. No later milestone is admitted until B1 passes.
 
 The machine-readable authority is [`b1-feasibility.json`](b1-feasibility.json).
