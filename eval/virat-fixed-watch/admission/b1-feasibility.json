@@ -1,0 +1,93 @@
+{
+  "schema": "percept.benchmark.b1-feasibility.v1",
+  "status": "fail",
+  "recorded_at": "2026-09-08T19:23:34Z",
+  "next_milestone": "B2",
+  "next_milestone_admitted": false,
+  "paid_activity_performed": false,
+  "preflight": {
+    "cpu": "Apple M3 Pro; 11 logical CPUs (5 performance, 6 efficiency)",
+    "load_average": [3.39, 3.17, 2.83],
+    "memory_bytes": 19327352832,
+    "memory_pressure_free_percent": 61,
+    "internal_available_kib": 25718400,
+    "evidence_volume": {
+      "path": "/Volumes/Percept/Percept-Eternal/Percept-Benchmarks/virat-fixed-watch",
+      "filesystem": "exfat",
+      "available_bytes": 61427679232,
+      "mounted": true,
+      "writable": true
+    },
+    "relevant_active_processes": [],
+    "worktrees": "primary, this isolated task, backlog-triaging, random exploration, and prunable historical entries inspected",
+    "source_version": "1.0.0",
+    "wheel_found": false,
+    "source_build_identity": "unreleased"
+  },
+  "official_corpus": {
+    "release": "VIRAT Ground Release 2.0 with public DIVA annotations",
+    "collection_id": "56f56db28d777f753209ba9f",
+    "collection_bytes": 111503039497,
+    "original_video_bytes": 37625884426,
+    "zip_package_bytes": 37667468333,
+    "diva_annotation_commit": "f1eff0d7db0dc0b25e1c99951ac0907521f3a216",
+    "diva_archive_bytes": 192021654,
+    "diva_archive_sha256": "e1d440e4e6330c1921627fa21abd01982846991d283f468ff03ab0a13d334e04",
+    "exact_projected_acquisition_bytes": 37859489987,
+    "exact_projected_acquisition_gib": 35.259398,
+    "fits_current_evidence_volume": true,
+    "source_frame_rate_range_hz": [2, 30],
+    "annotation_inventory": {
+      "files": 476,
+      "stems": 119,
+      "train_stems": 64,
+      "validation_stems": 55,
+      "physical_scene_groups": ["0000", "0002", "0400", "0401", "0500"],
+      "scene_or_ignore_mask_files": 0
+    }
+  },
+  "rights": {
+    "protected_media": true,
+    "agreement_requires_each_operator_to_sign": true,
+    "redistribution": "only to signatories; limited publication/lecture excerpts are permitted",
+    "signed_acceptance_receipt_verified": false,
+    "protected_download_admitted": false
+  },
+  "local_media": {
+    "official_files": 8,
+    "bytes": 4107194736,
+    "official_md5_verified": true,
+    "physical_scene_groups": ["0002", "0400", "0401"],
+    "clock_probe": "all eight files probed; nominal rates are 30/1 or 30000/1001",
+    "exposed_sample_alignment": "VIRAT_S_000201_00_000018_000380: 10834 frames at 30 fps; annotation max frame 10833 and ts1 361.1 s",
+    "full_corpus_clock_and_hash_alignment_verified": false
+  },
+  "annotation_semantics": {
+    "tracks": "DIVA supplies person/object tracks, but its guideline permits people and vehicles in Background or Unannotated regions to lack annotation",
+    "whole_frame_negative_intervals_exhaustive": false,
+    "ignore_policy_available_to_scorer": false
+  },
+  "partition_freeze": {
+    "registry": "exposure-registry.jsonl",
+    "exposed_calibration_groups": ["0002", "0400", "0401"],
+    "sealed_unassigned_groups": ["0000", "0500"],
+    "validation_groups": [],
+    "qualification_groups": [],
+    "qualification_requires_distinct_sites": 2,
+    "feasible_without_overlap": false
+  },
+  "candidate_baseline": {
+    "candidate": "0623784d5db5cd07b1abf13ac9ec510b9c7ba2fb",
+    "decision": "historical calibration/reference input only",
+    "reason": "not an ancestor of the execution base; merge base 2217d09d; 85 candidate-side commits and 322 changed paths; its claims, build identity, and holdout cleanliness are not independently qualified",
+    "execution_base": "11d87a84a1dd44a021c54a21409505a31317b6db"
+  },
+  "blocking_findings": [
+    "Official DIVA semantics do not provide exhaustive whole-frame negative occupancy intervals or scorer-ready ignore masks.",
+    "Only two clean physical scene groups remain, insufficient for separate clean validation and qualification across at least two sites.",
+    "No signed VIRAT protection-agreement acceptance receipt was verified for every operator.",
+    "Full-corpus media hash and source-clock alignment cannot be verified before protected acquisition."
+  ],
+  "gate_reason": "The first finding independently triggers the plan's immediate NO-GO for missing or non-exhaustive ground-truth negatives.",
+  "precise_next_action": "Do not start B2. Obtain operator-specific signed VIRAT agreement receipts and a license-cleared exhaustive whole-frame person-occupancy annotation supplement with scorer-ready ignore regions, plus at least one additional never-exposed physical scene/site group. Then freeze one or more clean validation groups and at least two distinct clean qualification groups under an independent label custodian, verify every media hash and source clock, and rerun B1."
+}
