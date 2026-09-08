@@ -1,6 +1,6 @@
 # B0 scope-freeze receipt
 
-Status: **PASS**  
+Status: **PASS**
 Recorded: `2026-09-08T19:23:34Z`
 
 This receipt binds execution to the founder-approved plan whose SHA-256 is

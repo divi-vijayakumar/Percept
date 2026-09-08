@@ -8,3 +8,4 @@ This log is append-only for benchmark execution commits. The task branch is
 |---|---|---|---|---|
 | 2026-09-08T19:23:34Z | B0 | `456c69bd7a6cc2377925af60dbc7b8139532d725` | JSON parse, plan hash, clean ancestry | Atomic task-branch commit; eligible for later review only. |
 | 2026-09-08T19:23:34Z | B1 | this atomic commit (resolve from history) | Receipt unit tests, JSON/JSONL parse, arithmetic, registry/partition invariants, ancestry, diff check | FAIL; retain evidence and stop before B2. Do not merge as a claim of benchmark qualification. |
+| 2026-09-08T19:23:34Z | receipt hygiene | post-B1 commit (resolve from history) | Full branch `git diff --check` | Formatting-only cleanup; no gate or evidence change. |
