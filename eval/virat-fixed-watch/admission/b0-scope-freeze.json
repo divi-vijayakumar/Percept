@@ -1,0 +1,65 @@
+{
+  "schema": "percept.benchmark.b0-scope-freeze.v1",
+  "status": "pass",
+  "approved_at": "2026-09-08",
+  "recorded_at": "2026-09-08T19:23:34Z",
+  "plan": {
+    "path": "Product-Execution/2-engineering-specification/plans/PLAN_percept-benchmarking-and-testing_2026-09-08.md",
+    "bytes": 24470,
+    "sha256": "2cf6790f7bba949063c3024bc8b7389156a3e42abda70c3bf465b1474aabc040"
+  },
+  "execution_base": {
+    "before_rebase_commit": "98bf9782c16ea529f61dc535fea966619b60e776",
+    "after_rebase_commit": "11d87a84a1dd44a021c54a21409505a31317b6db",
+    "after_rebase_tree": "765a620d6ca6883c4840724d8932daaf2b4c2d2c",
+    "branch": "codex/percept-benchmarking-b0-b1"
+  },
+  "launch_blocking": {
+    "quality_track": "F",
+    "watch_id": "F1",
+    "goal": "Fire when the scene changes from no visible person to at least one visible person.",
+    "runtime_track": "R",
+    "runtime_scope": "relevant fixed-reference production-path reliability gates"
+  },
+  "non_blocking_scorecards": [
+    "E: ego-motion/BDD100K",
+    "C: raw-VLM and generic-Percept comparators",
+    "M: multi-goal scaling",
+    "A: audio and fused audio/video conformance"
+  ],
+  "quality_bars": {
+    "event_precision_min": 0.99,
+    "event_recall_min": 0.99,
+    "timely_recall_at_receiver_ack_min": 0.99,
+    "reflex_deadline_seconds": 2.0,
+    "deliberate_deadline_seconds": 120.0,
+    "all_in_cost_per_source_hour_usd_max": 0.10,
+    "duplicate_logical_fires_max": 0,
+    "duplicate_receiver_deliveries_max": 0,
+    "reconciliation": "exact"
+  },
+  "metric_contract": {
+    "event_matching": "maximum-cardinality one-to-one",
+    "required_quality_counts": ["TP", "FP", "FN"],
+    "required_rates": [
+      "precision",
+      "recall",
+      "timely_recall",
+      "ASK",
+      "duplicates",
+      "misses"
+    ],
+    "latency_origin": "frozen annotation source onset",
+    "latency_terminal": "durable receiver ACK",
+    "latency_quantiles": ["p50", "p95", "p99", "max"],
+    "economy": ["provider-only", "conservative all-in"],
+    "reliability": ["episodes", "context-ledger", "outbox", "delivery"]
+  },
+  "spend_controls": {
+    "paid_provider_calls_authorized": false,
+    "paid_benchmarks_authorized": false,
+    "soak_72h_authorized": false,
+    "rule": "Explicit paid-budget authorization and every plan admission gate are required before any of these actions."
+  },
+  "stop_rule": "Work B0 through B9 in order and stop at the earliest failing joint gate."
+}
