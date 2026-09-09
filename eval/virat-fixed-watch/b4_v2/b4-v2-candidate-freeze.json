@@ -1,0 +1,36 @@
+{
+  "schema": "percept.benchmark.b4-v2-candidate-freeze.v1",
+  "candidate_family": "virat-f2-z1-persistent-track-v2",
+  "status": "frozen_for_complete_calibration",
+  "implementation_commit": "52ebb93c42241ebb5b1251d81e3843c92a9e873a",
+  "execution_base": "11d87a84a1dd44a021c54a21409505a31317b6db",
+  "goal": "Fire when an eligible person enters the monitored area.",
+  "partition": "calibration_exposed",
+  "source_group": "0502",
+  "identities": {
+    "tracker_sha256": "98e5247017b65ffe70129a8f8f2bc30bc9a17ddbadf43c3010b2b2bcb5c2144c",
+    "evaluator_sha256": "8b679fe6c57902cd40f84427e242cca0a911e94dd04671f0ab71b8ee2775e5e6",
+    "sweep_runner_sha256": "4ee0b4a9396ec42df47e767b6a254785bf0608fca726c7774696ed6acea37601",
+    "search_space_sha256": "357e72c38cf89cf9b0b9dd67c6bdc9bce119c88fa2093ca5e4769e062f935e62",
+    "scorer_sha256": "a85a79e89388455c25d9ae639a600fab6124a0eeaace5b69cdcbfc05f95df970",
+    "gt_transform_sha256": "bc4dcb9b8d6b8da1ffdd77560f2d3ace5cfe44bb435efa755e095f2cc333f07b",
+    "zone_manifest_sha256": "9c1883feeca512528cb6a0002583e7d06a3723725c3d54268cdf3194940f8ef0",
+    "detection_cache_manifest_sha256": "5b15d9d41a78ebce287a213c91ea8645d237feecbf3cbd1004f7ac590aa8f7d3",
+    "detector_weights_sha256": "dd69338a24b8d7381807e247652bdc356325bcbaf1cd3e092e00e0a1a58706bf"
+  },
+  "runtime_versions": {
+    "numpy": "2.4.6",
+    "scipy": "1.15.3",
+    "torch": "2.12.1",
+    "torchvision": "0.27.1"
+  },
+  "search_configurations": 972,
+  "rising_edge_semantics": "one scene-goal verdict per sample; require a false/silent observation before a true/fire verdict; ASK preserves gate state; consecutive or simultaneous true outcomes are suppressed",
+  "quality_caveat": "complete-zone and occlusion audit pending; all calibration quality metrics remain provisional",
+  "validation_opened": false,
+  "qualification_labels_opened": false,
+  "pilot_276_opened": false,
+  "remote_provider_calls": 0,
+  "paid_activity_performed": false,
+  "next_action": "run the exact 972-configuration search once on all 21 admitted exposed calibration sources"
+}
