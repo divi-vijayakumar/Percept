@@ -1,0 +1,84 @@
+{
+  "model": {
+    "config_sha256": "72e1f36e39d649de368da5af4b0fc18ec5b5dfabcd9e52ca01a537c694c98080",
+    "device": "cpu",
+    "initialization_seconds": 0.1615641249991313,
+    "name": "rtmo-s_8xb32-600e_coco-640x640",
+    "runtime_versions": {
+      "mmcv": "2.1.0",
+      "mmengine": "0.10.7",
+      "mmpose": "1.3.2",
+      "numpy": "2.4.6",
+      "torch": "2.12.1"
+    },
+    "weights_bytes": 39718803,
+    "weights_sha256": "8db55a5974d4d31164cc327805c57932cc7b4f79874b5e5bfbbfa32a7d4e5b05"
+  },
+  "candidate_disposition": "reject",
+  "disposition_scope": "RTMO-S candidate only; this is not the overall B4 gate",
+  "paid_activity_performed": false,
+  "partition": "calibration_exposed",
+  "provisional_gt_probe": {
+    "bbox_xyxy": [384, 197, 440, 285],
+    "complete_zone_audit_pending": true,
+    "entry_frame": 509,
+    "entry_seconds": 16.983633333333334,
+    "frame_zero_person_rows": 0,
+    "track_id": 4
+  },
+  "qualification_labels_opened": false,
+  "remote_provider_calls": 0,
+  "schema": "percept.benchmark.b4-rtmo-s-feasibility.v1",
+  "source": {
+    "fps": 29.97002997002997,
+    "height": 1080,
+    "name": "VIRAT_S_050201_00_000012_000116.mp4",
+    "sha256": "7a0d8d0d429f0e8213be0d7473b07cde575a1b1faffee45fe0648496d2d5895d",
+    "width": 1920
+  },
+  "source_group": "0502",
+  "threshold_results": {
+    "0.03": {
+      "0": {
+        "detections": 5,
+        "detections_iou_at_least_0_5": 0,
+        "max_score": 0.05167051777243614,
+        "maximum_iou_to_entering_person": null
+      },
+      "509": {
+        "detections": 9,
+        "detections_iou_at_least_0_5": 0,
+        "max_score": 0.04513079300522804,
+        "maximum_iou_to_entering_person": 0.0
+      }
+    },
+    "0.1": {
+      "0": {
+        "detections": 0,
+        "detections_iou_at_least_0_5": 0,
+        "max_score": null,
+        "maximum_iou_to_entering_person": null
+      },
+      "509": {
+        "detections": 0,
+        "detections_iou_at_least_0_5": 0,
+        "max_score": null,
+        "maximum_iou_to_entering_person": null
+      }
+    },
+    "0.3": {
+      "0": {
+        "detections": 0,
+        "detections_iou_at_least_0_5": 0,
+        "max_score": null,
+        "maximum_iou_to_entering_person": null
+      },
+      "509": {
+        "detections": 0,
+        "detections_iou_at_least_0_5": 0,
+        "max_score": null,
+        "maximum_iou_to_entering_person": null
+      }
+    }
+  }
+}

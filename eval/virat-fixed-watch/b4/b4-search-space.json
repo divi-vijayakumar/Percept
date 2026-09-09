@@ -1,0 +1,37 @@
+{
+  "schema": "percept.benchmark.b4-search-space.v1",
+  "frozen_before_full_calibration_result": true,
+  "partition": "calibration_exposed",
+  "goal": "Fire when an eligible person enters the monitored area.",
+  "detector": {
+    "identity": "torchvision/fasterrcnn_resnet50_fpn_v2",
+    "weights_sha256": "dd69338a24b8d7381807e247652bdc356325bcbaf1cd3e092e00e0a1a58706bf",
+    "weights_bytes": 175221657,
+    "device": "cpu",
+    "minimum_size": 320,
+    "sample_hz": 1.0
+  },
+  "tunables": {
+    "score_threshold": [0.1, 0.2, 0.3, 0.4, 0.5],
+    "maximum_association_distance": [0.06, 0.12, 0.18],
+    "maximum_track_gap_seconds": [1.1, 2.1, 3.1],
+    "dwell_seconds": [0.0, 0.25, 0.5]
+  },
+  "calibration_ranking_order": [
+    "both precision and recall at least 0.99",
+    "maximum f1",
+    "maximum precision",
+    "maximum recall",
+    "lower score threshold",
+    "shorter dwell"
+  ],
+  "selection_control": "Calibration ranks configurations only. A final dwell/profile may be selected only after the separately reported validation pass; qualification remains sealed.",
+  "quality_gate": {
+    "precision_minimum": 0.99,
+    "recall_minimum": 0.99,
+    "provisional": true
+  },
+  "qualification_labels_opened": false,
+  "remote_provider_calls": 0,
+  "paid_activity_performed": false
+}

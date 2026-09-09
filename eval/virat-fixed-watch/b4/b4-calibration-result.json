@@ -1,0 +1,76 @@
+{
+  "schema": "percept.benchmark.b4-calibration-result.v1",
+  "status": "fail",
+  "stop_reason": "no frozen calibration configuration met the joint precision and recall bar",
+  "partition": "calibration_exposed",
+  "source_group": "0502",
+  "media_files_cached": 24,
+  "media_files_scored": 21,
+  "malformed_annotation_files_excluded": 3,
+  "provisional_occurrences": 16,
+  "source_hours_scored": 0.6182750648148149,
+  "search": {
+    "configurations_evaluated": 135,
+    "configurations_meeting_precision_and_recall_bar": 0,
+    "best_configuration": {
+      "score_threshold": 0.1,
+      "maximum_association_distance": 0.06,
+      "maximum_track_gap_seconds": 1.1,
+      "dwell_seconds": 0.0
+    }
+  },
+  "best_measured_result": {
+    "tp": 13,
+    "fp_against_provisional_gt": 26,
+    "fn_against_official_track_seeds": 3,
+    "precision_provisional": 0.3333333333333333,
+    "recall_provisional": 0.8125,
+    "timely_recall": null,
+    "ask": 0,
+    "duplicates": 3,
+    "misses": 3,
+    "incidents": 39,
+    "false_fires_per_source_hour_provisional": 42.05248032732404,
+    "receiver_ack_metrics_measured": false,
+    "onset_to_receiver_ack_seconds": null
+  },
+  "detector_inference_seconds": {
+    "p50": 0.7456225210007688,
+    "p95": 0.8037559086993497,
+    "p99": 0.8683322737920025,
+    "max": 1.3134737079999468
+  },
+  "economy": {
+    "remote_provider_calls": 0,
+    "provider_cost_usd": 0.0,
+    "all_in_cost_per_source_hour_usd": null,
+    "interpretation": "local resource rate was not specified; all-in economy was not inferred"
+  },
+  "quality_caveat": "complete-zone audit and occlusion adjudication are pending; precision, recall, FP and FN are provisional engineering measurements and are not publication qualification",
+  "candidate_baselines": {
+    "retained_commit_0623784d": "rejected as direct input: occupancy semantics, missing model artifacts, unrelated 322-file delta, and no independently transferable zone-entry claim",
+    "rtmo_s": "rejected on exposed calibration feasibility probe",
+    "fasterrcnn_resnet50_fpn_v2": "failed complete calibration joint quality gate"
+  },
+  "evidence": {
+    "cache_manifest_path": "/Volumes/Percept/Percept-Eternal/Percept-Benchmarks/virat-fixed-watch/evidence/b4/calibration-fasterrcnn-320-1hz-manifest.json",
+    "cache_manifest_sha256": "5b15d9d41a78ebce287a213c91ea8645d237feecbf3cbd1004f7ac590aa8f7d3",
+    "corrected_sweep_path": "/Volumes/Percept/Percept-Eternal/Percept-Benchmarks/virat-fixed-watch/evidence/b4/b4-calibration-sweep-v2.json",
+    "corrected_sweep_sha256": "8521b4814adf86730942b2a96ae25de20ddc22ed0d1e98ac901bfeed30b3854e",
+    "superseded_sweep_sha256": "fa6a7cb4907d71bb02b316e47a9d8aa0dbff424df9ccdf566e70a76972cec89e",
+    "weights_sha256": "dd69338a24b8d7381807e247652bdc356325bcbaf1cd3e092e00e0a1a58706bf",
+    "zone_manifest_sha256": "9c1883feeca512528cb6a0002583e7d06a3723725c3d54268cdf3194940f8ef0"
+  },
+  "implementation_identities": {
+    "zone_entry_watch_sha256": "26b8eb7bda14cc2c0e73e43a16ec8341919112d71da728f595a3a35cb139113b",
+    "cache_builder_sha256": "f8874a7e22df8ed242ee15a6faf476d754027b6c6767d9d2e88881d8d55f2877",
+    "cache_evaluator_sha256": "61f7eb60ec6edc822debc69a4ee08f7b039aedb2b2b07e05b8cfa1c1c6a86527",
+    "sweep_runner_sha256": "ef1b8d6815934ed6b0307694be8f7b7fab064e028f253dde7c442817eb0ec24e",
+    "search_space_sha256": "46102f90ab7a8ba22dc9acd24087002e54001710aba7ad96ee675807e1281ad8"
+  },
+  "validation_opened": false,
+  "qualification_labels_opened": false,
+  "pilot_276_opened": false,
+  "paid_activity_performed": false,
+  "next_action": "stop at B4; do not run validation, PILOT-276, provider benchmarks, or the 72-hour soak without a founder-approved new candidate plan"
+}
