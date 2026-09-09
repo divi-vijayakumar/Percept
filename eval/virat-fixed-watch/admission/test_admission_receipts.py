@@ -134,6 +134,39 @@ class AdmissionReceiptTests(unittest.TestCase):
             )
         )
 
+    def test_pilot_amendment_admits_engineering_not_publication(self):
+        receipt = json.loads((ROOT / "b1-engineering-admission.json").read_text())
+        self.assertEqual("admit", receipt["engineering_status"])
+        self.assertEqual("fail", receipt["publication_qualification_status"])
+        self.assertEqual("not_go", receipt["oss_launch_status"])
+        self.assertTrue(receipt["next_milestone_engineering_admitted"])
+        self.assertTrue(receipt["qualification_labels_sealed"])
+        self.assertEqual(
+            ["calibration", "validation"],
+            receipt["permitted_sources_before_pilot_freeze"],
+        )
+        gate = receipt["statistical_gate"]
+        self.assertEqual(276, gate["observed_provisional_n"])
+        self.assertEqual(
+            299,
+            gate[
+                "minimum_n_for_zero_failure_one_sided_95pct_lower_bound_above_0_99"
+            ],
+        )
+        self.assertAlmostEqual(
+            0.05 ** (1 / 276),
+            gate["zero_failure_one_sided_95pct_lower_bound"],
+        )
+        self.assertFalse(gate["population_performance_at_least_0_99_qualified"])
+        amendment = (ROOT / receipt["plan_amendment"]["path"]).resolve()
+        self.assertEqual(receipt["plan_amendment"]["bytes"], amendment.stat().st_size)
+        self.assertEqual(
+            receipt["plan_amendment"]["sha256"],
+            hashlib.sha256(amendment.read_bytes()).hexdigest(),
+        )
+        self.assertFalse(receipt["paid_provider_calls_authorized"])
+        self.assertFalse(receipt["paid_activity_performed"])
+
 
 if __name__ == "__main__":
     unittest.main()

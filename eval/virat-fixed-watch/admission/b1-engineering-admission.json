@@ -1,0 +1,37 @@
+{
+  "schema": "percept.benchmark.b1-engineering-admission.v1",
+  "recorded_at": "2026-09-09T18:30:20Z",
+  "engineering_status": "admit",
+  "publication_qualification_status": "fail",
+  "oss_launch_status": "not_go",
+  "next_milestone": "B2",
+  "next_milestone_engineering_admitted": true,
+  "permitted_sources_before_pilot_freeze": ["calibration", "validation"],
+  "qualification_labels_sealed": true,
+  "pilot": {
+    "identity": "PILOT-276",
+    "provisional_seed_occurrences": 276,
+    "complete_zone_audit_pending": true,
+    "terminal_frame_boundary_adjudications_pending": 3,
+    "quality_metrics_must_be_marked_provisional": true
+  },
+  "statistical_gate": {
+    "minimum_n_for_zero_failure_one_sided_95pct_lower_bound_above_0_99": 299,
+    "observed_provisional_n": 276,
+    "shortfall": 23,
+    "zero_failure_one_sided_95pct_lower_bound": 0.9892045907834554,
+    "population_performance_at_least_0_99_qualified": false
+  },
+  "publication_gate_unchanged": true,
+  "post_pilot_tuning_effect": "all PILOT-276 physical source groups become exposed and ineligible for future publication qualification",
+  "plan_amendment": {
+    "path": "../PLAN_AMENDMENT_2_PILOT_276.md",
+    "bytes": 3209,
+    "sha256": "81c349e74d8ceefb5833a753bfa1edf3110df38fef073bdb35a15b6fe78f73df"
+  },
+  "paid_provider_calls_authorized": false,
+  "paid_benchmarks_authorized": false,
+  "soak_72h_authorized": false,
+  "paid_activity_performed": false,
+  "precise_next_action": "Execute B2 GT-transformer and scorer construction and independent synthetic tests, then zero-paid B3/B4 on calibration and validation only; stop at the next technical gate."
+}
