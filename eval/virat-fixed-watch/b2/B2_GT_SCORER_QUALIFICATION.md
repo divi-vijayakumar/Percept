@@ -17,6 +17,8 @@ Measured verification:
   files, and measured `16` provisional entries at each declared dwell (`0.0`, `0.25`, `0.5` seconds).
 
 `BUG-B2-001` caught and fixed a dwell off-by-one before any validation result was produced.
+`BUG-B2-002` caught and fixed cross-source timestamp matching while integrating B4 detection caches,
+also before any aggregate calibration or validation result was produced.
 
 The legacy eight-column VIRAT object format has no occlusion field. The parser records
 `not_provided`; the calibration counts are therefore provisional engineering evidence. The complete

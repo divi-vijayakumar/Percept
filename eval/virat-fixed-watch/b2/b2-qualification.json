@@ -13,7 +13,7 @@
     "dwell_seconds": [0.0, 0.25, 0.5]
   },
   "tests": {
-    "deterministic_tests_passed": 9,
+    "deterministic_tests_passed": 10,
     "independent_bruteforce_matching_cases_passed": 100,
     "failures": 0
   },
@@ -30,12 +30,12 @@
     "legacy_occlusion_field_present": false,
     "publication_use_admitted": false
   },
-  "fixed_bugs": ["BUG-B2-001"],
+  "fixed_bugs": ["BUG-B2-001", "BUG-B2-002"],
   "identities": {
     "transformer_sha256": "bc4dcb9b8d6b8da1ffdd77560f2d3ace5cfe44bb435efa755e095f2cc333f07b",
-    "scorer_sha256": "cae98b0b614deacbcb0f3e01610748036aaea966a4823a712be57e40c7934ad3",
+    "scorer_sha256": "a85a79e89388455c25d9ae639a600fab6124a0eeaace5b69cdcbfc05f95df970",
     "calibration_probe_sha256": "12e6443887a6c4db0190376f7c23c20d4bed335972911d4bef500e6da3bfff9b",
-    "fixture_tests_sha256": "ac2105edcaf8771950f8261d29c12d24155fec653a56b11f725d92d630bc23d8",
+    "fixture_tests_sha256": "b351013a397b567f4e5c7f38e054b9b6ada6bd6e4c46c9e91012d84d46e12ecd",
     "independent_oracle_sha256": "77f882c5ca145b17ffc04d11ec72d28195d9e1026d23fe3e800781c800949e75",
     "calibration_result_sha256": "b43d5973e80dd98c73366d0c791c34a4084aae1f255e417a20a7fe19b868cb5d"
   },

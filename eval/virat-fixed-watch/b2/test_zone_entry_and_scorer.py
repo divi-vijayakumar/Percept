@@ -147,6 +147,17 @@ class ScorerTests(unittest.TestCase):
             latency_summary([]),
         )
 
+    def test_matching_never_crosses_sources(self):
+        truth = [Occurrence("a", "source-a", 1, 0, 0, 1.0, 1.0)]
+        result = score(
+            truth,
+            [Incident("wrong-source", "fire", 1.0, source_id="source-b")],
+            match_window_seconds=2,
+            timely_deadline_seconds=2,
+            source_hours=1,
+        )
+        self.assertEqual((0, 1, 1), (result["tp"], result["fp"], result["fn"]))
+
 
 if __name__ == "__main__":
     unittest.main()

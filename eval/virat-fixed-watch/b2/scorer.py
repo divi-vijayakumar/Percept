@@ -16,6 +16,7 @@ class Incident:
     source_seconds: float
     receiver_ack_seconds: float | None = None
     stage_latency_seconds: Mapping[str, float] | None = None
+    source_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,9 @@ def score(
             (
                 occurrence_index
                 for occurrence_index, occurrence in enumerate(occurrences)
-                if occurrence.onset_seconds
+                if (fire.source_id is None or occurrence.source_id == fire.source_id)
+                and
+                occurrence.onset_seconds
                 <= fire.source_seconds
                 <= occurrence.onset_seconds + match_window_seconds
             ),
@@ -127,6 +130,7 @@ def score(
             <= occurrence.onset_seconds + match_window_seconds
             for occurrence_index, occurrence in enumerate(occurrences)
             if occurrence_index in matched_occurrence_indexes
+            and (fires[fire_index].source_id is None or occurrence.source_id == fires[fire_index].source_id)
         )
     }
 
