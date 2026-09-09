@@ -1,0 +1,39 @@
+{
+  "schema": "percept.benchmark.b4-v2-prior-failure-distribution.v1",
+  "prior_candidate": "virat-f2-z1-v1",
+  "totals": {"gt": 16, "fires": 39, "tp": 13, "fp": 26, "fn": 3, "duplicates": 3},
+  "fp_classes": {
+    "source_without_provisional_gt": 15,
+    "unrelated_transition_or_fragmentation": 6,
+    "early_boundary": 2,
+    "duplicate_window": 3
+  },
+  "fn_classes": {"no_fire_within_plus_or_minus_2_seconds": 3},
+  "sources": [
+    ["VIRAT_S_050200_00_000106_000380",0,2,0,2,0],
+    ["VIRAT_S_050201_00_000012_000116",4,3,3,0,1],
+    ["VIRAT_S_050201_01_000147_000321",1,3,1,2,0],
+    ["VIRAT_S_050201_04_000669_000728",0,0,0,0,0],
+    ["VIRAT_S_050201_08_001567_001647",0,2,0,2,0],
+    ["VIRAT_S_050201_10_001992_002056",0,0,0,0,0],
+    ["VIRAT_S_050201_11_002090_002220",0,4,0,4,0],
+    ["VIRAT_S_050202_00_000000_000105",0,2,0,2,0],
+    ["VIRAT_S_050202_01_000150_000280",1,5,1,4,0],
+    ["VIRAT_S_050202_02_000447_000577",4,7,4,3,0],
+    ["VIRAT_S_050202_03_000608_000684",1,1,1,0,0],
+    ["VIRAT_S_050202_04_000690_000750",0,1,0,1,0],
+    ["VIRAT_S_050202_06_001048_001115",0,0,0,0,0],
+    ["VIRAT_S_050202_07_001126_001301",2,3,2,1,0],
+    ["VIRAT_S_050202_08_001410_001494",0,0,0,0,0],
+    ["VIRAT_S_050202_09_001642_001712",1,0,0,0,1],
+    ["VIRAT_S_050202_10_002159_002233",0,0,0,0,0],
+    ["VIRAT_S_050203_00_000023_000097",2,2,1,1,1],
+    ["VIRAT_S_050203_01_000147_000223",0,0,0,0,0],
+    ["VIRAT_S_050203_06_001202_001264",0,0,0,0,0],
+    ["VIRAT_S_050203_08_001686_001885",0,4,0,4,0]
+  ],
+  "source_columns": ["source_id", "gt", "fires", "tp", "fp", "fn"],
+  "classification_limit": "timing classification against provisional official-track GT; sources without GT may contain unaudited entries",
+  "validation_opened": false,
+  "qualification_labels_opened": false
+}

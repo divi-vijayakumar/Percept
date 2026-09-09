@@ -33,5 +33,6 @@ def test_exposure_registry_is_append_only_sequence() -> None:
     registry = ROOT.parent / "admission" / "exposure-registry.jsonl"
     rows = [json.loads(line) for line in registry.read_text().splitlines()]
     assert [row["sequence"] for row in rows] == list(range(len(rows)))
-    assert rows[-1]["event"] == "b4_calibration_evaluated"
+    assert any(row["event"] == "b4_calibration_evaluated" for row in rows)
+    assert rows[-1]["event"] == "candidate_family_minted"
     assert rows[-1]["qualification_labels_opened"] is False

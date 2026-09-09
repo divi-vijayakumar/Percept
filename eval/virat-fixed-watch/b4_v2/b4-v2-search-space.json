@@ -1,0 +1,56 @@
+{
+  "schema": "percept.benchmark.b4-v2-search-space.v1",
+  "candidate_family": "virat-f2-z1-persistent-track-v2",
+  "frozen_before_implementation": true,
+  "frozen_before_complete_calibration_result": true,
+  "partition": "calibration_exposed",
+  "source_group": "0502",
+  "goal": "Fire when an eligible person enters the monitored area.",
+  "fixed_identity": {
+    "detector": "torchvision/fasterrcnn_resnet50_fpn_v2",
+    "weights_sha256": "dd69338a24b8d7381807e247652bdc356325bcbaf1cd3e092e00e0a1a58706bf",
+    "minimum_size": 320,
+    "sample_hz": 1.0,
+    "dwell_seconds": 0.0,
+    "minimum_height_fraction": 0.025,
+    "polygon_manifest_sha256": "9c1883feeca512528cb6a0002583e7d06a3723725c3d54268cdf3194940f8ef0",
+    "association": "global linear-sum assignment over velocity-predicted normalized footpoints and bbox IoU",
+    "ask_policy": "armed confirmed track expires after unresolved ambiguous-boundary observation",
+    "left_censor_policy": "silent fail-closed",
+    "rearm_policy": "observable outside state required after every fire"
+  },
+  "tunables": {
+    "score_threshold": [0.1, 0.2, 0.3],
+    "maximum_association_distance": [0.06, 0.1, 0.14],
+    "maximum_track_gap_seconds": [2.1, 3.1, 5.1],
+    "minimum_outside_observations": [1, 2],
+    "boundary_margin_normalized": [0.0, 0.005, 0.01],
+    "duplicate_footpoint_distance": [0.0, 0.015],
+    "refractory_seconds": [0.0, 1.1, 2.1]
+  },
+  "configurations": 972,
+  "calibration_acceptance": {
+    "precision_minimum_provisional": 0.99,
+    "recall_minimum_provisional": 0.99,
+    "duplicates_maximum": 0,
+    "detector_inference_p99_seconds_maximum": 1.0,
+    "detector_inference_max_seconds_maximum": 1.5,
+    "tracker_stage_p99_seconds_maximum": 0.01,
+    "tracker_stage_max_seconds_maximum": 0.05,
+    "reconciliation_exact": true
+  },
+  "ranking_after_gate": [
+    "passing joint gate",
+    "maximum f1",
+    "maximum precision",
+    "maximum recall",
+    "fewer asks",
+    "shorter refractory",
+    "lower score threshold"
+  ],
+  "validation_opened": false,
+  "qualification_labels_opened": false,
+  "pilot_276_opened": false,
+  "remote_provider_calls": 0,
+  "paid_activity_performed": false
+}
