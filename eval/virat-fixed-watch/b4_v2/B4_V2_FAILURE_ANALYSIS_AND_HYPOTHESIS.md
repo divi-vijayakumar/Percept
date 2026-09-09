@@ -68,4 +68,3 @@ On all 21 admitted exposed calibration sources, at least one predeclared configu
 
 ASK is reported exactly but has no invented numeric launch bar. Precision/recall remain provisional
 until complete-zone and occlusion audit. If no configuration passes, stop at B4 without validation.
-
