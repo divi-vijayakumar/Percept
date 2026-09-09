@@ -1,0 +1,90 @@
+{
+  "schema": "percept.benchmark.b4-v2-calibration-result.v1",
+  "status": "fail",
+  "candidate_family": "virat-f2-z1-persistent-track-v2",
+  "implementation_commit": "52ebb93c42241ebb5b1251d81e3843c92a9e873a",
+  "candidate_freeze_commit": "fe244a830861d7b506563ec8d8f7d83c18d7bbe9",
+  "stop_reason": "fixed detection evidence cannot meet the joint gate through persistent tracking/state alone",
+  "search": {
+    "configurations_evaluated": 972,
+    "configurations_passing": 0,
+    "maximum_tp": 12,
+    "minimum_fn": 4,
+    "configurations_with_full_recall": 0,
+    "configurations_with_zero_fp": 0
+  },
+  "best": {
+    "configuration": {
+      "boundary_margin_normalized": 0.0,
+      "duplicate_footpoint_distance": 0.0,
+      "maximum_association_distance": 0.06,
+      "maximum_track_gap_seconds": 2.1,
+      "minimum_outside_observations": 1,
+      "refractory_seconds": 0.0,
+      "score_threshold": 0.1
+    },
+    "tp": 12,
+    "fp_against_provisional_gt": 22,
+    "fn_against_official_track_seeds": 4,
+    "precision_provisional": 0.35294117647058826,
+    "recall_provisional": 0.75,
+    "f1_provisional": 0.48,
+    "fires": 34,
+    "ask": 5,
+    "duplicates": 0,
+    "misses": 4,
+    "suppressed_rising_edge": 5,
+    "suppressed_refractory": 0,
+    "suppressed_duplicate_detections": 0,
+    "timely_recall": null,
+    "onset_to_receiver_ack_seconds": null
+  },
+  "latency_seconds": {
+    "detector": {"p50": 0.7456225210007688, "p95": 0.8037559086993497, "p99": 0.8683322737920025, "max": 1.3134737079999468},
+    "tracker_state": {"p50": 0.000007667000318178907, "p95": 0.00002817064978444248, "p99": 0.00004871268032729865, "max": 0.00011299999823677354},
+    "receiver_ack_measured": false
+  },
+  "reconciliation": {"expected_sources": 21, "observed_sources": 21, "expected_samples": 2230, "observed_samples": 2230, "exact": true},
+  "source_hours": 0.6182750648148148,
+  "source_distribution_columns": ["source_id", "occurrences", "fires", "tp", "fp", "fn", "ask"],
+  "source_distribution": [
+    ["VIRAT_S_050200_00_000106_000380",0,2,0,2,0,0],
+    ["VIRAT_S_050201_00_000012_000116",4,3,3,0,1,0],
+    ["VIRAT_S_050201_01_000147_000321",1,3,1,2,0,0],
+    ["VIRAT_S_050201_04_000669_000728",0,0,0,0,0,0],
+    ["VIRAT_S_050201_08_001567_001647",0,2,0,2,0,0],
+    ["VIRAT_S_050201_10_001992_002056",0,0,0,0,0,0],
+    ["VIRAT_S_050201_11_002090_002220",0,4,0,4,0,1],
+    ["VIRAT_S_050202_00_000000_000105",0,2,0,2,0,0],
+    ["VIRAT_S_050202_01_000150_000280",1,4,1,3,0,0],
+    ["VIRAT_S_050202_02_000447_000577",4,4,3,1,1,1],
+    ["VIRAT_S_050202_03_000608_000684",1,1,1,0,0,1],
+    ["VIRAT_S_050202_04_000690_000750",0,1,0,1,0,0],
+    ["VIRAT_S_050202_06_001048_001115",0,0,0,0,0,0],
+    ["VIRAT_S_050202_07_001126_001301",2,2,2,0,0,1],
+    ["VIRAT_S_050202_08_001410_001494",0,0,0,0,0,1],
+    ["VIRAT_S_050202_09_001642_001712",1,0,0,0,1,0],
+    ["VIRAT_S_050202_10_002159_002233",0,0,0,0,0,0],
+    ["VIRAT_S_050203_00_000023_000097",2,2,1,1,1,0],
+    ["VIRAT_S_050203_01_000147_000223",0,0,0,0,0,0],
+    ["VIRAT_S_050203_06_001202_001264",0,0,0,0,0,0],
+    ["VIRAT_S_050203_08_001686_001885",0,4,0,4,0,0]
+  ],
+  "comparison_to_v1": {
+    "v1": {"tp": 13, "fp": 26, "fn": 3, "duplicates": 3, "ask": 0},
+    "v2": {"tp": 12, "fp": 22, "fn": 4, "duplicates": 0, "ask": 5},
+    "interpretation": "persistent tracking eliminated emitted duplicates but did not resolve detector coverage or unmatched transition evidence"
+  },
+  "economy": {"remote_provider_calls": 0, "provider_cost_usd": 0.0, "all_in_cost_per_source_hour_usd": null, "interpretation": "local resource rate absent; all-in cost not inferred"},
+  "quality_caveat": "complete-zone and occlusion audit pending; TP/FP/FN and quality ratios are provisional engineering measurements",
+  "evidence": {
+    "path": "/Volumes/Percept/Percept-Eternal/Percept-Benchmarks/virat-fixed-watch/evidence/b4/b4-v2-calibration-sweep.json",
+    "sha256": "3f94f2b791ea5e89b8533449e28635a1f7186749e0b6ca81185bdcc75f4f2f84",
+    "bytes": 7306140
+  },
+  "validation_opened": false,
+  "qualification_labels_opened": false,
+  "pilot_276_opened": false,
+  "paid_activity_performed": false,
+  "next_action": "stop; a materially different detector/model or new evidence source requires a newly approved candidate family before any further calibration"
+}
