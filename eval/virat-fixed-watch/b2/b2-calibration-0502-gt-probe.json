@@ -1,0 +1,17 @@
+{
+  "annotations_zip_sha256": "c83f541a425459722da1a594eedf58f60234210b5ec974f7d5d1bb839a40ed00",
+  "legacy_occlusion_field_present": false,
+  "malformed_annotation_files_rejected": 3,
+  "media_files_admitted": 21,
+  "occlusion_interpretation": "not_provided; provisional engineering only",
+  "partition": "calibration_exposed",
+  "provisional_occurrences_by_dwell_seconds": {
+    "0.0": 16,
+    "0.25": 16,
+    "0.5": 16
+  },
+  "qualification_labels_opened": false,
+  "schema": "percept.benchmark.b2-calibration-probe.v1",
+  "source_group": "0502",
+  "zone_manifest_sha256": "9c1883feeca512528cb6a0002583e7d06a3723725c3d54268cdf3194940f8ef0"
+}

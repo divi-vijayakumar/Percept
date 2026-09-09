@@ -167,6 +167,27 @@ class AdmissionReceiptTests(unittest.TestCase):
         self.assertFalse(receipt["paid_provider_calls_authorized"])
         self.assertFalse(receipt["paid_activity_performed"])
 
+    def test_b2_receipt_binds_implementation_and_keeps_holdout_sealed(self):
+        b2_root = ROOT.parent / "b2"
+        receipt = json.loads((b2_root / "b2-qualification.json").read_text())
+        self.assertEqual("engineering_pass", receipt["status"])
+        self.assertFalse(receipt["qualification_labels_opened"])
+        self.assertFalse(receipt["paid_activity_performed"])
+        self.assertTrue(receipt["next_milestone_engineering_admitted"])
+        names = {
+            "transformer_sha256": "zone_entry.py",
+            "scorer_sha256": "scorer.py",
+            "calibration_probe_sha256": "calibration_probe.py",
+            "fixture_tests_sha256": "test_zone_entry_and_scorer.py",
+            "independent_oracle_sha256": "test_scorer_oracle.py",
+            "calibration_result_sha256": "b2-calibration-0502-gt-probe.json",
+        }
+        for field, name in names.items():
+            self.assertEqual(
+                receipt["identities"][field],
+                hashlib.sha256((b2_root / name).read_bytes()).hexdigest(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
