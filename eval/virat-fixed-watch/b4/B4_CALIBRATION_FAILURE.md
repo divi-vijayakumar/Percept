@@ -39,4 +39,3 @@ is superseded because `BUG-B4-001` found that it rendered unmeasured timely reca
 Per the earliest-failing-gate rule, validation, candidate freeze, PILOT-276, provider runs, and the
 72-hour soak were not started. The precise next action is founder approval of a new B4 candidate plan;
 the current plan has no admitted autonomous step beyond this failure.
-

@@ -10,4 +10,3 @@
 - Retest gate: corrected append-only sweep hash
   `8521b4814adf86730942b2a96ae25de20ddc22ed0d1e98ac901bfeed30b3854e`; the original evidence is
   retained and superseded, not overwritten.
-
