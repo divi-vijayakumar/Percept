@@ -1,0 +1,37 @@
+{
+  "schema": "percept.benchmark.b3-qualification.v1",
+  "status": "engineering_pass",
+  "publication_qualification_status": "not_evaluated",
+  "qualification_labels_opened": false,
+  "paid_activity_performed": false,
+  "source_partition": "calibration_exposed",
+  "measured": {
+    "frames": 118,
+    "admissions": 59,
+    "local_judge_calls": 59,
+    "remote_provider_calls": 0,
+    "fires": 2,
+    "asks": 0,
+    "incidents": 2,
+    "episodes": 2,
+    "context_action_log_entries": 2,
+    "receiver_attempts": 2,
+    "receiver_acks": 2,
+    "delivery_ledger_entries": 2,
+    "outbox_pending_after_drain": 0,
+    "frames_dropped": 0,
+    "deliveries_dropped": 0,
+    "sink_errors": 0,
+    "exact_reconciliation": true,
+    "provider_cost_usd": 0.0,
+    "all_in_cost_usd": null,
+    "source_onset_to_receiver_ack_seconds": null
+  },
+  "identities": {
+    "rehearsal_sha256": "de78e0f4e2baa21e5b7f750a122698bee874ef3d88115fc4604ab85669f7cbae",
+    "test_sha256": "04ef2de1330fb52037571e8ec59381d0865378d429286b5e8bd46006c7203c89",
+    "result_sha256": "417859724b455f05512d0edfa3fe7adae0e4c912fdd9eeb6d6a16dd8c176fc73"
+  },
+  "next_milestone": "B4",
+  "next_milestone_engineering_admitted": true
+}

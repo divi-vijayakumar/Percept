@@ -188,6 +188,31 @@ class AdmissionReceiptTests(unittest.TestCase):
                 hashlib.sha256((b2_root / name).read_bytes()).hexdigest(),
             )
 
+    def test_b3_receipt_binds_exact_zero_paid_rehearsal(self):
+        b3_root = ROOT.parent / "b3"
+        receipt = json.loads((b3_root / "b3-qualification.json").read_text())
+        result = json.loads((b3_root / "b3-rehearsal-result.json").read_text())
+        self.assertEqual("engineering_pass", receipt["status"])
+        self.assertFalse(receipt["qualification_labels_opened"])
+        self.assertFalse(receipt["paid_activity_performed"])
+        measured = receipt["measured"]
+        self.assertEqual(0, measured["remote_provider_calls"])
+        self.assertEqual(0.0, measured["provider_cost_usd"])
+        self.assertIsNone(measured["all_in_cost_usd"])
+        self.assertIsNone(measured["source_onset_to_receiver_ack_seconds"])
+        self.assertTrue(measured["exact_reconciliation"])
+        self.assertTrue(result["reconciliation"]["exact"])
+        names = {
+            "rehearsal_sha256": "rehearsal.py",
+            "test_sha256": "test_rehearsal.py",
+            "result_sha256": "b3-rehearsal-result.json",
+        }
+        for field, name in names.items():
+            self.assertEqual(
+                receipt["identities"][field],
+                hashlib.sha256((b3_root / name).read_bytes()).hexdigest(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

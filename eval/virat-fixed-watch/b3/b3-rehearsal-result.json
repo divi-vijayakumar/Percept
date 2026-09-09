@@ -1,0 +1,143 @@
+{
+  "latency_seconds": {
+    "receiver_arrival_to_ack": {
+      "max": 0.00019058299949392676,
+      "p50": 0.00018733300021267496,
+      "p95": 0.0001902579995658016,
+      "p99": 0.00019051799950830172
+    },
+    "sdk_yield_to_receiver_ack": {
+      "max": 0.0017589579983905423,
+      "p50": 0.0015856244990573032,
+      "p95": 0.0017416246484572185,
+      "p99": 0.0017554913284038775
+    },
+    "sdk_yield_to_receiver_arrival": {
+      "max": 0.0015683749988966156,
+      "p50": 0.0013982914988446282,
+      "p95": 0.001551366648891417,
+      "p99": 0.0015649733288955758
+    },
+    "source_onset_note": "not measured: scripted rehearsal states are not GT occurrences",
+    "source_onset_to_receiver_ack": null
+  },
+  "local_judge": {
+    "all_in_cost_note": "not measured: no hardware/energy rate was frozen for B3",
+    "all_in_cost_usd": null,
+    "calls": 59,
+    "identity": "local/sequence-rehearsal",
+    "provider_cost_usd": 0.0,
+    "quality_claim": false,
+    "remote_provider_calls": 0,
+    "trace_provider_calls_are_local_judge_seam_dispatches": true
+  },
+  "paid_activity_performed": false,
+  "qualification_labels_opened": false,
+  "reconciliation": {
+    "context_action_log_entries": 2,
+    "delivery_ledger_entries": 2,
+    "episodes": 2,
+    "exact": true,
+    "outbox_pending_after_drain": 0,
+    "persisted_snapshot_present": true,
+    "receiver_acks": 2,
+    "receiver_attempts": 2,
+    "yielded_incidents": 2
+  },
+  "runtime": {
+    "fps_requested": 2.0,
+    "health_events": {
+      "effective_config": 1,
+      "escalation": 59,
+      "incident": 2,
+      "judge_dispatch": 1,
+      "runtime_ended": 1,
+      "runtime_started": 1
+    },
+    "judge_dispatch": "inline",
+    "queue_policy": "block",
+    "stats": {
+      "asks": 0,
+      "coast_admits": 0,
+      "deliveries_dropped": 0,
+      "escalations": 59,
+      "fires": 2,
+      "fixed_admits": 59,
+      "frames": 118,
+      "frames_dropped": 0,
+      "goal_admissions": 59,
+      "incidents": 2,
+      "judge_calls": 59,
+      "perceive_dispatches": 59,
+      "signal_admits": 0,
+      "sink_errors": 0
+    },
+    "timebase": "media",
+    "wall_seconds": 2.27908062500137
+  },
+  "schema": "percept.benchmark.b3-rehearsal.v1",
+  "source": {
+    "name": "VIRAT_S_050201_04_000669_000728.mp4",
+    "partition": "calibration_exposed",
+    "sha256": "f83057bf03575908f19da901f58776fa73a5476fb7d611d7e6629f678ff278f4"
+  },
+  "trace_summary": {
+    "admitted": 59,
+    "admitted_evidence_union_s": 0.0,
+    "admitted_evidence_units": 59,
+    "admitted_unit": "evidence_units",
+    "cost": {
+      "input_tokens": 0.0,
+      "output_tokens": 0.0,
+      "priced_calls": 59,
+      "text": "$0.0000",
+      "usage_reported_calls": 59,
+      "usd": 0.0,
+      "usd_per_stream_hour": 0.0
+    },
+    "gate_outcomes": {
+      "ask": 0,
+      "fire": 2,
+      "silent": 57,
+      "suppressed": 0
+    },
+    "incidents": 2,
+    "judge_cache_hits": 0,
+    "judge_completed": 59,
+    "judge_degraded": 0,
+    "judge_direct_hits": 0,
+    "judge_dispatch_opportunities": 59,
+    "judge_dispatch_unit": "evidence_goal_pairs",
+    "judge_dropped": 0,
+    "judge_started": 59,
+    "judge_started_unit": "evidence_goal_pairs",
+    "judge_superseded": 0,
+    "latency": {
+      "p50_s": 0.00011091700071119703,
+      "p95_s": 0.0003465000008873176
+    },
+    "observed": 118,
+    "observed_unit": "frames",
+    "provider_calls": 59,
+    "provider_calls_unit": "provider_calls",
+    "records": {
+      "dropped": 0,
+      "retained": 541
+    },
+    "run_id": "0e95bf216fc64bec",
+    "savings": {
+      "baseline": {
+        "description": "No baseline declared; savings is not computed.",
+        "kind": "undeclared",
+        "opportunities": null
+      },
+      "estimated_baseline_calls": null,
+      "estimated_saved_calls": null,
+      "estimated_saved_tokens": null,
+      "mean_input_tokens_per_call": 0.0,
+      "text": "\u2014"
+    },
+    "source_healthy_s": 58.5585,
+    "watch_duration_s": 58.5585
+  }
+}
