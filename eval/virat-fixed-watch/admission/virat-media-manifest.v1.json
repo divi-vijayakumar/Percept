@@ -1,0 +1,4035 @@
+{
+  "media": [
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 5050,
+        "minimum_frame": 0,
+        "person_rows": 9577,
+        "person_tracks": 24,
+        "rows": 157785
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 38721416,
+      "name": "VIRAT_S_010106_00_000098_000315.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010106_00_000098_000315.mp4",
+      "sha256": "e2e3027ed47d0273b9e3c23c763cc47767c7f5d2f5fbe2d69d8c5fe5477b3713",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 210.721736,
+        "frames": 5051,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 608,
+        "minimum_frame": 0,
+        "person_rows": 1609,
+        "person_tracks": 4,
+        "rows": 19351
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4375781,
+      "name": "VIRAT_S_010106_01_000493_000526.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010106_01_000493_000526.mp4",
+      "sha256": "5051197eb0355e7f06cb57d0ac35b7626bf1851f4b008e4162744d9d095c1306",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 25.406758,
+        "frames": 609,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 837,
+        "minimum_frame": 0,
+        "person_rows": 2276,
+        "person_tracks": 4,
+        "rows": 25428
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6387250,
+      "name": "VIRAT_S_010106_02_000656_000692.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010106_02_000656_000692.mp4",
+      "sha256": "a06b6b878e125e6e9de8a8f8c4a38d7b4ca71ef5b3ee45ddcf76dc5e2be41855",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 34.960367,
+        "frames": 838,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1244,
+        "minimum_frame": 0,
+        "person_rows": 4662,
+        "person_tracks": 7,
+        "rows": 40647
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 9958915,
+      "name": "VIRAT_S_010106_03_000730_000782.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010106_03_000730_000782.mp4",
+      "sha256": "c402532ab0cfa4efb2898e4ca564c06f78ecc7d83d1b70481b2c029eb7921316",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 51.939925,
+        "frames": 1245,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2754,
+        "minimum_frame": 0,
+        "person_rows": 8357,
+        "person_tracks": 24,
+        "rows": 83938
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 21063580,
+      "name": "VIRAT_S_010106_04_000800_000918.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010106_04_000800_000918.mp4",
+      "sha256": "2f406e0a48438efdfba8e90133abd5b0ced651693d2f9114fedc3eb3437f3d4f",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 114.935336,
+        "frames": 2755,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 656,
+        "minimum_frame": 0,
+        "person_rows": 952,
+        "person_tracks": 3,
+        "rows": 18792
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5641892,
+      "name": "VIRAT_S_010106_05_000954_000996.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010106_05_000954_000996.mp4",
+      "sha256": "311e0b90ad197fc397c2b792878f0d931ea8adecc9e846dc710f33f3a5c6a50c",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 27.409262,
+        "frames": 657,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 866,
+        "minimum_frame": 0,
+        "person_rows": 3551,
+        "person_tracks": 9,
+        "rows": 27615
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6818547,
+      "name": "VIRAT_S_010107_00_000019_000057.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010107_00_000019_000057.mp4",
+      "sha256": "1057e3da96260598dd879a51085157dd856c452fbabd8d2d20e63090a3e51537",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 36.170213,
+        "frames": 867,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2948,
+        "minimum_frame": 0,
+        "person_rows": 5755,
+        "person_tracks": 13,
+        "rows": 74619
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 22585213,
+      "name": "VIRAT_S_010107_01_000068_000196.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010107_01_000068_000196.mp4",
+      "sha256": "a779a7ee694528167e79db69e54c57816639d1ada17494cc2a8bf5d42c62b253",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 123.028786,
+        "frames": 2949,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 478,
+        "minimum_frame": 0,
+        "person_rows": 1701,
+        "person_tracks": 5,
+        "rows": 15344
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3871156,
+      "name": "VIRAT_S_010107_02_000282_000312.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010107_02_000282_000312.mp4",
+      "sha256": "30e20c3bd2aac7d7585eba0e49b0322424d48d06ba8d399bcf5382d2ac0d0d6d",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 19.983312,
+        "frames": 479,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 3460,
+        "minimum_frame": 0,
+        "person_rows": 9254,
+        "person_tracks": 22,
+        "rows": 183908
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 27623648,
+      "name": "VIRAT_S_010108_01_000570_000718.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010108_01_000570_000718.mp4",
+      "sha256": "57233a62f6aaad913bfa93a0f242ac3aad9ad1af5076c579d5df5d230efb6689",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 144.388819,
+        "frames": 3461,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 3761,
+        "minimum_frame": 0,
+        "person_rows": 12279,
+        "person_tracks": 23,
+        "rows": 196602
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 30308238,
+      "name": "VIRAT_S_010108_02_000800_000960.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010108_02_000800_000960.mp4",
+      "sha256": "a0a1115bad9f81bc2c200b02d08ec5119fac0aefd71f29a448839723883dca9f",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 156.946183,
+        "frames": 3762,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1510,
+        "minimum_frame": 0,
+        "person_rows": 1619,
+        "person_tracks": 4,
+        "rows": 117923
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 12022279,
+      "name": "VIRAT_S_010109_00_000000_000063.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010109_00_000000_000063.mp4",
+      "sha256": "a4b5b7228b35149f05411ee610c0e089d772979e56b2a279b916f457988b1088",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 63.03713,
+        "frames": 1511,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1145,
+        "minimum_frame": 0,
+        "person_rows": 1416,
+        "person_tracks": 4,
+        "rows": 99499
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 9669237,
+      "name": "VIRAT_S_010109_04_000487_000538.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010109_04_000487_000538.mp4",
+      "sha256": "fc09bbfada830c165a3d61723f22d4f44a22404f15e83c92829212c430853864",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 47.809762,
+        "frames": 1146,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1751,
+        "minimum_frame": 0,
+        "person_rows": 5262,
+        "person_tracks": 11,
+        "rows": 152461
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 12607199,
+      "name": "VIRAT_S_010109_05_000602_000678.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010109_05_000602_000678.mp4",
+      "sha256": "7b21907f378d12364dcd945a35ba5a412b64edc2f70bcdb443f7037c862b306c",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 73.091364,
+        "frames": 1752,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 812,
+        "minimum_frame": 0,
+        "person_rows": 1026,
+        "person_tracks": 2,
+        "rows": 64796
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6795115,
+      "name": "VIRAT_S_010109_07_000876_000910.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010109_07_000876_000910.mp4",
+      "sha256": "c9d52e3b2da0ca6a321f17bc5fa297def6a975f08942bca96e7b3527bd0427d9",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 33.917397,
+        "frames": 813,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1016,
+        "minimum_frame": 0,
+        "person_rows": 360,
+        "person_tracks": 2,
+        "rows": 83447
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 9318731,
+      "name": "VIRAT_S_010109_08_000952_001011.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010109_08_000952_001011.mp4",
+      "sha256": "975790d92184c372bc672c13ae3d7640b1f1bc8d20e1c726411fea04bfebfa65",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 42.428035,
+        "frames": 1017,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 503,
+        "minimum_frame": 0,
+        "person_rows": 384,
+        "person_tracks": 2,
+        "rows": 34716
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4087970,
+      "name": "VIRAT_S_010110_00_000000_000021.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010110_00_000000_000021.mp4",
+      "sha256": "5b49846b4123134307559b2338edb251e131cc905c437758bff9112f34b1dfe3",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 21.026283,
+        "frames": 504,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1067,
+        "minimum_frame": 0,
+        "person_rows": 812,
+        "person_tracks": 3,
+        "rows": 85257
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 8463474,
+      "name": "VIRAT_S_010110_02_000513_000566.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010110_02_000513_000566.mp4",
+      "sha256": "e99fbc35305dbd4bd6fc9da45c69224d5e94396f050ad8d8fed7c65a61dfc45b",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 44.555695,
+        "frames": 1068,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 463,
+        "minimum_frame": 0,
+        "person_rows": 382,
+        "person_tracks": 2,
+        "rows": 40753
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3626865,
+      "name": "VIRAT_S_010110_03_000712_000739.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010110_03_000712_000739.mp4",
+      "sha256": "6298a9621f79303ceb6550c6e235f5a7607c1c5fbcc562f904dfdd468225b060",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 19.35753,
+        "frames": 464,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 713,
+        "minimum_frame": 0,
+        "person_rows": 1842,
+        "person_tracks": 4,
+        "rows": 61718
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6461764,
+      "name": "VIRAT_S_010110_04_000777_000812.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010110_04_000777_000812.mp4",
+      "sha256": "69a1cb840fe39fe18f01b8cc2d6d60b9f7d07cac12c9e14bf8ad70b3067557e1",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 29.787234,
+        "frames": 714,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 661,
+        "minimum_frame": 0,
+        "person_rows": 2545,
+        "person_tracks": 7,
+        "rows": 59403
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5838702,
+      "name": "VIRAT_S_010110_05_000899_000935.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010110_05_000899_000935.mp4",
+      "sha256": "3f87c4421670e51a931a7d8dcf783dae570a70a4ae73943d62237b278bc45fd0",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 27.617856,
+        "frames": 662,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1016,
+        "minimum_frame": 0,
+        "person_rows": 761,
+        "person_tracks": 3,
+        "rows": 79034
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 8594202,
+      "name": "VIRAT_S_010110_06_000953_001011.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010110_06_000953_001011.mp4",
+      "sha256": "2571d78a32a520ce6393c360b88ac4c5d4e6f235007b9f440388e4a11de73814",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 42.428035,
+        "frames": 1017,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 767,
+        "minimum_frame": 0,
+        "person_rows": 490,
+        "person_tracks": 1,
+        "rows": 65530
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5847694,
+      "name": "VIRAT_S_010111_00_000000_000032.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010111_00_000000_000032.mp4",
+      "sha256": "9daf288074780880db046050cceb1fbad761ee534013a2d2c4c4e8634395e95b",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 32.04005,
+        "frames": 768,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2680,
+        "minimum_frame": 0,
+        "person_rows": 8623,
+        "person_tracks": 17,
+        "rows": 209545
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 23205971,
+      "name": "VIRAT_S_010111_02_000198_000310.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010111_02_000198_000310.mp4",
+      "sha256": "6be95dcacc356d444a9735ccd8ac5f7130ce91996122e42743ee9d90212de8d2",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 111.848144,
+        "frames": 2681,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 967,
+        "minimum_frame": 0,
+        "person_rows": 1535,
+        "person_tracks": 6,
+        "rows": 50819
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 8769420,
+      "name": "VIRAT_S_010111_04_000718_000760.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010111_04_000718_000760.mp4",
+      "sha256": "123c53696f552b9273d20e1bd2feb4a6cf672ddbbdaa4bf8c1041da58301ba74",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 40.383813,
+        "frames": 968,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 652,
+        "minimum_frame": 0,
+        "person_rows": 2072,
+        "person_tracks": 9,
+        "rows": 53061
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4948913,
+      "name": "VIRAT_S_010111_05_000762_000799.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010111_05_000762_000799.mp4",
+      "sha256": "e6d49cebc1f3acec79502cd4410391f9e6a4312634a0922f1c0850b51015918e",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 27.242386,
+        "frames": 653,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 864,
+        "minimum_frame": 0,
+        "person_rows": 2328,
+        "person_tracks": 7,
+        "rows": 68298
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6589436,
+      "name": "VIRAT_S_010111_06_000820_000860.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010111_06_000820_000860.mp4",
+      "sha256": "c16a2467e2301f44b7505ab42e964614920b7f2f02425753332de60089d66205",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 36.086775,
+        "frames": 865,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 788,
+        "minimum_frame": 0,
+        "person_rows": 542,
+        "person_tracks": 4,
+        "rows": 61999
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6761674,
+      "name": "VIRAT_S_010111_07_000872_000909.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010111_07_000872_000909.mp4",
+      "sha256": "dc2e0c3e47d2ee53c08ecbbe4275f830735532be53a38b727a4d69b996199311",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 32.916145,
+        "frames": 789,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 617,
+        "minimum_frame": 0,
+        "person_rows": 1209,
+        "person_tracks": 6,
+        "rows": 45683
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4435868,
+      "name": "VIRAT_S_010111_08_000920_000954.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010111_08_000920_000954.mp4",
+      "sha256": "df350a4242878ffae72ccfd2e2084dec4db5e3d01a6f166b10aada49f9723d65",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 25.782228,
+        "frames": 618,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 326,
+        "minimum_frame": 0,
+        "person_rows": 225,
+        "person_tracks": 1,
+        "rows": 21221
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 2654583,
+      "name": "VIRAT_S_010111_09_000981_001014.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010111_09_000981_001014.mp4",
+      "sha256": "2d5a78b6494fe428a986a40644aa391d489c1edaefa935bfcd2f484490a02aa4",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 13.642053,
+        "frames": 327,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1777,
+        "minimum_frame": 0,
+        "person_rows": 2784,
+        "person_tracks": 9,
+        "rows": 82599
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 14104986,
+      "name": "VIRAT_S_010112_00_000015_000095.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010112_00_000015_000095.mp4",
+      "sha256": "e4e032326060f6c22cf35dd864ca4649b8dc852b47c80353d6cb0bd468039c29",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 74.176053,
+        "frames": 1778,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1232,
+        "minimum_frame": 0,
+        "person_rows": 6254,
+        "person_tracks": 17,
+        "rows": 63841
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 9283694,
+      "name": "VIRAT_S_010112_01_000128_000187.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010112_01_000128_000187.mp4",
+      "sha256": "4b4674d69fe55245617653c8c391a512733e22ca8dea3b4ade32cbc60cf0ab97",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 51.439299,
+        "frames": 1233,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1201,
+        "minimum_frame": 0,
+        "person_rows": 2363,
+        "person_tracks": 9,
+        "rows": 45450
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 9638306,
+      "name": "VIRAT_S_010113_00_000013_000071.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010113_00_000013_000071.mp4",
+      "sha256": "fd2a3f71354eb9103e079dbb9ae6284a6154eaa6416237a0d0539108c489dd85",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 50.146016,
+        "frames": 1202,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 981,
+        "minimum_frame": 0,
+        "person_rows": 71,
+        "person_tracks": 1,
+        "rows": 31018
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6938310,
+      "name": "VIRAT_S_010113_02_000434_000479.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010113_02_000434_000479.mp4",
+      "sha256": "8163905a45c24484210b94110051c8eb704273b390cac795c46749d734b7855a",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 40.967877,
+        "frames": 982,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2004,
+        "minimum_frame": 0,
+        "person_rows": 1243,
+        "person_tracks": 4,
+        "rows": 64071
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 16405259,
+      "name": "VIRAT_S_010113_04_000681_000772.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010113_04_000681_000772.mp4",
+      "sha256": "b29ce7c51cbbf7b86afb73515ebe188204b469615774a85b849fdb639aba3a42",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 83.646224,
+        "frames": 2005,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 545,
+        "minimum_frame": 0,
+        "person_rows": 1348,
+        "person_tracks": 4,
+        "rows": 17933
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3732642,
+      "name": "VIRAT_S_010113_05_000776_000805.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010113_05_000776_000805.mp4",
+      "sha256": "7753838d91f036ee72a8654cee3cd6e9e331cafe2ef01b068bf7f022f02d13e2",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 22.778473,
+        "frames": 546,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1477,
+        "minimum_frame": 0,
+        "person_rows": 1353,
+        "person_tracks": 5,
+        "rows": 46668
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 13131465,
+      "name": "VIRAT_S_010113_06_000831_000896.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010113_06_000831_000896.mp4",
+      "sha256": "c9966da531baa9931a864704b73099193c3d878600582a2474de7bd844a160fd",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 61.660409,
+        "frames": 1478,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 910,
+        "minimum_frame": 0,
+        "person_rows": 1724,
+        "person_tracks": 6,
+        "rows": 30029
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 7950171,
+      "name": "VIRAT_S_010113_07_000965_001013.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010113_07_000965_001013.mp4",
+      "sha256": "ca4c20488a08390f22a3d428d5844f23eeb30cb54950e4feb43224d316acb80c",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 38.005841,
+        "frames": 911,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2530,
+        "minimum_frame": 0,
+        "person_rows": 7417,
+        "person_tracks": 18,
+        "rows": 77197
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 20154299,
+      "name": "VIRAT_S_010114_00_000006_000116.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010114_00_000006_000116.mp4",
+      "sha256": "816e9715d0982f3333a57e39ec844f78661833b6600c9c5c670f58bf3a0d23ef",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 105.590321,
+        "frames": 2531,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1704,
+        "minimum_frame": 0,
+        "person_rows": 1921,
+        "person_tracks": 5,
+        "rows": 46379
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 13306000,
+      "name": "VIRAT_S_010114_01_000235_000311.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010114_01_000235_000311.mp4",
+      "sha256": "b5ab95b786e8896408181adf86eb0cba00aa77780ef44ee30e6d4a41fa4dfc3b",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 71.13058,
+        "frames": 1705,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 723,
+        "minimum_frame": 0,
+        "person_rows": 1281,
+        "person_tracks": 3,
+        "rows": 19403
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5816941,
+      "name": "VIRAT_S_010114_02_000765_000802.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010114_02_000765_000802.mp4",
+      "sha256": "072b81e8c1f3882f6db8b88ff2744183d1dd4b77a9d0244c1166cdf301b97fcd",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 30.204422,
+        "frames": 724,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1443,
+        "minimum_frame": 0,
+        "person_rows": 1148,
+        "person_tracks": 4,
+        "rows": 34246
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 11371855,
+      "name": "VIRAT_S_010115_01_000399_000467.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010115_01_000399_000467.mp4",
+      "sha256": "029cbfbf078d9ec3a8b7be7573aa35706ccb2ce7509969f9b0169ee11f5eae98",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 60.241969,
+        "frames": 1444,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 618,
+        "minimum_frame": 0,
+        "person_rows": 314,
+        "person_tracks": 3,
+        "rows": 14298
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4346200,
+      "name": "VIRAT_S_010115_02_000485_000516.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010115_02_000485_000516.mp4",
+      "sha256": "1079d8f0372b6912bba9033d083302f8aff216cbb61871e04b5a0837f04c4ade",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 25.823947,
+        "frames": 619,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2508,
+        "minimum_frame": 0,
+        "person_rows": 5792,
+        "person_tracks": 12,
+        "rows": 60592
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 20971268,
+      "name": "VIRAT_S_010115_03_000685_000793.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010115_03_000685_000793.mp4",
+      "sha256": "6615608c68919948c3cbd0117468adcaa953d2728525c6170373fb11022b39c9",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 104.672507,
+        "frames": 2509,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1381,
+        "minimum_frame": 0,
+        "person_rows": 2179,
+        "person_tracks": 8,
+        "rows": 31024
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 11107849,
+      "name": "VIRAT_S_010115_04_000830_000892.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010115_04_000830_000892.mp4",
+      "sha256": "1bbbe66ac4041a3032a53810c1cc42d88e493b851d99e039efb6f97040aa48fb",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 57.655403,
+        "frames": 1382,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1400,
+        "minimum_frame": 0,
+        "person_rows": 2078,
+        "person_tracks": 6,
+        "rows": 30912
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 11914956,
+      "name": "VIRAT_S_010116_00_000061_000121.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "validation",
+      "relative_path": "validation-0101/VIRAT_S_010116_00_000061_000121.mp4",
+      "sha256": "f1ca1a8e7e74d3a53637bb3c9efd146899fc17bc9cb275960457864460c681da",
+      "source_group": "0101",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 58.44806,
+        "frames": 1401,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 20655,
+        "minimum_frame": 0,
+        "person_rows": 84008,
+        "person_tracks": 11,
+        "rows": 219982
+      },
+      "annotation_frames_within_media": false,
+      "annotation_max_equals_decoded_frame_count": true,
+      "bytes": 1456355404,
+      "name": "VIRAT_S_000001.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0000/VIRAT_S_000001.mp4",
+      "sha256": "99eb359edbe274aebee62dd653ffaaacd71cbdc405136f0b77ef2348aa347ea4",
+      "source_group": "0000",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 689.1885,
+        "frames": 20655,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 20940,
+        "minimum_frame": 0,
+        "person_rows": 9530,
+        "person_tracks": 6,
+        "rows": 208594
+      },
+      "annotation_frames_within_media": false,
+      "annotation_max_equals_decoded_frame_count": true,
+      "bytes": 1471252260,
+      "name": "VIRAT_S_000003.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0000/VIRAT_S_000003.mp4",
+      "sha256": "97057284041ceac8691c42c17b513ab1a3a850e1e9bd8bf06d3eb30058931420",
+      "source_group": "0000",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 698.698,
+        "frames": 20940,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 16772,
+        "minimum_frame": 1931,
+        "person_rows": 14542,
+        "person_tracks": 4,
+        "rows": 24797
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1255877454,
+      "name": "VIRAT_S_000004.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0000/VIRAT_S_000004.mp4",
+      "sha256": "8fc80698b321df298674b6c7ca18073d6afdac95c760c45c8da8975b2bbabbf7",
+      "source_group": "0000",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 588.588,
+        "frames": 17640,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 17209,
+        "minimum_frame": 0,
+        "person_rows": 21196,
+        "person_tracks": 11,
+        "rows": 44955
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1273962370,
+      "name": "VIRAT_S_000006.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0000/VIRAT_S_000006.mp4",
+      "sha256": "0e9ba3bffc0f745109150a76c86366d6067e9d87183df290a3e9158dac645b9f",
+      "source_group": "0000",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 594.0935,
+        "frames": 17805,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 20337,
+        "minimum_frame": 0,
+        "person_rows": 66155,
+        "person_tracks": 37,
+        "rows": 221168
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1110987742,
+      "name": "VIRAT_S_000101.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0001/VIRAT_S_000101.mp4",
+      "sha256": "00c7428da4f0a41e330ca0f78bdda9caa7267e3824b3fd70de32ea6a79a2477c",
+      "source_group": "0001",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 678.678,
+        "frames": 20340,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 29577,
+        "minimum_frame": 0,
+        "person_rows": 147449,
+        "person_tracks": 76,
+        "rows": 382177
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1608243538,
+      "name": "VIRAT_S_000102.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0001/VIRAT_S_000102.mp4",
+      "sha256": "7879aef5d7f3448f9fdfc94f16b3bef392071eda9ae476f91684a455a970616a",
+      "source_group": "0001",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 986.986,
+        "frames": 29580,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 3955,
+        "minimum_frame": 0,
+        "person_rows": 19859,
+        "person_tracks": 42,
+        "rows": 22140
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 29989056,
+      "name": "VIRAT_S_010000_00_000000_000165.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_00_000000_000165.mp4",
+      "sha256": "3ac3b2ae941033527f15c146f798a829c99884b7861a5a9954570dfb201b45aa",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 165.039633,
+        "frames": 3956,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 3266,
+        "minimum_frame": 0,
+        "person_rows": 16249,
+        "person_tracks": 27,
+        "rows": 18003
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 24789774,
+      "name": "VIRAT_S_010000_01_000184_000324.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_01_000184_000324.mp4",
+      "sha256": "11f452eba4ba48e45301d0d58f971c9edc8e0c41d8b7f214846d1602d4f175fe",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 136.295369,
+        "frames": 3267,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 591,
+        "minimum_frame": 0,
+        "person_rows": 2422,
+        "person_tracks": 9,
+        "rows": 2720
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5142135,
+      "name": "VIRAT_S_010000_02_000388_000421.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_02_000388_000421.mp4",
+      "sha256": "fc6ce9f62b27a552c991dfe4d806df350721eac214309e0fdfa976e0ec66302d",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 24.697539,
+        "frames": 592,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1906,
+        "minimum_frame": 0,
+        "person_rows": 8729,
+        "person_tracks": 16,
+        "rows": 8931
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 15327931,
+      "name": "VIRAT_S_010000_03_000442_000528.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_03_000442_000528.mp4",
+      "sha256": "bc659eab58882f5e1c64196caa07bc3903a96fecc140b4c55bff03a7dee66e0e",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 79.557781,
+        "frames": 1907,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1751,
+        "minimum_frame": 0,
+        "person_rows": 5707,
+        "person_tracks": 14,
+        "rows": 5707
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 13433959,
+      "name": "VIRAT_S_010000_04_000530_000605.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_04_000530_000605.mp4",
+      "sha256": "be88b5325db1f6c79b0521fdd53957307ba2fc14a311cf5352406a66319c6874",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 73.091364,
+        "frames": 1752,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1710,
+        "minimum_frame": 0,
+        "person_rows": 10847,
+        "person_tracks": 20,
+        "rows": 11169
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 13335200,
+      "name": "VIRAT_S_010000_05_000638_000718.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_05_000638_000718.mp4",
+      "sha256": "cc7c95db851473c98fee2d7029a65c70f806a7e1e4a27ea2d1ba6f5c5b65ee52",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 71.380893,
+        "frames": 1711,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 765,
+        "minimum_frame": 0,
+        "person_rows": 2746,
+        "person_tracks": 10,
+        "rows": 2746
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 7049131,
+      "name": "VIRAT_S_010000_06_000728_000762.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_06_000728_000762.mp4",
+      "sha256": "fa4a92b48960b38953d6b01e8b2cdc2ffddb71fff73ca53498489c25a500e760",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 31.956612,
+        "frames": 766,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 614,
+        "minimum_frame": 0,
+        "person_rows": 3998,
+        "person_tracks": 14,
+        "rows": 3998
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4548337,
+      "name": "VIRAT_S_010000_07_000827_000860.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_07_000827_000860.mp4",
+      "sha256": "ee89117b921575ff3562a060d9872515cff421977ccf1b75bcdf77e6a19e8d37",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 25.657071,
+        "frames": 615,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2816,
+        "minimum_frame": 0,
+        "person_rows": 21911,
+        "person_tracks": 34,
+        "rows": 22082
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 25120257,
+      "name": "VIRAT_S_010000_08_000893_001024.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010000_08_000893_001024.mp4",
+      "sha256": "3ba13244bb73d0d80c4a56af251e8d18a85570b35fec701a30034cbc2bf169be",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 117.521902,
+        "frames": 2817,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1058,
+        "minimum_frame": 0,
+        "person_rows": 3488,
+        "person_tracks": 10,
+        "rows": 3488
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 8013521,
+      "name": "VIRAT_S_010001_00_000019_000065.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_00_000019_000065.mp4",
+      "sha256": "4ebd676c385c4cd0d9d1ef889f8df8d4a30a0f6d50416fd1e43cfb668006ad3b",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 44.180225,
+        "frames": 1059,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2252,
+        "minimum_frame": 0,
+        "person_rows": 12949,
+        "person_tracks": 22,
+        "rows": 14806
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 19047167,
+      "name": "VIRAT_S_010001_01_000071_000167.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_01_000071_000167.mp4",
+      "sha256": "40043b4c0ad6ce393e3253f31d7b53ed7a2b9501f4725ec7567c10500421f499",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 93.992491,
+        "frames": 2253,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 7187,
+        "minimum_frame": 0,
+        "person_rows": 33569,
+        "person_tracks": 61,
+        "rows": 33733
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 53341399,
+      "name": "VIRAT_S_010001_02_000195_000498.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_02_000195_000498.mp4",
+      "sha256": "2af617244470be18166f312ee4727c6c9f3508a660060884640a7ea764734516",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 299.874844,
+        "frames": 7188,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 495,
+        "minimum_frame": 0,
+        "person_rows": 1686,
+        "person_tracks": 4,
+        "rows": 1686
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4264805,
+      "name": "VIRAT_S_010001_03_000537_000563.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_03_000537_000563.mp4",
+      "sha256": "d4e9ab2ae5449093e2f017d5cf93c7e46c8a17497210466cb13e059d356a6b02",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 20.692532,
+        "frames": 496,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1484,
+        "minimum_frame": 0,
+        "person_rows": 5138,
+        "person_tracks": 11,
+        "rows": 5412
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 11550629,
+      "name": "VIRAT_S_010001_04_000583_000646.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_04_000583_000646.mp4",
+      "sha256": "689e293748263bbf924edb28e068d44c6a057118149fbdda0103a7821bda7c50",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 61.952441,
+        "frames": 1485,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 645,
+        "minimum_frame": 0,
+        "person_rows": 1999,
+        "person_tracks": 6,
+        "rows": 1999
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4580044,
+      "name": "VIRAT_S_010001_05_000649_000684.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_05_000649_000684.mp4",
+      "sha256": "1425ea41bd54563b74b1a16efec5c089e35c58a335ae0a46e0ec06b999a87cf8",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 26.950355,
+        "frames": 646,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 792,
+        "minimum_frame": 0,
+        "person_rows": 1408,
+        "person_tracks": 4,
+        "rows": 1408
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6336229,
+      "name": "VIRAT_S_010001_06_000685_000722.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_06_000685_000722.mp4",
+      "sha256": "98d9bd41efb850a360d437a3eb4000b882dfa5ac6511c2dbcc7f4e125d4408fd",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 33.667084,
+        "frames": 807,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1415,
+        "minimum_frame": 0,
+        "person_rows": 5442,
+        "person_tracks": 14,
+        "rows": 5945
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 11346143,
+      "name": "VIRAT_S_010001_07_000741_000810.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_07_000741_000810.mp4",
+      "sha256": "2640605ff1e059efa8b2db90d488e6472de6ba865cb2748bf155cb8ffb8c9dca",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 59.073842,
+        "frames": 1416,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1405,
+        "minimum_frame": 0,
+        "person_rows": 2100,
+        "person_tracks": 11,
+        "rows": 2260
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 11705616,
+      "name": "VIRAT_S_010001_08_000826_000893.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_08_000826_000893.mp4",
+      "sha256": "e63891db7b1fa126c537add8ee410bb79c8bf618013aa4d2dcf618f5b127e3db",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 58.656654,
+        "frames": 1406,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 569,
+        "minimum_frame": 0,
+        "person_rows": 734,
+        "person_tracks": 5,
+        "rows": 734
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5578948,
+      "name": "VIRAT_S_010001_09_000921_000952.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_09_000921_000952.mp4",
+      "sha256": "60a4b1daf8ab5b883f0c36856214d3baccf8a5df2429638583cb428bb0a145af",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 23.779725,
+        "frames": 570,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 840,
+        "minimum_frame": 0,
+        "person_rows": 3519,
+        "person_tracks": 9,
+        "rows": 3590
+      },
+      "annotation_frames_within_media": false,
+      "annotation_max_equals_decoded_frame_count": true,
+      "bytes": 6597108,
+      "name": "VIRAT_S_010001_10_000962_001005.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010001_10_000962_001005.mp4",
+      "sha256": "4bfd86587b53008769fa55ded43d81df797c4e9b788e31242dcd6357e234386d",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 35.043805,
+        "frames": 840,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2376,
+        "minimum_frame": 0,
+        "person_rows": 9322,
+        "person_tracks": 16,
+        "rows": 9322
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 18839268,
+      "name": "VIRAT_S_010002_00_000012_000120.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010002_00_000012_000120.mp4",
+      "sha256": "1a873b11edefedc85757dd38263b719dd0092383b2d1cc23be92a81060482ebf",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 99.165624,
+        "frames": 2377,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 547,
+        "minimum_frame": 0,
+        "person_rows": 2364,
+        "person_tracks": 9,
+        "rows": 2364
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4403603,
+      "name": "VIRAT_S_010002_01_000123_000148.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010002_01_000123_000148.mp4",
+      "sha256": "34a2ff5e5153f46c1543a7600a8d628bd685698aded89b8bef478d08eae0e7aa",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 22.861911,
+        "frames": 548,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 639,
+        "minimum_frame": 0,
+        "person_rows": 2517,
+        "person_tracks": 10,
+        "rows": 2517
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4936405,
+      "name": "VIRAT_S_010002_02_000174_000204.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010002_02_000174_000204.mp4",
+      "sha256": "eab706d216a1c219fb2585ca8c6820f645fe9944885eb5fa9ada6ab7f7fb5e61",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 26.700042,
+        "frames": 640,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 506,
+        "minimum_frame": 0,
+        "person_rows": 1607,
+        "person_tracks": 5,
+        "rows": 2114
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4594868,
+      "name": "VIRAT_S_010002_03_000236_000261.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010002_03_000236_000261.mp4",
+      "sha256": "48d5d0535aa807002cdd11770f163f9a86433e5c683bfa5aec8d6c24f5f9f373",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 21.151439,
+        "frames": 507,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 889,
+        "minimum_frame": 0,
+        "person_rows": 3258,
+        "person_tracks": 8,
+        "rows": 3258
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6330372,
+      "name": "VIRAT_S_010002_04_000307_000350.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010002_04_000307_000350.mp4",
+      "sha256": "413e397f309b50164781986ff117857b2ae3c3e6d1dc9ab187e6ce414f6631ac",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 37.129746,
+        "frames": 890,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 317,
+        "minimum_frame": 0,
+        "person_rows": 636,
+        "person_tracks": 2,
+        "rows": 636
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3110525,
+      "name": "VIRAT_S_010002_05_000397_000420.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010002_05_000397_000420.mp4",
+      "sha256": "831cc12c1990ed4d985a148236a6c7b04aeab3ac38f3de515af07fd351ef331b",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 13.266583,
+        "frames": 318,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 443,
+        "minimum_frame": 0,
+        "person_rows": 1677,
+        "person_tracks": 9,
+        "rows": 1677
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3514838,
+      "name": "VIRAT_S_010002_06_000441_000467.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010002_06_000441_000467.mp4",
+      "sha256": "0abe375bcb2514da801c9c7f0524627f0060767b2c2aae2959c8fa63e6cc2895",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 18.523154,
+        "frames": 444,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 361,
+        "minimum_frame": 0,
+        "person_rows": 1000,
+        "person_tracks": 3,
+        "rows": 1000
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3109986,
+      "name": "VIRAT_S_010002_07_000522_000547.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010002_07_000522_000547.mp4",
+      "sha256": "2a6747f28d46afd5dfd65985b160db93757ddbae41a5d81b61cf4145f8392c1a",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 15.102211,
+        "frames": 362,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2588,
+        "minimum_frame": 0,
+        "person_rows": 28081,
+        "person_tracks": 50,
+        "rows": 28081
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 7761191,
+      "name": "VIRAT_S_010003_00_000000_000108.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_00_000000_000108.mp4",
+      "sha256": "e8bb1ae61b6e00bb5127df926103d4fbd10cec576cbe6821e58e2d46c04b02db",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 108.010013,
+        "frames": 2589,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 533,
+        "minimum_frame": 0,
+        "person_rows": 4253,
+        "person_tracks": 19,
+        "rows": 4253
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1959468,
+      "name": "VIRAT_S_010003_01_000111_000137.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_01_000111_000137.mp4",
+      "sha256": "075dca0992624f96cde814432db499b4f94bb43c4a94d71473d85df867aa5382",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 22.277847,
+        "frames": 534,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 841,
+        "minimum_frame": 0,
+        "person_rows": 5549,
+        "person_tracks": 13,
+        "rows": 5549
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5100441,
+      "name": "VIRAT_S_010003_02_000165_000202.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_02_000165_000202.mp4",
+      "sha256": "0d20c71e01a700073d59cb0de96219ff44e902051307d602da214fa82edbd31c",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 35.127242,
+        "frames": 842,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 958,
+        "minimum_frame": 0,
+        "person_rows": 6955,
+        "person_tracks": 18,
+        "rows": 7985
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 4070280,
+      "name": "VIRAT_S_010003_03_000219_000259.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_03_000219_000259.mp4",
+      "sha256": "a66060049612136857d9a6061d732ddea651ed1a6664b72d18bdc00d7da0b3eb",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 40.008344,
+        "frames": 959,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 536,
+        "minimum_frame": 0,
+        "person_rows": 5368,
+        "person_tracks": 13,
+        "rows": 5368
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 2509661,
+      "name": "VIRAT_S_010003_05_000499_000523.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_05_000499_000523.mp4",
+      "sha256": "a7d47ba39bd6c55e02e03b0a7a7e954095b4fc0d3de595d5937fa17b62bcfb24",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 22.403004,
+        "frames": 537,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 673,
+        "minimum_frame": 0,
+        "person_rows": 4162,
+        "person_tracks": 14,
+        "rows": 4162
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3727716,
+      "name": "VIRAT_S_010003_06_000526_000560.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_06_000526_000560.mp4",
+      "sha256": "b05416545213f2c8119fe9aa79ea82924edfcd00ebf15666fe597ab94e6f01b1",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 28.118481,
+        "frames": 674,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 494,
+        "minimum_frame": 0,
+        "person_rows": 2626,
+        "person_tracks": 8,
+        "rows": 3239
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1618350,
+      "name": "VIRAT_S_010003_07_000608_000636.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_07_000608_000636.mp4",
+      "sha256": "154aa82e4bc10efb16025fb251a287be3e0108f1e2877173b6cc5bda5106210e",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 20.650814,
+        "frames": 495,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 898,
+        "minimum_frame": 0,
+        "person_rows": 5444,
+        "person_tracks": 15,
+        "rows": 5444
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 2971042,
+      "name": "VIRAT_S_010003_08_000739_000778.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_08_000739_000778.mp4",
+      "sha256": "9426a479003e0ce5f3dfb7cbb76743531b3f81e2df4f4acf6d2b65c942f1699b",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 37.505215,
+        "frames": 899,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1888,
+        "minimum_frame": 0,
+        "person_rows": 13408,
+        "person_tracks": 25,
+        "rows": 13408
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 8017194,
+      "name": "VIRAT_S_010003_09_000779_000861.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_09_000779_000861.mp4",
+      "sha256": "0cb85e892c4d252c073f24c1632607b8f0b613dfb346a0455725ffd55bd82900",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 78.806842,
+        "frames": 1889,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 637,
+        "minimum_frame": 0,
+        "person_rows": 4124,
+        "person_tracks": 13,
+        "rows": 4124
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1785531,
+      "name": "VIRAT_S_010003_10_000901_000934.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_10_000901_000934.mp4",
+      "sha256": "5f177edbf6b5b16531567d861d1edf3490f859cfd5f55fd2b37a021354ddd4f7",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 26.616604,
+        "frames": 638,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 538,
+        "minimum_frame": 0,
+        "person_rows": 3109,
+        "person_tracks": 11,
+        "rows": 3109
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1791442,
+      "name": "VIRAT_S_010003_11_000956_000982.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_11_000956_000982.mp4",
+      "sha256": "6cf7b4bc9fee711d4082ff04de3cc5ca32eb0eec8ba14da879f345edfb420dc5",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 22.486441,
+        "frames": 539,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1086,
+        "minimum_frame": 0,
+        "person_rows": 8776,
+        "person_tracks": 24,
+        "rows": 9085
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5248719,
+      "name": "VIRAT_S_010003_12_001009_001057.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_12_001009_001057.mp4",
+      "sha256": "c55fe92e2cc19b99c7f28ed13d9ffa4db065413cad968460aa6ebe56aa5997ce",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 45.348352,
+        "frames": 1087,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1192,
+        "minimum_frame": 0,
+        "person_rows": 11644,
+        "person_tracks": 32,
+        "rows": 11644
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3138067,
+      "name": "VIRAT_S_010003_13_001066_001124.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_13_001066_001124.mp4",
+      "sha256": "82e1780bcacc60e043379b030b4a60f16c1ffafeec74612aac856b9a70cf9a96",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 49.770547,
+        "frames": 1193,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1274,
+        "minimum_frame": 0,
+        "person_rows": 15442,
+        "person_tracks": 39,
+        "rows": 15764
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5741196,
+      "name": "VIRAT_S_010003_14_001127_001190.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010003_14_001127_001190.mp4",
+      "sha256": "015c8e4f8b9df491d31c340da25be004c186226380942c45d9e0da5282ee6cb5",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 53.191489,
+        "frames": 1275,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 646,
+        "minimum_frame": 0,
+        "person_rows": 4497,
+        "person_tracks": 13,
+        "rows": 4544
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 2552522,
+      "name": "VIRAT_S_010004_00_000064_000100.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010004_00_000064_000100.mp4",
+      "sha256": "05ff36e8146e044ad926f52c71bab84f855696252fe7d51dceba8da74481344c",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 26.992073,
+        "frames": 647,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 506,
+        "minimum_frame": 0,
+        "person_rows": 4751,
+        "person_tracks": 15,
+        "rows": 4751
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 2079987,
+      "name": "VIRAT_S_010004_01_000163_000188.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010004_01_000163_000188.mp4",
+      "sha256": "95a1e20094e3b8da9369d40866d00db695798bf67758fc9a24dfb64c4143f85a",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 21.151439,
+        "frames": 507,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 930,
+        "minimum_frame": 0,
+        "person_rows": 5282,
+        "person_tracks": 14,
+        "rows": 5282
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3280605,
+      "name": "VIRAT_S_010004_02_000191_000237.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010004_02_000191_000237.mp4",
+      "sha256": "3f92b6b629cf6af231c0ae2512f4cfec21a724a2279340ee27607d884273306d",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 38.840217,
+        "frames": 931,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 889,
+        "minimum_frame": 0,
+        "person_rows": 2978,
+        "person_tracks": 7,
+        "rows": 2978
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3581354,
+      "name": "VIRAT_S_010004_03_000239_000277.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010004_03_000239_000277.mp4",
+      "sha256": "ab12ef980b4c2150a733ea123da892e8192af360488b09941c846629b194e3f8",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 37.129746,
+        "frames": 890,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 3888,
+        "minimum_frame": 0,
+        "person_rows": 30979,
+        "person_tracks": 49,
+        "rows": 30979
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 13910469,
+      "name": "VIRAT_S_010004_06_000547_000715.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010004_06_000547_000715.mp4",
+      "sha256": "7d3edddc8b5f06d89aee0455cc5d08625e1bf8eff037ec620785a675e04190b9",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 162.244472,
+        "frames": 3889,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1891,
+        "minimum_frame": 0,
+        "person_rows": 12858,
+        "person_tracks": 27,
+        "rows": 13500
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 6582102,
+      "name": "VIRAT_S_010004_07_000729_000809.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010004_07_000729_000809.mp4",
+      "sha256": "3c134ab1738f00b8fcf815a1ef260cd132c63fb48ff45b178bbfcfcd7988212a",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 78.931998,
+        "frames": 1892,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2552,
+        "minimum_frame": 0,
+        "person_rows": 21828,
+        "person_tracks": 42,
+        "rows": 22382
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 8734998,
+      "name": "VIRAT_S_010004_08_000811_000920.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010004_08_000811_000920.mp4",
+      "sha256": "2c074e0b2720af699972909d0c567d14a144197beea53694a47f3ecf9bc513a3",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 106.508135,
+        "frames": 2553,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 547,
+        "minimum_frame": 0,
+        "person_rows": 2752,
+        "person_tracks": 9,
+        "rows": 2752
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 2463250,
+      "name": "VIRAT_S_010005_00_000048_000075.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_00_000048_000075.mp4",
+      "sha256": "fe20b7c3129b8000be00a15fc828e29a46d5dc7cae62466f449dca00edff85e9",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 22.861911,
+        "frames": 548,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1681,
+        "minimum_frame": 0,
+        "person_rows": 11781,
+        "person_tracks": 28,
+        "rows": 11781
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 8224396,
+      "name": "VIRAT_S_010005_01_000085_000164.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_01_000085_000164.mp4",
+      "sha256": "e0a74c4c1344283365674031a065fe415b0e19b7ce655dcccc14d11f0c9460bf",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 70.171047,
+        "frames": 1682,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 615,
+        "minimum_frame": 0,
+        "person_rows": 3502,
+        "person_tracks": 10,
+        "rows": 3502
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3676470,
+      "name": "VIRAT_S_010005_02_000177_000203.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_02_000177_000203.mp4",
+      "sha256": "98e42f52de617ada82ee0165d77c4211b45ad18f2e8a5e1413a0315d47f15344",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 25.69879,
+        "frames": 616,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1221,
+        "minimum_frame": 0,
+        "person_rows": 9132,
+        "person_tracks": 21,
+        "rows": 9132
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 5923687,
+      "name": "VIRAT_S_010005_03_000215_000270.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_03_000215_000270.mp4",
+      "sha256": "2c10b21ba7be4f912d5ffaf023c7d517eedcc512200d987b96efc31c38db4242",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 50.980392,
+        "frames": 1222,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 492,
+        "minimum_frame": 0,
+        "person_rows": 2197,
+        "person_tracks": 9,
+        "rows": 2525
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 2421029,
+      "name": "VIRAT_S_010005_04_000299_000323.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_04_000299_000323.mp4",
+      "sha256": "f1eb3330846c147ab85e503045028cee95e7e72853d0e670caa74012dc915e39",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 20.567376,
+        "frames": 493,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 557,
+        "minimum_frame": 0,
+        "person_rows": 2980,
+        "person_tracks": 6,
+        "rows": 2980
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1639520,
+      "name": "VIRAT_S_010005_05_000397_000430.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_05_000397_000430.mp4",
+      "sha256": "f4a20650204d0c87c204f2a5f23f8b2d128968ae4a92ddeb8b1a455e279eace3",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 23.279099,
+        "frames": 558,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 461,
+        "minimum_frame": 0,
+        "person_rows": 4267,
+        "person_tracks": 12,
+        "rows": 4267
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 1784508,
+      "name": "VIRAT_S_010005_06_000475_000499.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_06_000475_000499.mp4",
+      "sha256": "c6741aa13fdea0e891b0e7643097ef76f823496dbdc1ee2bba0c523884a3a7d4",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 19.274093,
+        "frames": 462,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 998,
+        "minimum_frame": 0,
+        "person_rows": 8351,
+        "person_tracks": 23,
+        "rows": 8351
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3703581,
+      "name": "VIRAT_S_010005_07_000535_000584.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_07_000535_000584.mp4",
+      "sha256": "5ed6d8bf54f5c3de2d4b752dac2d8eeceb8ef7cd3700b4bdec202c05ce6aa04e",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 41.677096,
+        "frames": 999,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 861,
+        "minimum_frame": 0,
+        "person_rows": 6825,
+        "person_tracks": 18,
+        "rows": 7087
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 3666788,
+      "name": "VIRAT_S_010005_08_000647_000693.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0100/VIRAT_S_010005_08_000647_000693.mp4",
+      "sha256": "6df4e8f17642c297775a8f8d22bd35d0caf0a2ede14783763732264f54a7f461",
+      "source_group": "0100",
+      "video": {
+        "avg_frame_rate": "2397/100",
+        "codec": "h264",
+        "duration_seconds": 35.961619,
+        "frames": 862,
+        "height": 720,
+        "r_frame_rate": "2397/100",
+        "width": 1280
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 4615,
+        "minimum_frame": 0,
+        "person_rows": 22126,
+        "person_tracks": 30,
+        "rows": 91023
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 197635167,
+      "name": "VIRAT_S_050000_01_000207_000361.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_01_000207_000361.mp4",
+      "sha256": "7905ba1b2ac2cac621eb1697323670a03fc332cbea4b6cdc13c9bd494023cfc7",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 154.020533,
+        "frames": 4616,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2457,
+        "minimum_frame": 0,
+        "person_rows": 15408,
+        "person_tracks": 20,
+        "rows": 53073
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 109094643,
+      "name": "VIRAT_S_050000_02_000404_000486.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_02_000404_000486.mp4",
+      "sha256": "dab6daf25f1388400f573687edd04096c840e483342bdb76da5b26b35511364c",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 82.015267,
+        "frames": 2458,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1606,
+        "minimum_frame": 0,
+        "person_rows": 5366,
+        "person_tracks": 15,
+        "rows": 30498
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 70210029,
+      "name": "VIRAT_S_050000_03_000585_000639.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_03_000585_000639.mp4",
+      "sha256": "24f177d883cc9eaf5773814f1d88db30535aa077268ca6ce97a3e2757232ad91",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 53.620233,
+        "frames": 1607,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1491,
+        "minimum_frame": 0,
+        "person_rows": 5473,
+        "person_tracks": 8,
+        "rows": 29336
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 66321548,
+      "name": "VIRAT_S_050000_04_000640_000690.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_04_000640_000690.mp4",
+      "sha256": "43506f3d9edda76d8bf1acbc25e99fdd74d00d7166709e13b59a5f5f45a6300c",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 49.783067,
+        "frames": 1492,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1070,
+        "minimum_frame": 0,
+        "person_rows": 5394,
+        "person_tracks": 7,
+        "rows": 25219
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 46933093,
+      "name": "VIRAT_S_050000_05_000696_000732.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_05_000696_000732.mp4",
+      "sha256": "61075cd0fb0f23ec93fec2447716a04286d86073ca2198cb1f6faa8af398f0fd",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 35.7357,
+        "frames": 1071,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1854,
+        "minimum_frame": 0,
+        "person_rows": 490,
+        "person_tracks": 3,
+        "rows": 30749
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 79222839,
+      "name": "VIRAT_S_050000_06_000908_000970.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_06_000908_000970.mp4",
+      "sha256": "6438201081641d90e5fdd567ba51317afb6368d34eae1edc8597878d6454f4ff",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 61.895167,
+        "frames": 1855,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 3350,
+        "minimum_frame": 0,
+        "person_rows": 23338,
+        "person_tracks": 35,
+        "rows": 78707
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 144000485,
+      "name": "VIRAT_S_050000_07_001014_001126.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_07_001014_001126.mp4",
+      "sha256": "806c62797a8ae76e4ff07460ff316cc0994a7cc8e7cff59613e09bcab42b9aff",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 111.8117,
+        "frames": 3351,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1791,
+        "minimum_frame": 0,
+        "person_rows": 9270,
+        "person_tracks": 23,
+        "rows": 40002
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 81006248,
+      "name": "VIRAT_S_050000_08_001235_001295.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_08_001235_001295.mp4",
+      "sha256": "0650c1cc603af5cefee4ce71802a3a7fc959bd74c381a2fc1ddad7c7e18c94d5",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 59.793067,
+        "frames": 1792,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1884,
+        "minimum_frame": 0,
+        "person_rows": 8857,
+        "person_tracks": 21,
+        "rows": 40674
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 78794305,
+      "name": "VIRAT_S_050000_09_001310_001373.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_09_001310_001373.mp4",
+      "sha256": "cdef857e53cd36e77f309717ec97bdeeebf6a92431255d8faa61a9424f383ccd",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 62.896167,
+        "frames": 1885,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 861,
+        "minimum_frame": 0,
+        "person_rows": 2688,
+        "person_tracks": 5,
+        "rows": 14327
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 39100229,
+      "name": "VIRAT_S_050000_10_001462_001491.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_10_001462_001491.mp4",
+      "sha256": "f63a718fef4f0ca8dbe930ef6c83e3bae3ca948bfaff0322d054825110707206",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 28.762067,
+        "frames": 862,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1368,
+        "minimum_frame": 0,
+        "person_rows": 5552,
+        "person_tracks": 12,
+        "rows": 30237
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 58469384,
+      "name": "VIRAT_S_050000_11_001530_001576.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_11_001530_001576.mp4",
+      "sha256": "d6d6478f4abf0ba79e05f12acc47a5ac900c97d64cfbda78e4f5e52c10802c6e",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 45.678967,
+        "frames": 1369,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 833,
+        "minimum_frame": 0,
+        "person_rows": 2725,
+        "person_tracks": 4,
+        "rows": 19931
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 36628890,
+      "name": "VIRAT_S_050000_12_001591_001619.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_12_001591_001619.mp4",
+      "sha256": "ba7ed0525ad0041000d88064bf489f1a06f7986d14e62bb4d0067c0b91f6a006",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 27.8278,
+        "frames": 834,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1315,
+        "minimum_frame": 0,
+        "person_rows": 5990,
+        "person_tracks": 17,
+        "rows": 27852
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 57917898,
+      "name": "VIRAT_S_050000_13_001722_001766.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_13_001722_001766.mp4",
+      "sha256": "dd9512d1291b5fee41dcd25013d59b3a4637890e18740c1e3de2f243f4e7423d",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 43.910533,
+        "frames": 1316,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1254,
+        "minimum_frame": 0,
+        "person_rows": 6604,
+        "person_tracks": 17,
+        "rows": 34929
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 54399686,
+      "name": "VIRAT_S_050000_16_001947_001989.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0500/VIRAT_S_050000_16_001947_001989.mp4",
+      "sha256": "c70bdca9461aca20668d818aacf040a480d72ca111dbad6f99abdd6dfc6e78fb",
+      "source_group": "0500",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 41.875167,
+        "frames": 1255,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2007,
+        "minimum_frame": 0,
+        "person_rows": 13973,
+        "person_tracks": 30,
+        "rows": 105618
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 89562541,
+      "name": "VIRAT_S_050300_00_000000_000067.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_00_000000_000067.mp4",
+      "sha256": "6d8d11ae42bf075a89d4c35ae802786e3159c10b73e3cfeadd3bef8a77ef3d6d",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 67.000267,
+        "frames": 2008,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 7428,
+        "minimum_frame": 0,
+        "person_rows": 23568,
+        "person_tracks": 52,
+        "rows": 344518
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 320712536,
+      "name": "VIRAT_S_050300_01_000148_000396.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_01_000148_000396.mp4",
+      "sha256": "0a9f94c83faef43665f90936fb021040870ef7159466d4ecf18c35e7879ddf40",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 247.880967,
+        "frames": 7429,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 3227,
+        "minimum_frame": 0,
+        "person_rows": 29997,
+        "person_tracks": 53,
+        "rows": 131722
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 139328383,
+      "name": "VIRAT_S_050300_03_000726_000834.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_03_000726_000834.mp4",
+      "sha256": "2f72673d2e4f447312559377ddfa7d42f52b14f3ff16f2cb31041b0fba5925c0",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 107.7076,
+        "frames": 3228,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1946,
+        "minimum_frame": 0,
+        "person_rows": 9931,
+        "person_tracks": 13,
+        "rows": 62835
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 84974266,
+      "name": "VIRAT_S_050300_04_001057_001122.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_04_001057_001122.mp4",
+      "sha256": "e04a6d4dba8f19349a4ffeaa4e8d519da7f83ed39cf523f16351a1ab6a784de6",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 64.9649,
+        "frames": 1947,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1736,
+        "minimum_frame": 0,
+        "person_rows": 10087,
+        "person_tracks": 35,
+        "rows": 66503
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 73439513,
+      "name": "VIRAT_S_050300_05_001272_001330.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_05_001272_001330.mp4",
+      "sha256": "0df70704315210de8c6271d85765bdc5bcc5b56180f49f44de18057ab8621bb8",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 57.9579,
+        "frames": 1737,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 5663,
+        "minimum_frame": 0,
+        "person_rows": 24613,
+        "person_tracks": 61,
+        "rows": 189268
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 244459986,
+      "name": "VIRAT_S_050300_06_001427_001616.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_06_001427_001616.mp4",
+      "sha256": "96d49a2e388345f73fd2d34d6af3201507fa94e0de72d3933286ba5aa75895d8",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 188.9888,
+        "frames": 5664,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2001,
+        "minimum_frame": 0,
+        "person_rows": 4567,
+        "person_tracks": 9,
+        "rows": 70783
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 87777645,
+      "name": "VIRAT_S_050300_07_001623_001690.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_07_001623_001690.mp4",
+      "sha256": "a21778ce289d459132897848bd3be33aead1b67555c49c310247ea6ccc398b05",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 66.800067,
+        "frames": 2002,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1968,
+        "minimum_frame": 0,
+        "person_rows": 2726,
+        "person_tracks": 7,
+        "rows": 65142
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 84819672,
+      "name": "VIRAT_S_050300_08_001705_001771.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_08_001705_001771.mp4",
+      "sha256": "fa430ce568b24faf0f87eec3dfdeaaa452af6823a9d17fd23e307b891b2b8c2a",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 65.698967,
+        "frames": 1969,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 2056,
+        "minimum_frame": 0,
+        "person_rows": 1959,
+        "person_tracks": 5,
+        "rows": 53064
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 87536552,
+      "name": "VIRAT_S_050300_09_001789_001858.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_09_001789_001858.mp4",
+      "sha256": "b0bff7008afa69054b0c200a6fd0f1c04f8b7be5c5abb237b27f0c34aeca3079",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 68.635233,
+        "frames": 2057,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1768,
+        "minimum_frame": 0,
+        "person_rows": 2640,
+        "person_tracks": 7,
+        "rows": 35649
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 74332541,
+      "name": "VIRAT_S_050300_10_002176_002238.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050300_10_002176_002238.mp4",
+      "sha256": "88bbb2770119ab0c7a63fcf0e2a94f2a3e248ac981641f70824e2b336c2aa670",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 59.025633,
+        "frames": 1769,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1076,
+        "minimum_frame": 0,
+        "person_rows": 176,
+        "person_tracks": 1,
+        "rows": 28006
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 65008519,
+      "name": "VIRAT_S_050301_00_000000_000036.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050301_00_000000_000036.mp4",
+      "sha256": "c447b78d62ec0b24d372479c2815b8a97a38bfed7e75d92f714cf3327cf02034",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 36.002633,
+        "frames": 1079,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 7087,
+        "minimum_frame": 0,
+        "person_rows": 14154,
+        "person_tracks": 31,
+        "rows": 167287
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 406269548,
+      "name": "VIRAT_S_050301_01_000083_000320.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050301_01_000083_000320.mp4",
+      "sha256": "266c91955a58b98b55e47bb030c3718db34bf71887b165aedfb64b2cc3f6d6d4",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 236.569667,
+        "frames": 7090,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 1688,
+        "minimum_frame": 0,
+        "person_rows": 3593,
+        "person_tracks": 8,
+        "rows": 43578
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 93407421,
+      "name": "VIRAT_S_050301_02_000544_000607.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050301_02_000544_000607.mp4",
+      "sha256": "95f33ebc95ae31d3c801be08c331673d3055db78ec7efdea8c7da100c656c450",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 56.423033,
+        "frames": 1691,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    },
+    {
+      "annotation": {
+        "malformed_rows": 0,
+        "maximum_frame": 3344,
+        "minimum_frame": 0,
+        "person_rows": 8710,
+        "person_tracks": 17,
+        "rows": 79777
+      },
+      "annotation_frames_within_media": true,
+      "annotation_max_equals_decoded_frame_count": false,
+      "bytes": 194169370,
+      "name": "VIRAT_S_050301_03_000933_001046.mp4",
+      "official_object_annotation_present": true,
+      "official_package_size_match": true,
+      "partition": "qualification",
+      "relative_path": "qualification-0503/VIRAT_S_050301_03_000933_001046.mp4",
+      "sha256": "c5450a1bb80535f68efdf8d8888a7c8d6b70743aa78d932bff7bef79e33dc3ab",
+      "source_group": "0503",
+      "video": {
+        "avg_frame_rate": "30000/1001",
+        "codec": "h264",
+        "duration_seconds": 111.678233,
+        "frames": 3347,
+        "height": 1080,
+        "r_frame_rate": "30000/1001",
+        "width": 1920
+      }
+    }
+  ],
+  "media_root": "/Volumes/Percept/Percept-Eternal/Percept-Benchmarks/virat-fixed-watch/media",
+  "protected_media_redistributed": false,
+  "recorded_at": "2026-09-09T00:00:00Z",
+  "schema": "percept.benchmark.virat-media-manifest.v1",
+  "summary": {
+    "bytes": 12310043457,
+    "files": 138,
+    "files_with_annotation_max_equal_to_decoded_frame_count": 3,
+    "partitions": {
+      "qualification": {
+        "bytes": 11801814523,
+        "files": 92,
+        "source_groups": [
+          "0000",
+          "0001",
+          "0100",
+          "0500",
+          "0503"
+        ]
+      },
+      "validation": {
+        "bytes": 508228934,
+        "files": 46,
+        "source_groups": [
+          "0101"
+        ]
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import pathlib
 import unittest
 
@@ -60,12 +61,78 @@ class AdmissionReceiptTests(unittest.TestCase):
             for r in records
             if r["event"] == "source_group_exposed"
         }
-        self.assertEqual({"0002", "0400", "0401"}, exposed)
+        self.assertEqual({"0002", "0400", "0401", "0502"}, exposed)
         b1 = json.loads((ROOT / "b1-feasibility.json").read_text())
         partitions = b1["partition_freeze"]
         self.assertTrue(exposed.isdisjoint(partitions["sealed_unassigned_groups"]))
         self.assertEqual([], partitions["validation_groups"])
         self.assertEqual([], partitions["qualification_groups"])
+
+    def test_amended_zone_partitions_are_disjoint_and_sized(self):
+        manifest = json.loads(
+            (ROOT / "f2-z1-zones-and-partitions.v1.json").read_text()
+        )
+        parts = manifest["partitions"]
+        named = [
+            set(parts["calibration_exposed"]),
+            set(parts["validation"]),
+            set(parts["qualification"]),
+            set(parts["reserve"]),
+        ]
+        for index, left in enumerate(named):
+            for right in named[index + 1 :]:
+                self.assertTrue(left.isdisjoint(right))
+        survey = manifest["aggregate_seed_rate_survey"]
+        self.assertEqual(
+            sum(survey["qualification"].values()), survey["qualification_total"]
+        )
+        self.assertEqual(276, survey["qualification_total"])
+        self.assertEqual(
+            299,
+            survey[
+                "minimum_zero_failure_n_for_one_sided_95pct_lower_bound_above_0_99"
+            ],
+        )
+        self.assertEqual(23, survey["event_shortfall"])
+        self.assertFalse(survey["sample_size_admitted"])
+        self.assertEqual(set(parts["qualification"]), set(survey["qualification"]))
+
+    def test_zone_entry_b1_stops_before_b2_on_measured_shortfall(self):
+        receipt = json.loads((ROOT / "b1-zone-entry-readmission.json").read_text())
+        self.assertEqual("fail", receipt["status"])
+        self.assertEqual("F2-Z1", receipt["effective_launch_watch"])
+        self.assertFalse(receipt["next_milestone_admitted"])
+        self.assertFalse(receipt["paid_activity_performed"])
+        annotations = receipt["official_annotation_package"]
+        self.assertEqual(315, annotations["proper_object_files"])
+        self.assertEqual(6, annotations["malformed_object_files"])
+        self.assertEqual(12, annotations["malformed_rows"])
+        survey = receipt["rate_survey"]
+        self.assertEqual(
+            math.ceil(math.log(0.05) / math.log(0.99)),
+            survey["minimum_zero_failure_n_for_one_sided_95pct_lower_bound_above_0_99"],
+        )
+        self.assertEqual(
+            survey["minimum_zero_failure_n_for_one_sided_95pct_lower_bound_above_0_99"]
+            - survey["qualification_seed_occurrences"],
+            survey["shortfall"],
+        )
+        self.assertFalse(survey["sample_size_admitted"])
+        manifest_ref = receipt["media_manifest"]
+        manifest_path = ROOT / manifest_ref["path"]
+        self.assertEqual(manifest_ref["bytes"], manifest_path.stat().st_size)
+        self.assertEqual(
+            manifest_ref["sha256"], hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        )
+        manifest = json.loads(manifest_path.read_text())
+        self.assertEqual(manifest_ref["selected_files"], manifest["summary"]["files"])
+        self.assertEqual(manifest_ref["selected_bytes"], manifest["summary"]["bytes"])
+        self.assertTrue(
+            all(
+                row["annotation"]["malformed_rows"] == 0
+                for row in manifest["media"]
+            )
+        )
 
 
 if __name__ == "__main__":

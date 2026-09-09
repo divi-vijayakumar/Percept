@@ -1,0 +1,73 @@
+{
+  "schema": "percept.benchmark.f2-z1-zones-partitions.v1",
+  "candidate_family": "virat-f2-z1-v1",
+  "coordinate_system": "normalized image coordinates; origin top-left",
+  "authorship_evidence": "Official homography reference JPGs were inspected without opening object/event labels; polygons were frozen before the aggregate rate survey.",
+  "eligibility": {
+    "class_id": 1,
+    "class_name": "Person",
+    "point": "bbox footpoint: (x + width/2, y + height)",
+    "minimum_bbox_height_fraction": 0.025,
+    "outside_to_inside_required": true,
+    "initial_inside": "left_censored"
+  },
+  "partitions": {
+    "calibration_exposed": ["0002", "0400", "0401", "0502"],
+    "validation": ["0101"],
+    "qualification": ["0000", "0001", "0100", "0500", "0503"],
+    "reserve": ["0102"]
+  },
+  "zones": {
+    "0000": {
+      "reference_sha256": "62661cc43574b553d6133381574c2797a00f35f1381a89257caeaa6d8c0986fd",
+      "intent": "lower pedestrian apron at the parking-lot entrance",
+      "polygon": [[0.0, 0.55], [0.42, 0.47], [0.47, 0.88], [0.0, 1.0]]
+    },
+    "0001": {
+      "reference_sha256": "fb86570b2600264f9edee9bcaa56c9f45de19a60c7a8a74bec98930e07e21c16",
+      "intent": "upper building-entrance walkway",
+      "polygon": [[0.0, 0.18], [0.45, 0.16], [0.43, 0.50], [0.0, 0.55]]
+    },
+    "0100": {
+      "reference_sha256": "ea07c2cf453fa5b38798c6183f5893027ede7c0ceb534b67c3b03c2f2587fcc6",
+      "intent": "upper terrace and stair-landing walkway",
+      "polygon": [[0.18, 0.10], [0.80, 0.10], [0.78, 0.35], [0.25, 0.39]]
+    },
+    "0101": {
+      "reference_sha256": "60655eff74e9153da3dc64d17a131b1ae52569fb131cf254472faa1550852b42",
+      "intent": "central parking-lot travel area",
+      "polygon": [[0.15, 0.32], [0.85, 0.18], [0.95, 0.80], [0.15, 0.95]]
+    },
+    "0102": {
+      "reference_sha256": "e29a2383e482d3db28f8d5a4809274c0a1825fef3af0fcdfa6dabea07a006817",
+      "intent": "building-front pedestrian apron",
+      "polygon": [[0.0, 0.15], [1.0, 0.15], [1.0, 1.0], [0.0, 1.0]]
+    },
+    "0500": {
+      "reference_sha256": "3b193437e3e7b35c7ca9ba3e88f189a895c8a4d37d966930310bb717976f4017",
+      "intent": "right-side sidewalk corridor",
+      "polygon": [[0.72, 0.0], [0.93, 0.0], [0.86, 1.0], [0.63, 1.0]]
+    },
+    "0502": {
+      "reference_sha256": "0ce01d4340b119084908ec2da560b8f967e4fc1452a2aa60498de50533d4eeb4",
+      "intent": "central parking-lot travel aisle",
+      "polygon": [[0.20, 0.0], [0.85, 0.0], [0.82, 0.95], [0.25, 0.95]]
+    },
+    "0503": {
+      "reference_sha256": "99f5af3745c0b8ef37b2d0fc4d6007ab213c3d121a6b9621eaa65393f30f736a",
+      "intent": "parking-lot and bridge approach",
+      "polygon": [[0.20, 0.0], [0.95, 0.0], [0.95, 0.95], [0.20, 0.95]]
+    }
+  },
+  "aggregate_seed_rate_survey": {
+    "visibility": "group aggregates only; no event timing, track identity, or qualification label rows surfaced",
+    "validation": {"0101": 10},
+    "qualification": {"0000": 7, "0001": 47, "0100": 113, "0500": 81, "0503": 28},
+    "qualification_total": 276,
+    "minimum_zero_failure_n_for_one_sided_95pct_lower_bound_above_0_99": 299,
+    "event_shortfall": 23,
+    "sample_size_admitted": false,
+    "reserve": {"0102": 0},
+    "interpretation": "Official-track seeds only after excluding malformed sources and the exposed 0502 group. Independent complete-zone audit may add or exclude occurrences, but B1 cannot infer that it will close the 23-event shortfall."
+  }
+}

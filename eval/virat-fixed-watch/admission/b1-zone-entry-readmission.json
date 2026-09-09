@@ -1,0 +1,65 @@
+{
+  "schema": "percept.benchmark.b1-zone-entry-readmission.v1",
+  "status": "fail",
+  "recorded_at": "2026-09-09T08:34:15Z",
+  "effective_launch_watch": "F2-Z1",
+  "next_milestone": "B2",
+  "next_milestone_admitted": false,
+  "paid_activity_performed": false,
+  "rights": {
+    "agreement_founder_confirmed_signed": true,
+    "protected_acquisition_admitted": true,
+    "protected_media_redistributed": false
+  },
+  "official_annotation_package": {
+    "item_id": "67914e81f07d3010406a7d21",
+    "bytes": 41225862,
+    "sha256": "c83f541a425459722da1a594eedf58f60234210b5ec974f7d5d1bb839a40ed00",
+    "object_file_semantics": "Release 2 README states all objects annotated; tracks may be fragmented",
+    "proper_object_files": 315,
+    "physical_source_groups": 11,
+    "malformed_object_files": 6,
+    "malformed_rows": 12
+  },
+  "scope_resolution": {
+    "whole_frame_exhaustive_negatives_required": false,
+    "zone_entry_occurrences_must_be_exhaustive": true,
+    "official_tracks_seed_truth": true,
+    "independent_complete_zone_audit_required": true
+  },
+  "media_manifest": {
+    "path": "virat-media-manifest.v1.json",
+    "bytes": 131296,
+    "sha256": "3c786645819e32bc7bb801432dd5c51c0a7a3eb16a386b372ba0ac656b647dbb",
+    "selected_files": 138,
+    "selected_bytes": 12310043457,
+    "validation_files": 46,
+    "qualification_files": 92,
+    "source_rates": ["2397/100", "30000/1001"],
+    "annotation_max_equal_to_decoded_frame_count_files": 3
+  },
+  "partition": {
+    "calibration_exposed": ["0002", "0400", "0401", "0502"],
+    "validation": ["0101"],
+    "qualification": ["0000", "0001", "0100", "0500", "0503"],
+    "reserve": ["0102"],
+    "disjoint": true,
+    "qualification_labels_opened": false,
+    "qualification_raw_row_accidentally_surfaced_from": "0502",
+    "contamination_response": "complete 0502 physical group moved permanently to calibration-only"
+  },
+  "rate_survey": {
+    "visibility": "aggregate source-group counts only",
+    "qualification_seed_occurrences": 276,
+    "minimum_zero_failure_n_for_one_sided_95pct_lower_bound_above_0_99": 299,
+    "shortfall": 23,
+    "sample_size_admitted": false
+  },
+  "blocking_findings": [
+    "The measured clean qualification seed count is 276, 23 below the exact 299 zero-failure minimum for a one-sided 95% lower confidence bound above 0.99.",
+    "Three selected sources have official maximum annotation frame equal to decoded frame count, requiring label-isolated resolution of an unreachable terminal-frame boundary before their events can be admitted.",
+    "The required independent complete-zone audit has not yet established an exhaustive final occurrence set."
+  ],
+  "gate_reason": "The measured qualification occurrence count cannot support the frozen 99% statistical claim; future audit additions cannot be inferred as results.",
+  "precise_next_action": "Do not start B2. A label-isolated reviewer must complete the monitored-zone audit, resolve the three terminal frame-boundary defects, and return only corrected aggregate counts and an immutable label manifest. If the clean count is at least 299, rerun B1. If it remains below 299, add a never-exposed license-cleared fixed-camera physical site whose polygon is authored before labels are opened."
+}
