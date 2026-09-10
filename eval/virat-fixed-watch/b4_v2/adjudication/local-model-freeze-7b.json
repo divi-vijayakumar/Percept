@@ -1,0 +1,34 @@
+{
+  "schema": "percept.benchmark.local-vlm-model-freeze.v1",
+  "purpose": "stronger local-model follow-up after the 3B model abstained on all 15 cases",
+  "frozen_before_inference": true,
+  "execution_scope": "15 unmatched calibration fires in zero-provisional-GT sources",
+  "evidentiary_status": "model-assisted triage; not ground truth",
+  "provider_calls": 0,
+  "provider_cost_usd": 0,
+  "model_repository": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
+  "model_revision": "fdcc572e8b05ba9daeaf71be8c9e4267c826ff9b",
+  "model_shard_sha256": [
+    "f80072ac0e82a2ace0740eab995f6f9ae2623adb55e6906e21c2f8edca537803",
+    "016bd9d3596e9b824f5a527875e5830414552c950eee794e98efb44c1cd8dc6a"
+  ],
+  "config_sha256": "f14d63e180dbe3692f4be18f7a66ab9a75dce0e4814c1e36cec2ce705b758015",
+  "runtime": {
+    "mlx-vlm": "0.7.0",
+    "mlx": "0.32.2",
+    "transformers": "5.17.0"
+  },
+  "decoding": {
+    "temperature": 0.0,
+    "maximum_tokens": 350,
+    "ordered_chronological_frames": 16,
+    "frame_dimensions": [640, 360]
+  },
+  "feasibility_gate": "first case must return parseable JSON, non-ambiguous label, confidence greater than zero, and specific visible temporal evidence before running cases 2-15",
+  "media_policy": "protected clips and frames remain local on benchmark evidence volume; no hosted upload",
+  "prompt_path": "PROMPT.txt",
+  "validation_labels_opened": false,
+  "qualification_labels_opened": false,
+  "pilot_276_opened": false
+}
+
