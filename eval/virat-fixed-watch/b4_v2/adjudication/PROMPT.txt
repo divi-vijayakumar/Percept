@@ -1,0 +1,24 @@
+You are reviewing one fixed-camera surveillance clip for a zone-entry benchmark. The translucent
+yellow polygon is the monitored zone. The yellow line is its boundary. The on-screen FIRE time is
+the candidate event. A red marker briefly shows the candidate track's bounding-box footpoint at that
+time.
+
+Question: Does one identifiable person's footpoint make an observable outside-to-inside crossing of
+the yellow zone boundary at the marked FIRE time?
+
+Use the complete temporal sequence, not one frame. A valid entry requires seeing the same person
+outside first, continuity of that person, and then their footpoint crossing inside. Do not count a
+person first seen inside. Do not count detector-box jitter, an identity switch, a non-person, or a
+person merely moving within the zone. If resolution, occlusion, boundary proximity, or identity
+uncertainty prevents a reliable decision, choose ambiguous. Do not identify any person.
+
+Return exactly one JSON object and no markdown:
+{
+  "label": "true_eligible_entry | not_entry_tracking_error | left_censored_or_already_inside | ambiguous | unusable",
+  "confidence": 0.0,
+  "person_description": "brief position/clothing description without identity",
+  "outside_observation": "what is visibly established before FIRE",
+  "crossing_observation": "what visibly happens at FIRE",
+  "uncertainty": "material uncertainty, or none"
+}
+

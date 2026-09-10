@@ -1,0 +1,30 @@
+{
+  "schema": "percept.benchmark.local-vlm-model-freeze.v1",
+  "frozen_before_first_inference": true,
+  "execution_scope": "15 unmatched calibration fires in zero-provisional-GT sources",
+  "evidentiary_status": "model-assisted triage; not ground truth",
+  "provider_calls": 0,
+  "provider_cost_usd": 0,
+  "model_repository": "mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
+  "model_revision": "46d4cf06a06ffc1a766c214174f9cbed2f45bcab",
+  "model_safetensors_sha256": "636982419c940321ac0f7793dc9dc3575a4ee4843a6b167b2e8c3d3cd25dacf4",
+  "config_sha256": "7ed631bd2786d251cb38bd2a6a8a78c31bc1316f728bffa84b2d8954d3cfcd63",
+  "preprocessor_config_sha256": "f2058c716eef96ccaed1cc1e2d0c08306b62586d535b28d9d08e691b2fab7ca0",
+  "runtime": {
+    "mlx-vlm": "0.7.0",
+    "mlx": "0.32.2",
+    "transformers": "5.17.0"
+  },
+  "decoding": {
+    "temperature": 0.0,
+    "maximum_tokens": 350,
+    "video_frames": 16
+  },
+  "media_policy": "protected clips remain local on benchmark evidence volume; no hosted upload",
+  "prompt_path": "PROMPT.txt",
+  "protocol_path": "LOCAL_VLM_ADJUDICATION_PROTOCOL.md",
+  "review_clip_renderer_commit": "3926ec7daec62c8b8a6f60d2b0125689e8635ce0",
+  "validation_labels_opened": false,
+  "qualification_labels_opened": false,
+  "pilot_276_opened": false
+}
