@@ -1,0 +1,32 @@
+{
+  "schema": "percept.benchmark.local-vlm-model-freeze.v1",
+  "supersedes": "local-model-freeze.json execution runtime only",
+  "frozen_before_inference": true,
+  "execution_scope": "15 unmatched calibration fires in zero-provisional-GT sources",
+  "evidentiary_status": "model-assisted triage; not ground truth",
+  "provider_calls": 0,
+  "provider_cost_usd": 0,
+  "model_repository": "mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
+  "model_revision": "46d4cf06a06ffc1a766c214174f9cbed2f45bcab",
+  "model_safetensors_sha256": "636982419c940321ac0f7793dc9dc3575a4ee4843a6b167b2e8c3d3cd25dacf4",
+  "config_sha256": "7ed631bd2786d251cb38bd2a6a8a78c31bc1316f728bffa84b2d8954d3cfcd63",
+  "runtime": {
+    "mlx-vlm": "0.1.11",
+    "mlx": "0.32.2",
+    "transformers": "5.17.0"
+  },
+  "decoding": {
+    "temperature": 0.0,
+    "maximum_tokens": 350,
+    "ordered_chronological_frames": 16,
+    "frame_dimensions": [640, 360]
+  },
+  "input_adaptation": "conversion-matched runtime receives the same temporal clip as 16 ordered image frames because mlx-vlm 0.1.11 predates the native video CLI option",
+  "media_policy": "protected clips and frames remain local on benchmark evidence volume; no hosted upload",
+  "prompt_path": "PROMPT.txt",
+  "protocol_path": "LOCAL_VLM_ADJUDICATION_PROTOCOL.md",
+  "validation_labels_opened": false,
+  "qualification_labels_opened": false,
+  "pilot_276_opened": false
+}
+
