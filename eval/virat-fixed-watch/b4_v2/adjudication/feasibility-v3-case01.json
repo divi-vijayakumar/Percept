@@ -1,0 +1,14 @@
+{
+  "case_id": "B4V2-ZGT-01",
+  "execution_identity": "local-model-freeze-v3.json",
+  "valid_json": true,
+  "response": {
+    "label": "ambiguous",
+    "confidence": 0.0,
+    "person_description": "a person is seen outside the yellow zone boundary",
+    "outside_observation": "a person is seen outside the yellow zone boundary",
+    "crossing_observation": "the person's footpoint does not cross the yellow zone boundary",
+    "uncertainty": "ambiguous"
+  }
+}
+
