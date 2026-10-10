@@ -2,17 +2,18 @@
 
 A reproducible harness that runs Percept and the pipelines a developer would otherwise write over
 the same public footage, with the same condition text and the same judge, and reports every arm,
-including the ones Percept loses. It needs the video extra:
-`pip install -e "packages/percept-vision[dev,video]"`.
+including the ones Percept loses.
 
 ```bash
+pip install -e "packages/percept-vision[dev]" -r benchmarks/requirements.txt   # OpenCV 4, see Arms
+
 # Offline dry run: generated clips, an oracle judge, no key, no network (about 15 s)
 python -m benchmarks.run --dataset synthetic --judge fake --out benchmarks/results/dry-run
 
 # E1 on MEVA with a real judge and a hard spend cap
 python -m benchmarks.fetch_meva --hours 5                 # about 8.3 GB, into eval/bench-staging/meva
 python -m benchmarks.run --config benchmarks/configs/e1.json --judge gemini:<model> \
-    --price <usd_per_mtok_in>,<usd_per_mtok_out>,<tokens_per_image> --max-cost-usd 25 \
+    --price <usd_per_mtok_in>,<usd_per_mtok_out>,<tokens_per_image> --max-cost-usd 10 \
     --out benchmarks/results/e1-meva
 ```
 
@@ -23,47 +24,70 @@ results are never committed.
 
 | `--dataset` | footage | notes |
 |---|---|---|
-| `meva` | MEVA (CC BY 4.0): fixed indoor and outdoor cameras, five-minute clips | the primary real continuous set; fetch with `fetch_meva.py` |
-| `perception-test` | Perception Test (CC-BY 4.0) action-localisation validation clips | short clips; `--root` points at the download |
+| `meva` | MEVA (CC BY 4.0): fixed indoor and outdoor cameras, five-minute clips | the real continuous set, and the only one E1 publishes; fetch with `fetch_meva.py` |
+| `perception-test` | Perception Test (CC-BY 4.0) action-localisation validation clips | short, dense clips: diagnostics only, never a published comparison |
 | `perception-test-sparse` | Perception Test clips joined with idle and distractor gaps at several occupancy levels | **synthetic**, for the cost-versus-occupancy curve only |
 | `local:<dir>` | your MP4s plus `labels.json` or `labels.yaml` | private clips, evaluated locally (format in `datasets.py`) |
 | `synthetic` | generated clips | for CI |
 
 Condition text is mechanical ("`<label> begins`"). Every case also watches `--negatives` labels
-that never occur in it, so precision and false events per hour are defined.
+that never occur in it (nor in a long-sparse case's distractor clips), so precision and false
+events per hour are defined.
+
+`fetch_meva.py` builds annotation and video URLs from the layout of the public MEVA repository
+and bucket (`kitware/<date>/<hour>/` and `drops-123-r13/<date>/<hour>/`, the hour being the
+clip's end or start hour). That layout was checked by listing, not yet by a completed fetch:
+treat it as unverified until a real fetch succeeds.
 
 ## Arms
 
 | arm | what it does |
 |---|---|
-| `percept` | a `Monitor` with its defaults, fed in real time (`--speed 1`, the only publishable setting) |
+| `percept` | a `Monitor` with its defaults (6 attempts a minute per stream, 2 reserved per request), fed in real time |
+| `percept-matched` | the same with `max_requests_per_min` set by `--percept-budget` (default 12: `chunk5`'s request rate) |
 | `chunk5`, `chunk10`, `chunk30` | judge the last T seconds every T seconds, all conditions batched, then a cooldown |
-| `detector_debounce` | an OpenCV people (HOG) or motion (MOG2) detector with a cooldown; only conditions a detector can express |
+| `detector_debounce` | a people (HOG) or motion (MOG2) detector with a cooldown; only conditions a detector can express |
 | `detector_then_vlm` | the same detectors gate judge calls; other conditions are gated by motion |
 
 All arms decode the same frames (5 per second, longest side 640 px; checked by digest) and judge
-the same evidence format (up to 4 frames). OpenCV 5 has no built-in people detector; with it, no
-condition is person-expressible and the report says so.
+the same evidence format (up to 4 frames). Percept runs only at `--speed 1` for published
+numbers: its budget and timers use the real clock. E1 uses one suppression window for every
+arm: the baseline cooldown and Percept's `rearm_s` are both 30 s (Percept's product default is
+120 s), stated in the report and the manifest.
+
+The people detector is OpenCV 4's built-in HOG detector run on a 320-pixel frame: a weak
+detector, there to stand in for "a detector a developer has to hand", not a strong one. OpenCV 5
+removed it; with OpenCV 5 installed, no condition is person-expressible and the report says so.
 
 ## What the report states
 
-- recall, precision (duplicates count against it), false events per source-hour (absent-condition
-  rows included), duplicates per occurrence, onset-to-decision latency p50/p95 with misses beside it;
+- whether the run is **publishable**, and if not, why: an oracle judge, a dataset other than
+  MEVA, `--speed` other than 1, a spend-cap abort, skipped cases, frames the Monitor skipped
+  (`frames_capped`), or a Percept feed that fell more than a second behind real time;
+- the configuration of every Percept arm;
+- recall and the recall ceiling a perfect judge could reach under the arm's cooldown, precision
+  (duplicates count against it), false events per source-hour (absent-condition rows included),
+  duplicates per occurrence, onset-to-decision latency p50/p95 with misses beside it;
 - cost per source-hour and per true event, from the usage each judge reports;
 - every miss attributed to a stage: `trigger_never_fired`, `budget_dropped`, `judge_failed`,
-  `judge_said_no`, `decide_suppressed` (Percept's from its trace);
-- CPU, peak traced memory and pre-roll frames;
-- coverage: cases, conditions an arm can't express, and whether the run was aborted.
+  `judge_said_no`, `cooldown_absorbed`, `verify_rejected`, `decide_suppressed` (Percept's from its
+  trace; its `budget_dropped` is approximate, because the trace counts drops per minute);
+- CPU per source-hour, the process's peak resident memory, pre-roll frames, frames capped and
+  real-time lag;
+- coverage: cases watched, conditions an arm can't express, and cases skipped with the reason.
 
 Matching is one-to-one: a decision matches an occurrence of its condition when its evidence
-interval overlaps the occurrence widened by `--tolerance` seconds. Details are in `metrics.py`.
+interval overlaps the occurrence widened by `--tolerance` seconds and ends no earlier than half a
+second before the onset. Only footage an arm actually watched counts. Details are in `metrics.py`.
 
 `--max-cost-usd` covers the whole run. Each request reserves its worst case
 (`percept.judges.base.worst_case_cost`, every attempt) before it is sent; a request that would
 not fit stops the run cleanly, the report is written and marked aborted, and the exit code is 3.
 
 The `fake` judge is an oracle that answers from the ground truth with injected noise
-(`--oracle-fn`, `--oracle-fp`, `--oracle-latency`). Its numbers test the harness, not a model.
+(`--oracle-fn`, `--oracle-fp`, `--oracle-latency`). It says yes when one of the sampled frames it
+is shown falls within half a second before to two seconds after an onset, and a second look at
+the same frames gets the same answer. Its numbers test the harness, not a model.
 
 E2 (best practical pipelines, cascades allowed) is scaffolded in `configs/e2.json` and not wired
 into the runner yet.

@@ -45,12 +45,13 @@ jobs:
   benchmarks:
     name: benchmark harness (offline dry run)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e "packages/percept-vision[dev,video]"
+      - run: pip install -e "packages/percept-vision[dev]" -r benchmarks/requirements.txt
       - run: python -m pytest -q benchmarks/tests
       - run: python -m benchmarks.run --dataset synthetic --judge fake --max-cost-usd 1 --out benchmarks/results/ci
 
