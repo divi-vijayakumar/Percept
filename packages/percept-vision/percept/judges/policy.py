@@ -10,7 +10,7 @@ An adapter supplies only ``send``::
 request and returns the reply text with the billed token counts, or raises:
 
 * ``RetryableError`` for a transient failure (rate limit, 5xx, dropped connection);
-* ``RefusalError`` when the provider declined to answer;
+* ``RefusalError`` when the provider declined to answer (with any billed tokens);
 * ``TimeoutError`` when its own transport timed out;
 * anything else for a permanent failure (bad key, bad request).
 
@@ -114,6 +114,10 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
                     raise
                 await sleep(delay)
                 continue
+            except RefusalError as exc:  # a declined request is still billed
+                tokens_in += max(0, int(exc.tokens_in))
+                tokens_out += max(0, int(exc.tokens_out))
+                raise
             tokens_in += max(0, int(reply.tokens_in))
             tokens_out += max(0, int(reply.tokens_out))
             return reply

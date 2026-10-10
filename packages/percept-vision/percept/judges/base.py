@@ -64,7 +64,16 @@ class RetryableError(Exception):
 
 
 class RefusalError(Exception):
-    """Raised by ``send`` when the provider declined to answer (safety block, refusal)."""
+    """Raised by ``send`` when the provider declined to answer (safety block, refusal).
+
+    A refusal can still be billed: ``tokens_in`` / ``tokens_out`` carry what the provider
+    reported for the declined request, so the usage is not lost.
+    """
+
+    def __init__(self, message: str = "", tokens_in: int = 0, tokens_out: int = 0) -> None:
+        super().__init__(message)
+        self.tokens_in = tokens_in
+        self.tokens_out = tokens_out
 
 
 # --------------------------------------------------------------------------- prompt

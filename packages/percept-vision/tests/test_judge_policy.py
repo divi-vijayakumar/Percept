@@ -121,6 +121,14 @@ def test_refusal():
     assert "safety" in result.observations[0].reason
 
 
+def test_a_billed_refusal_keeps_its_usage():
+    result = run(Provider(RefusalError("blocked", tokens_in=700, tokens_out=3)), price=PRICE)
+    usage = result.usage[0].usage
+    assert kinds(result) == ["refused"] * 2
+    assert (usage.attempts, usage.tokens_in, usage.tokens_out) == (1, 700, 3)
+    assert usage.cost_usd == cost_of(PRICE, 700, 3)
+
+
 @pytest.mark.parametrize("exc", [ValueError("400"), KeyError("x"), RuntimeError()])
 def test_other_errors_are_unavailable(exc):
     result = run(Provider(exc))
