@@ -286,12 +286,15 @@ def every(seconds: float) -> Every:
 class QualityVerdict:
     """Whether a frame may be judged. ``reason`` says why not ("corrupt" or "blurry").
 
-    ``degraded`` is the feed-level state: too many recent frames were bad.
+    ``degraded`` is the feed-level state: too many recent frames were bad. ``reseeded`` is True
+    on the one frame where a lasting blur became the new normal; the runtime reports it on the
+    health channel, since it can also mean a lens that stays out of focus.
     """
 
     ok: bool
     reason: str | None
     degraded: bool
+    reseeded: bool = False
 
 
 def smear_map(gray: np.ndarray, block: int = 8) -> np.ndarray:
@@ -299,8 +302,8 @@ def smear_map(gray: np.ndarray, block: int = 8) -> np.ndarray:
 
     A decoder hides missing macroblocks by smearing the row above downward: rows inside the
     block are identical while its columns still vary. Vertical structure (blinds, fences) looks
-    the same in one frame, which is why :class:`QualityGate` only counts blocks that newly
-    became smeared.
+    the same in one frame, which is why :class:`QualityGate` tracks how long each block has
+    looked this way.
     """
     h, w = gray.shape
     h, w = h - h % block, w - w % block
@@ -319,28 +322,36 @@ def smear_fraction(gray: np.ndarray, block: int = 8) -> float:
 
 
 def sharpness(gray: np.ndarray) -> float:
-    """Variance of the 4-neighbour Laplacian over the interior, divided by the frame's variance.
+    """Variance of the 4-neighbour Laplacian over the interior, divided by gradient energy.
 
-    Dividing by contrast keeps a dimmer but focused scene from reading as blurry.
+    Normalising by the first differences rather than the frame's variance keeps the measure
+    about edge sharpness alone: a dimmer scene, or a large flat object entering it, leaves the
+    ratio of second to first differences roughly unchanged, while defocus lowers it.
     """
     g = gray.astype(np.float32)
     if g.shape[0] < 3 or g.shape[1] < 3:
         return 0.0
     lap = g[1:-1, :-2] + g[1:-1, 2:] + g[:-2, 1:-1] + g[2:, 1:-1] - 4.0 * g[1:-1, 1:-1]
-    return float(lap.var()) / max(float(g.var()), 1e-6)
+    energy = float(np.diff(g, axis=1).var()) + float(np.diff(g, axis=0).var())
+    return float(lap.var()) / max(energy, 1e-6)
 
 
 class QualityGate:
     """Vetoes frames that are corrupt (smeared blocks) or blurry, and tracks a degraded feed.
 
-    Corruption is temporal: a frame is corrupt when at least ``smear_bad`` of its blocks are
-    smear-shaped now and were not in the previous frame. Structure that persists never counts.
+    Corruption is temporal. Each block's smear age counts the consecutive frames it has been
+    smear-shaped; a frame is corrupt when at least ``smear_bad`` of its blocks have an age
+    between 1 and ``smear_max_age``, so concealment is vetoed for as long as a GOP lasts while
+    structure older than that (blinds, fences) stops counting. Blocks smear-shaped on the first
+    frame are taken as structure. Known residual: corruption already present on the first frame
+    after a (re)start is not detected.
 
-    Blur is relative to this stream: a frame is blurry when its contrast-normalised sharpness
-    is below ``blur_ratio`` times the median of recent good frames, judged only once
-    ``blur_min_samples`` good frames are known. The veto is for transient defocus: a blur streak
-    longer than ``blur_min_samples`` frames is taken as the new normal and the history restarts
-    from it, so a lasting change of view never blinds the stream.
+    Blur is relative to this stream: a frame is blurry when its sharpness (see
+    :func:`sharpness`) is below ``blur_ratio`` times the median of recent good frames, judged
+    only once ``blur_min_samples`` good frames are known. The veto is for transient defocus: a
+    blur streak longer than ``blur_min_samples`` frames is taken as the new normal, the history
+    restarts from it and the verdict says ``reseeded``, so a lasting change of view never blinds
+    the stream and a lens left out of focus is still reported.
 
     The feed is degraded once at least ``degraded_on`` of the last ``window`` frames were bad
     (with at least 10 seen), and recovers at ``degraded_off`` or below.
@@ -358,10 +369,12 @@ class QualityGate:
         window: int = 60,
         degraded_on: float = 0.30,
         degraded_off: float = 0.10,
+        smear_max_age: int = 25,
     ) -> None:
         if not 0.0 <= degraded_off < degraded_on <= 1.0:
             raise ValueError("need 0 <= degraded_off < degraded_on <= 1")
         self.smear_bad = smear_bad
+        self.smear_max_age = smear_max_age
         self.blur_ratio = blur_ratio
         self.blur_min_samples = blur_min_samples
         self.sharp_history = sharp_history
@@ -377,18 +390,22 @@ class QualityGate:
         streak = int(state.get("blur_streak", 0))
         gray = _gray(frame.image)
         smeared = smear_map(gray)
-        before = np.asarray(state.get("smear", ()), dtype=bool)
-        if before.shape != smeared.shape:  # first frame, or the size changed: nothing to compare
-            before = smeared
+        structure = self.smear_max_age + 1
+        age = np.asarray(state.get("smear_age", ()), dtype=np.int64)
+        if age.shape != smeared.shape:  # first frame, or the size changed: smears are structure
+            age = np.where(smeared, structure, 0)
+        else:
+            age = np.where(smeared, np.minimum(age + 1, structure), 0)
         reason: str | None = None
-        if smeared.size and float((smeared & ~before).mean()) >= self.smear_bad:
+        reseeded = False
+        if smeared.size and float(((age >= 1) & (age <= self.smear_max_age)).mean()) >= self.smear_bad:
             reason = "corrupt"
         else:
             s = sharpness(gray)
             if len(sharp) >= self.blur_min_samples and s < self.blur_ratio * float(np.median(sharp)):
                 streak += 1
                 if streak > self.blur_min_samples:  # lasting, not transient: the new normal
-                    sharp, streak = [s], 0
+                    sharp, streak, reseeded = [s], 0, True
                 else:
                     reason = "blurry"
             else:
@@ -399,9 +416,9 @@ class QualityGate:
             degraded = True
         elif degraded and bad <= self.degraded_off:
             degraded = False
-        verdict = QualityVerdict(ok=reason is None, reason=reason, degraded=degraded)
+        verdict = QualityVerdict(ok=reason is None, reason=reason, degraded=degraded, reseeded=reseeded)
         return verdict, {"sharp": sharp, "recent": recent, "degraded": degraded,
-                         "blur_streak": streak, "smear": smeared.tolist()}
+                         "blur_streak": streak, "smear_age": age.tolist()}
 
 
 # --------------------------------------------------------------------------- scene reset
@@ -431,9 +448,11 @@ class SceneMonitor:
 
     A reset is declared when more than ``fraction`` of the blocks differ from the scene's
     moving average by more than ``block_threshold`` and the change also covers at least
-    ``border_fraction`` of the blocks on the frame's border: a bumped camera, a PTZ move, an IR
-    day/night switch. A large subject close to the camera rarely reaches every edge, so it is
-    an ordinary change, not a reset. Triggers are then suppressed for ``suppress_s``; while
+    ``border_fraction`` of the textured blocks on the frame's border (baseline range p95 - p5
+    of at least ``texture_grey``): a bumped camera, a PTZ move, an IR day/night switch. A large
+    subject close to the camera rarely reaches every edge, so it is an ordinary change, not a
+    reset. Untextured border blocks (sky, letterbox bars, a timestamp strip) can't show motion,
+    so they don't vote; with fewer than 4 textured border blocks the border test is skipped. Triggers are then suppressed for ``suppress_s``; while
     more than ``fraction / 2`` of the blocks keep changing frame to frame (a PTZ or slow pan
     still moving) the window is extended. Afterwards change triggers restart from a fresh
     baseline and every condition gets one look (see :class:`SceneSignal`).
@@ -446,16 +465,33 @@ class SceneMonitor:
         suppress_s: float = 2.0,
         baseline_s: float = 5.0,
         border_fraction: float = 0.75,
+        texture_grey: float = 8.0,
         grid: tuple[int, int] = GRID,
     ) -> None:
         if not 0.0 < fraction < 1.0:
             raise ValueError("fraction is in (0, 1)")
         self.fraction = fraction
         self.border_fraction = border_fraction
+        self.texture_grey = texture_grey
         self.block_threshold = block_threshold
         self.suppress_s = suppress_s
         self.baseline_s = baseline_s
         self.grid = grid
+
+    def _border_moved(self, baseline: np.ndarray, hit: np.ndarray) -> bool:
+        """Did at least ``border_fraction`` of the textured border blocks change?"""
+        gy, gx = hit.shape
+        ys = (np.arange(gy + 1) * GATE_H) // gy
+        xs = (np.arange(gx + 1) * GATE_W) // gx
+        votes = []
+        for j in range(gy):
+            for i in range(gx):
+                if 0 < j < gy - 1 and 0 < i < gx - 1:
+                    continue  # interior block
+                p5, p95 = np.percentile(baseline[ys[j]:ys[j + 1], xs[i]:xs[i + 1]], [5, 95])
+                if p95 - p5 >= self.texture_grey:
+                    votes.append(bool(hit[j, i]))
+        return len(votes) < 4 or sum(votes) / len(votes) >= self.border_fraction
 
     def step(self, frame: Frame, state: Any, now: float) -> tuple[SceneSignal, Any]:
         gate = gate_frame(frame)
@@ -467,9 +503,8 @@ class SceneMonitor:
         gx, gy = min(self.grid[0], GATE_W), min(self.grid[1], GATE_H)
         hit = (block_scores(baseline, gate, None, self.grid) > self.block_threshold).reshape(gy, gx)
         changed = float(hit.mean())
-        border = np.concatenate([hit[0], hit[-1], hit[1:-1, 0], hit[1:-1, -1]])
         if until is None:
-            if changed > self.fraction and float(border.mean()) >= self.border_fraction:
+            if changed > self.fraction and self._border_moved(baseline, hit):
                 signal = SceneSignal(reset=True, suppressed=True, changed=changed)
                 return signal, {"baseline": gate, "t": now, "until": now + self.suppress_s}
             baseline = _ema(baseline, gate, now - float(state["t"]), self.baseline_s)

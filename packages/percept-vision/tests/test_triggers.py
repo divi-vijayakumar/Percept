@@ -199,9 +199,25 @@ def smeared_image() -> np.ndarray:
     return img
 
 
+def box_blur(img: np.ndarray, passes: int = 3, r: int = 2) -> np.ndarray:
+    g = img.astype(np.float64)
+    h, w = g.shape
+    for _ in range(passes):
+        p = np.pad(g, r, mode="edge")
+        g = sum(p[dy:dy + h, dx:dx + w] for dy in range(2 * r + 1) for dx in range(2 * r + 1)) / (2 * r + 1) ** 2
+    return g.astype(np.uint8)
+
+
 def blurred_image() -> np.ndarray:
+    return box_blur(sharp_image())  # a defocused lens: smooth, and not a smear
+
+
+def indoor(k: int = 0) -> np.ndarray:
+    """A room: large smooth shading across grey 80..170 plus fine surface texture."""
     y, x = np.mgrid[0:64, 0:64]
-    return (20 + 0.5 * x + 1.0 * y).astype(np.uint8)  # smooth: no edges, not a smear
+    shading = 0.5 + 0.5 * np.sin(x / 9.0) * np.cos(y / 13.0)
+    fine = (sharp_image(k) % 11).astype(np.float64) - 5
+    return np.clip(80 + 90 * shading + fine, 0, 255).astype(np.uint8)
 
 
 def qframe(img, i=0):
@@ -431,6 +447,81 @@ def test_second_event_in_another_block_fires_during_absorption():
     frames = [texture()] * 3 + [door] * 5 + [person] * 3  # the person arrives 1 s after the door opens
     dues, _ = run(OnChange(), frames, (cond(),))
     assert fired(dues) == [3, 8]
+
+
+def test_large_flat_subject_is_not_blurry():
+    gate, state = QualityGate(), None
+    for i in range(30):
+        _, state = gate.check(qframe(indoor(i), i), state, float(i))
+    y, x = np.mgrid[0:64, 0:64]
+    coat = np.clip(np.minimum(x - 6, 40 - x) / 8.0, 0, 1)  # a dark coat, soft edges, ~40% of the frame
+    img = (indoor(3) * (1 - coat) + 20 * coat).astype(np.uint8)
+    v, state = gate.check(qframe(img, 30), state, 30.0)
+    assert v.ok and sharpness(img) > 0.25 * float(np.median(state["sharp"][:-1]))
+
+
+def test_concealment_lasting_a_gop_is_vetoed_throughout():
+    gate, state = QualityGate(), None
+    seq = [sharp_image(i) for i in range(10)] + [smeared_image()] * 8 + [sharp_image()] * 2
+    verdicts = []
+    for i, img in enumerate(seq):
+        v, state = gate.check(qframe(img, i), state, float(i))
+        verdicts.append(v)
+    assert [v.reason for v in verdicts[10:18]] == ["corrupt"] * 8
+    assert verdicts[17].degraded  # 8 bad of 18
+    assert all(v.ok for v in verdicts[18:])
+
+
+def test_smear_older_than_max_age_is_structure():
+    gate, state = QualityGate(smear_max_age=25), None
+    _, state = gate.check(qframe(sharp_image(), 0), state, 0.0)
+    oks = []
+    for i in range(30):
+        v, state = gate.check(qframe(smeared_image(), 1 + i), state, 1.0 + i)
+        oks.append(v.ok)
+    assert oks == [False] * 25 + [True] * 5
+
+
+def test_blur_reseed_is_reported_once():
+    gate, state = QualityGate(), None
+    for i in range(30):
+        _, state = gate.check(qframe(sharp_image(i), i), state, float(i))
+    flags = []
+    for i in range(100):
+        v, state = gate.check(qframe(blurred_image(), 30 + i), state, 30.0 + i)
+        flags.append(v.reseeded)
+    assert sum(flags) == 1 and flags.index(True) == 30
+
+
+def test_bump_with_untextured_border_is_a_reset():
+    def letterboxed(g):
+        out = g.copy()
+        out[:6] = 200  # uniform sky
+        out[30:] = 0  # letterbox bar
+        return out
+
+    scene = letterboxed(texture())
+    bumped = letterboxed(np.roll(texture(), 3, axis=1))
+    signals = [s for s, _ in drive(SceneMonitor(), OnChange(), [scene] * 5 + [bumped] * 3, (cond(),))]
+    assert signals[5].reset
+
+
+def test_untextured_border_falls_back_to_the_plain_rule():
+    def framed(g):
+        out = g.copy()
+        out[:6], out[30:], out[:, :6], out[:, 42:] = 30, 30, 30, 30  # a flat surround
+        return out
+
+    frames = [framed(texture())] * 5 + [255 - framed(texture())] * 3  # IR switch
+    signals = [s for s, _ in drive(SceneMonitor(), OnChange(), frames, (cond(),))]
+    assert signals[5].reset
+
+
+def test_subject_over_bottom_and_sides_is_a_trigger_not_a_reset():
+    person = with_patch(texture(), 9, GATE_H, 0, GATE_W, 90)
+    log = drive(SceneMonitor(), OnChange(), [texture()] * 5 + [person] * 3, (cond(),))
+    assert not any(s.reset for s, _ in log)
+    assert "c" in log[5][1]
 
 
 def test_low_light_scene_still_fires():
