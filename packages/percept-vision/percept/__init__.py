@@ -26,6 +26,7 @@ from percept.contracts import (
 )
 from percept import decide  # internal for now: the runtime drives it; not exported
 from percept import judges
+from percept.delivery import MemoryStore, SqliteStore
 from percept.sources import PushSource, open_source
 from percept.triggers import every, on_change
 
@@ -42,12 +43,14 @@ __all__ = [
     "JudgeItem",
     "JudgeRequest",
     "JudgeResult",
+    "MemoryStore",
     "Observation",
     "PriceModel",
     "PushSource",
     "RequestUsage",
     "Sink",
     "Source",
+    "SqliteStore",
     "Store",
     "Trigger",
     "Usage",
