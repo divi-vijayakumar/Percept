@@ -1279,3 +1279,375 @@ def test_unavailable_original_evidence_resolves_through_the_unverified_path_with
     assert [(d.decision.type, d.decision.cause) for d in got] == [("uncertain", "timeout")]
     assert not [s for s in judge.sent if s[3].purpose == "verify"]     # nothing fabricated, nothing sent
     assert cov["evidence_unavailable"]["fall"] == 1 and health["verify_deferred"] >= 1
+
+
+# --------------------------------------------------------------------------- link health of app-owned sources
+
+
+class OutageReader(Reader):
+    """A live camera: ``frames`` frames, then the connection drops."""
+
+    def __init__(self, frames: int) -> None:
+        self.left = frames
+
+    def read(self):
+        if self.left <= 0:
+            raise ConnectionError("connection reset by peer")
+        self.left -= 1
+        time.sleep(0.01)
+        return image(self.left), None
+
+
+def outage_opener(down_for: int):
+    """Connection 1 delivers frames then drops; the next ``down_for`` opens fail (the outage);
+    then the camera is back for good."""
+    script = iter([OutageReader(5)] + ["down"] * down_for)
+
+    def opener():
+        step = next(script, None)
+        if step == "down":
+            raise ConnectionError("no route to host")
+        return step or OutageReader(10**6)
+
+    return opener
+
+
+async def wait_for(predicate, limit_s: float = 5.0):
+    t0 = time.monotonic()
+    while not predicate() and time.monotonic() - t0 < limit_s:
+        await asyncio.sleep(0.02)
+    assert predicate()
+
+
+def link_intervals(cov):
+    return [b for b in cov["blind_intervals"] if b.kind == "link_down"]
+
+
+def test_d1_an_app_owned_source_reports_its_outage_to_the_monitor_without_private_calls(monkeypatch):
+    from percept import sources
+
+    monkeypatch.setattr(sources, "_cv2", lambda: None)              # no OpenCV needed: a fake camera
+    opener = outage_opener(down_for=4)
+    monkeypatch.setattr(sources, "Cv2Reader", lambda target, **kw: opener())
+    door = Condition("door", "the door is open", trigger=Never())
+    app_frames, app_health = [], []
+
+    async def main():
+        async with percept.Monitor(FakeJudge({}), [door], store=mem()) as m:
+            # The app owns the source: it needs every frame for its own live view and clip ring.
+            src = percept.open_source("rtsp://cam-1/stream", on_frame=app_frames.append,
+                                      on_health=app_health.append, backoff=(0.05, 0.05), stall_timeout=None)
+            m.watch(src)
+            await wait_for(lambda: [h.kind for h in app_health] == ["link_down", "link_up"])
+            await asyncio.sleep(0.05)
+            return m.coverage(src.stream_id), m.stats()
+
+    cov, stats = run(main())
+    (gap,) = link_intervals(cov)
+    assert gap.t_end_wall is not None and gap.t_end_wall - gap.t_start_wall >= 4 * 0.05 * 0.9
+    assert stats["health"]["link_down"] == 1 and stats["health"]["link_up"] == 1
+    assert app_frames and [h.kind for h in app_health] == ["link_down", "link_up"]   # the app still hears it
+
+
+def test_d1_watch_a_uri_with_the_apps_own_source_options(monkeypatch):
+    from percept import sources
+
+    monkeypatch.setattr(sources, "_cv2", lambda: None)
+    opener = outage_opener(down_for=2)
+    monkeypatch.setattr(sources, "Cv2Reader", lambda target, **kw: opener())
+    door = Condition("door", "the door is open", trigger=Never())
+    app_frames, app_health = [], []
+
+    async def main():
+        async with percept.Monitor(FakeJudge({}), [door], store=mem()) as m:
+            m.watch("rtsp://user:pw@cam-2/live", on_frame=app_frames.append, on_health=app_health.append,
+                    capture_fps=50, max_side=32, stall_timeout=None, backoff=(0.05, 0.05))
+            await wait_for(lambda: [h.kind for h in app_health] == ["link_down", "link_up"])
+            await asyncio.sleep(0.05)
+            (sid,) = m._streams
+            return m._streams[sid].source, m.coverage(sid), m.stats()
+
+    src, cov, stats = run(main())
+    assert src.fps == 50 and src.max_side == 32 and src.backoff == (0.05, 0.05) and src.stall_timeout is None
+    assert app_frames and max(app_frames[-1].image.shape) <= 32
+    assert len(link_intervals(cov)) == 1 and stats["health"]["link_down"] == 1
+    with pytest.raises(TypeError):
+        run(_watch_with_bad_option())
+
+
+async def _watch_with_bad_option():
+    async with percept.Monitor(FakeJudge({}), [], store=mem()) as m:
+        m.watch(PushSource("p"), on_frame=print)          # source options apply to a URI only
+
+
+def test_d1b_a_push_stream_outage_is_a_blind_interval_and_health():
+    door = Condition("door", "the door is open", trigger=Never(), recheck_every_s=0.1)
+
+    async def main():
+        async with percept.Monitor(FakeJudge({}), [door], store=mem()) as m:
+            src = PushSource("conn")
+            m.watch(src, fps=None)
+            src.push(image())
+            await asyncio.sleep(0.05)
+            src.set_link(False, "connector gone")           # the app's own connector died
+            await asyncio.sleep(0.15)
+            src.push(image(1))                              # frames again: the link is back
+            await asyncio.sleep(0.05)
+            m.push("other", image())                        # a monitor-owned push stream
+            m.set_link("other", False, "camera unplugged")
+            await asyncio.sleep(0.1)
+            m.set_link("other", True)
+            await asyncio.sleep(0.02)
+            return m.coverage("conn"), m.coverage("other"), m.stats()
+
+    conn, other, stats = run(main())
+    (gap,) = link_intervals(conn)
+    assert gap.detail == "connector gone" and gap.t_end_wall - gap.t_start_wall >= 0.1
+    (gap,) = link_intervals(other)
+    assert gap.t_end_wall is not None and gap.detail == "camera unplugged"
+    assert stats["health"]["link_down"] == 2 and stats["health"]["link_up"] == 2
+
+
+# --------------------------------------------------------------------------- cost accounting
+
+
+PRICE = percept.PriceModel(usd_per_mtok_in=100.0, usd_per_mtok_out=400.0, tokens_per_image=300)
+
+
+def test_d5_a_cancelled_request_is_reported_at_its_settled_cost_not_its_reservation():
+    door = Condition("door", "the door is open", trigger=Always())
+    inner = FakeJudge(answers({"detect": [N]}), price=PRICE)
+    reported: list[float] = []
+    hang = asyncio.Event
+
+    class SecondHangs:
+        name, can_batch, price, max_attempts = "fake", True, PRICE, 2
+
+        def __init__(self):
+            self.calls = 0
+
+        async def judge(self, request):
+            self.calls += 1
+            if self.calls > 1:
+                await hang().wait()                     # in flight when the monitor stops
+            result = await inner.judge(request)
+            reported.append(sum(u.usage.cost_usd for u in result.usage))
+            return result
+
+    async def main():
+        m = percept.Monitor(SecondHangs(), [door], store=mem(), max_requests_per_min=1000, max_cost_per_hour=50.0)
+        src = PushSource("cam")
+        m.watch(src, fps=None)
+        for i in range(4):
+            src.push(image(i))
+            await asyncio.sleep(0.05)
+        in_flight = m.stats()
+        await m.aclose()
+        return in_flight, m.stats()
+
+    in_flight, after = run(main())
+    (spent,) = reported
+    cam = after["streams"]["cam"]
+    assert cam["cost_usd"] == pytest.approx(spent)                   # what the provider reported
+    assert in_flight["streams"]["cam"]["cost_reserved_usd"] > 0      # the one in flight holds its worst case
+    assert cam["cost_reserved_usd"] > 2 * spent                      # ...and keeps it for the window
+    assert after["cost_usd_in_window"] == pytest.approx(spent + cam["cost_reserved_usd"])   # the cap still counts it
+    assert after["cost_usd"] == pytest.approx(spent)
+
+
+def test_d2_cost_attempts_and_requests_per_condition():
+    conds = [Condition("door", "the door is open", trigger=At(0)),
+             Condition("gate", "the gate is open", trigger=At(0)),
+             Condition("fire", "there is fire", trigger=At(1))]
+
+    def script(request):
+        if request.items[0].condition.id == "fire" and not script.retried:
+            script.retried = True
+            return RetryableError("busy")
+        return {i.condition.id: N for i in request.items}
+
+    script.retried = False
+    judge = FakeJudge(script, price=PRICE)
+
+    async def main():
+        async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            src.push(image(0))
+            await asyncio.sleep(0.1)
+            src.push(image(1))
+            await asyncio.sleep(0.1)
+            return m.stats()["streams"]["cam"]
+
+    cam = run(main())
+    per = cam["conditions"]
+    assert set(per) == {"door", "gate", "fire"}
+    assert per["door"]["requests"] == per["gate"]["requests"] == per["fire"]["requests"] == 1
+    assert per["fire"]["attempts"] == 2 and per["door"]["attempts"] + per["gate"]["attempts"] == 1
+    assert per["door"]["cost_usd"] == pytest.approx(per["gate"]["cost_usd"]) and per["door"]["cost_usd"] > 0
+    assert sum(p["cost_usd"] for p in per.values()) == pytest.approx(cam["cost_usd"])
+    assert sum(p["attempts"] for p in per.values()) == cam["attempts"]
+
+
+# --------------------------------------------------------------------------- reservation per reachable model
+
+
+def three_members(price=None, retries=1):
+    """A three-member cascade whose members answer confidently (nothing escalates)."""
+    reply = answers({"detect": [N], "verify": [N]})
+    return cascade(*(FakeJudge(reply, name=n, price=price, retries=retries) for n in ("lite", "flash", "pro")))
+
+
+def test_a_request_pinned_to_one_route_reserves_only_that_members_attempts(monkeypatch):
+    monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
+    judge = three_members()
+    assert judge.max_attempts == 6
+    door = Condition("door", "the door is open", trigger=Always(), judge="lite")
+
+    async def main():
+        async with percept.Monitor(judge, [door], store=mem(), max_requests_per_min=6) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            await push_frames(src, 10, pause=0.03)
+            return m.stats(), m.coverage("cam")
+
+    stats, cov = run(main())
+    sent = [s for member in judge.members for s in member.sent]
+    assert {s[3].items[0].condition.judge for s in sent} == {"lite"}
+    assert len(sent) >= 4                       # a request reserves lite's 2 attempts, not all 6
+    assert stats["streams"]["cam"]["requests"] == stats["streams"]["cam"]["attempts"] == len(sent)
+
+
+def test_reservation_hooks_cover_every_route_and_fall_back_for_plain_judges():
+    from percept.contracts import JudgeItem, JudgeRequest
+    from percept.judges.base import max_attempts_for, worst_case_cost, worst_case_cost_for
+
+    lite, flash, pro = (FakeJudge({}, name=n, price=PRICE, retries=r) for n, r in (("lite", 0), ("flash", 1), ("pro", 2)))
+    judge = cascade(lite, flash, pro)
+    img = (np.zeros((8, 8, 3), np.uint8),)
+
+    def req(*pins, purpose="detect"):
+        items = tuple(JudgeItem(Condition(f"c{k}", "x", judge=p)) for k, p in enumerate(pins))
+        return JudgeRequest("r", "cam", 0, items, img, (0.0, 0.0), purpose)
+
+    assert max_attempts_for(judge, req("lite")) == 1
+    assert max_attempts_for(judge, req("lite", "pro")) == 4
+    assert max_attempts_for(judge, req(None)) == 6 == judge.max_attempts
+    assert max_attempts_for(judge, req(None, "lite", purpose="verify")) == 3     # the last member only
+    assert max_attempts_for(judge, req("nobody")) == 0                           # fails without asking
+    r = req("flash")
+    assert worst_case_cost_for(judge, r) == pytest.approx(worst_case_cost(r, PRICE, retries=1))
+    assert worst_case_cost_for(lite, r) == pytest.approx(worst_case_cost(r, PRICE, retries=0))
+    assert worst_case_cost_for(FakeJudge({}), r) is None                         # no price: best effort
+    assert max_attempts_for(SlowJudge(0), r) == 1                                # no hook: max_attempts
+    assert worst_case_cost_for(cascade(lite, FakeJudge({}, name="free")), req("lite")) == \
+        pytest.approx(worst_case_cost(req("lite"), PRICE, retries=0))            # unreachable member unpriced
+
+
+def test_reservations_bound_every_cascade_request_with_escalation_and_retries():
+    import hypothesis
+    from percept.contracts import JudgeItem, JudgeRequest
+    from percept.judges.base import max_attempts_for, worst_case_cost_for
+
+    st = hypothesis.strategies
+    img = (np.zeros((8, 8, 3), np.uint8),)
+    replies = st.sampled_from(["yes", "no", "unknown", "weak", "busy", "refused", "junk"])
+
+    @hypothesis.settings(max_examples=200, deadline=None)
+    @hypothesis.given(retries=st.lists(st.integers(0, 2), min_size=1, max_size=3),
+                      pins=st.lists(st.sampled_from([None, 0, 1, 2, "nobody"]), min_size=1, max_size=4),
+                      verify=st.booleans(), batch=st.booleans(), script=st.lists(replies, min_size=1, max_size=30))
+    def check(retries, pins, verify, batch, script):
+        steps = iter(script)
+
+        def reply(request):
+            r = next(steps, "yes")
+            if r == "busy":
+                return RetryableError("busy")
+            if r == "refused":
+                return percept.judges.base.RefusalError("no", tokens_in=50)
+            if r == "junk":
+                return "not json"
+            answer, conf = ("yes", 0.3) if r == "weak" else (r, 0.9)
+            return {i.condition.id: (answer, conf, "r") for i in request.items}
+
+        names = [f"m{k}" for k in range(len(retries))]
+        judge = cascade(*(FakeJudge(reply, name=n, price=PRICE, retries=r, can_batch=batch or k > 0)
+                          for k, (n, r) in enumerate(zip(names, retries))))
+        items = tuple(JudgeItem(Condition(f"c{k}", "x",
+                                          judge=p if p in (None, "nobody") else names[min(p, len(names) - 1)]))
+                      for k, p in enumerate(pins))
+        request = JudgeRequest("r", "cam", 0, items, img, (0.0, 0.0), "verify" if verify else "detect")
+        result = asyncio.run(judge.judge(request))
+        calls = 1 if judge.can_batch else len(items)
+        assert sum(u.usage.attempts for u in result.usage) <= max_attempts_for(judge, request) * calls
+        assert sum(u.usage.cost_usd for u in result.usage) <= worst_case_cost_for(judge, request) * calls + 1e-12
+        assert max_attempts_for(judge, request) <= judge.max_attempts
+
+    check()
+
+
+def test_a_busy_pinned_cascade_never_exceeds_the_window_or_the_dollar_cap(monkeypatch):
+    monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
+    monkeypatch.setattr(rt, "COST_WINDOW_S", 1.0)
+    monkeypatch.setattr(rt, "DEADLINES", {rt.EVENT: 0.3, rt.STATE: 0.3})
+    monkeypatch.setattr(rt, "VERIFY_RETRY_S", 0.05)
+    rng = np.random.default_rng(11)
+    attempts: list[tuple[float, str]] = []
+    cheap = percept.PriceModel(usd_per_mtok_in=10.0, usd_per_mtok_out=40.0, tokens_per_image=300)
+
+    def member(confident):
+        def script(request):
+            attempts.append((time.monotonic(), request.stream_id))
+            if rng.random() < 0.3:
+                return RetryableError("busy")
+            return {i.condition.id: (Y if confident else ("unknown", 0.2, "?")) for i in request.items}
+        return script
+
+    chain = cascade(FakeJudge(member(False), name="lite", price=cheap),
+                    FakeJudge(member(False), name="flash", price=cheap),
+                    FakeJudge(member(True), name="pro", price=cheap))
+    spent: list[tuple[float, float]] = []
+
+    class Recording:
+        name, can_batch, price, max_attempts = chain.name, chain.can_batch, chain.price, chain.max_attempts
+        max_attempts_for, worst_case_cost_for = chain.max_attempts_for, chain.worst_case_cost_for
+        members = chain.members
+
+        async def judge(self, request):
+            t0 = time.monotonic()
+            result = await chain.judge(request)
+            spent.append((t0, sum(u.usage.cost_usd for u in result.usage)))
+            return result
+
+    conds = [Condition("door", "the door is open", trigger=Always(), judge="lite", clear_after_no=1),
+             Condition("smoke", "there is smoke", trigger=Always(), judge="pro"),
+             Condition("fall", "a person falls", kind="event", trigger=Always(), rearm_s=0.2),     # escalates
+             Condition("gate", "the gate is open", trigger=Always())]
+    limit, cap = 8, 0.3
+
+    async def main():
+        async with percept.Monitor(Recording(), conds, store=mem(), max_requests_per_min=limit,
+                                   max_cost_per_hour=cap) as m:
+            srcs = [PushSource("a"), PushSource("b")]
+            watches = [m.watch(s, fps=None) for s in srcs]
+            for i in range(90):
+                for s in srcs:
+                    s.push(image(i))
+                await asyncio.sleep(0.02)
+            for s in srcs:
+                s.close()
+            for w in watches:
+                await collect(w)
+            return m.stats()
+
+    stats = run(main(), timeout=60)
+    for sid in ("a", "b"):
+        times = sorted(t for t, s in attempts if s == sid)
+        for i, t in enumerate(times):
+            assert sum(1 for u in times[i:] if u < t + 1.0) <= limit
+    assert stats["health"]["budget_exhausted"] >= 1
+    starts = sorted(spent)
+    for i, (t, _) in enumerate(starts):
+        assert sum(c for u, c in starts[i:] if u < t + 1.0) <= cap + 1e-12
+    assert sum(s["attempts"] for s in stats["streams"].values()) == len(attempts)

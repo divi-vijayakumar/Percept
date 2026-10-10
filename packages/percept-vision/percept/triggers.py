@@ -3,7 +3,9 @@
 Everything here is pure: numpy and the standard library, no I/O, no clock. ``now`` is passed
 in (seconds; any clock, as long as one stream uses the same one), and every piece of state is
 plain data (dicts, lists, floats and numpy arrays) returned to the caller, so the same inputs
-always give the same outputs and state can be persisted and restored.
+always give the same outputs and state can be persisted and restored. Trigger objects are
+frozen values: they compare and hash by their configuration, so two conditions built with
+``on_change()`` (or ``every(30)``) are equal.
 
 - :func:`on_change` - fires a condition when its zone changes against a slow moving average
   of the scene (the ``block_max`` statistic, with hysteresis).
@@ -148,6 +150,7 @@ def _contrast(baseline: np.ndarray, mask: np.ndarray) -> float:
 # --------------------------------------------------------------------------- on_change
 
 
+@dataclass(frozen=True, repr=False)
 class OnChange:
     """Due when a condition's zone differs from the scene's moving average.
 
@@ -174,24 +177,25 @@ class OnChange:
     ``baseline_s=0`` compares each frame with the previous one instead of an average.
     """
 
-    def __init__(
-        self,
-        threshold: float = 0.20,
-        exit_threshold: float | None = None,
-        baseline_s: float = 5.0,
-        grid: tuple[int, int] = GRID,
-    ) -> None:
-        exit_threshold = threshold / 2 if exit_threshold is None else exit_threshold
+    threshold: float = 0.20
+    exit_threshold: float | None = None     # None: half of threshold
+    baseline_s: float = 5.0
+    grid: tuple[int, int] = GRID
+
+    def __post_init__(self) -> None:
+        threshold = self.threshold
+        exit_threshold = threshold / 2 if self.exit_threshold is None else self.exit_threshold
         if not 0.0 < threshold <= 1.0:
             raise ValueError("threshold is in (0, 1]")
         if not 0.0 <= exit_threshold < threshold:
             raise ValueError("exit_threshold is in [0, threshold)")
-        if not (math.isfinite(baseline_s) and baseline_s >= 0):
+        if not (math.isfinite(self.baseline_s) and self.baseline_s >= 0):
             raise ValueError("baseline_s is >= 0")
-        self.threshold = float(threshold)
-        self.exit_threshold = float(exit_threshold)
-        self.baseline_s = float(baseline_s)
-        self.grid = (int(grid[0]), int(grid[1]))
+        # Normalised, so equal configurations compare and hash equal.
+        object.__setattr__(self, "threshold", float(threshold))
+        object.__setattr__(self, "exit_threshold", float(exit_threshold))
+        object.__setattr__(self, "baseline_s", float(self.baseline_s))
+        object.__setattr__(self, "grid", (int(self.grid[0]), int(self.grid[1])))
 
     def __repr__(self) -> str:
         return (f"on_change(threshold={self.threshold}, exit_threshold={self.exit_threshold}, "
@@ -226,6 +230,7 @@ class OnChange:
 # --------------------------------------------------------------------------- every
 
 
+@dataclass(frozen=True, repr=False)
 class Every:
     """A heartbeat: each condition is due once every ``seconds``.
 
@@ -236,10 +241,13 @@ class Every:
     condition is due again immediately.
     """
 
-    def __init__(self, seconds: float) -> None:
-        if not (isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds > 0):
+    seconds: float
+
+    def __post_init__(self) -> None:
+        seconds = self.seconds
+        if isinstance(seconds, bool) or not (isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds > 0):
             raise ValueError("every(seconds) needs a positive number of seconds")
-        self.seconds = float(seconds)
+        object.__setattr__(self, "seconds", float(seconds))
 
     def __repr__(self) -> str:
         return f"every({self.seconds:g})"

@@ -16,6 +16,12 @@ real answer at all, the last failure stands.
   attempt is visible to the budget. Hops reuse the request id; ``RequestUsage.judge`` and
   ``Observation.judge`` name the member that made the request. Failures the cascade makes up
   itself (an unknown route, a condition the deadline left unasked) carry the cascade's name.
+
+Reservations follow the routes. ``max_attempts`` covers every member, but
+``max_attempts_for(request)`` and ``worst_case_cost_for(request)`` count only the members the
+request can reach: a condition pinned to a member reaches that member, a verification the last
+one, and an unpinned condition every member (it may escalate all the way). Each reachable
+member is priced at its own price and attempts, for the conditions that can reach it.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from dataclasses import replace
 from typing import Callable, Sequence
 
 from percept.contracts import Failure, Judge, JudgeItem, JudgeRequest, JudgeResult, Observation, PriceModel, RequestUsage
-from percept.judges.base import failed_observations, max_attempts
+from percept.judges.base import failed_observations, max_attempts, max_attempts_for, worst_case_cost_for
 
 
 def _combined_price(judges: Sequence[Judge]) -> PriceModel | None:
@@ -63,6 +69,42 @@ class Cascade:
         self.max_attempts = sum(max_attempts(j) for j in judges)  # every member, every retry
         self._index = {n: k for k, n in enumerate(names)}
         self._clock = clock
+
+    def _reach(self, request: JudgeRequest) -> list[tuple[Judge, JudgeRequest]]:
+        """Each member the request can reach, with the part of the request it may be asked."""
+        last = len(self.members) - 1
+        firsts: dict[str, tuple[int, bool]] = {}
+        for item in request.items:
+            pin = item.condition.judge
+            if request.purpose == "verify":
+                firsts[item.condition.id] = (last, True)
+            elif pin is None:
+                firsts[item.condition.id] = (0, False)
+            elif pin in self._index:
+                firsts[item.condition.id] = (self._index[pin], True)
+        out = []
+        for k, member in enumerate(self.members):
+            items = tuple(i for i in request.items if i.condition.id in firsts
+                          and (firsts[i.condition.id][0] == k if firsts[i.condition.id][1]
+                               else firsts[i.condition.id][0] <= k))
+            if items:
+                out.append((member, replace(request, items=items)))
+        return out
+
+    def max_attempts_for(self, request: JudgeRequest) -> int:
+        """Attempts this request may make: only the members it can reach (see the module docstring)."""
+        return sum(max_attempts_for(member, part) for member, part in self._reach(request))
+
+    def worst_case_cost_for(self, request: JudgeRequest) -> float | None:
+        """Dollars to reserve for this request: each reachable member's worst case at its own price;
+        None when a reachable member has no price."""
+        total = 0.0
+        for member, part in self._reach(request):
+            cost = worst_case_cost_for(member, part)
+            if cost is None:
+                return None
+            total += cost
+        return total
 
     def _settles(self, k: int, item: JudgeItem, ob: Observation) -> bool:
         threshold = self.thresholds[k]

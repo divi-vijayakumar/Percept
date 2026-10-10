@@ -11,6 +11,36 @@ decision per real occurrence of a plain-language condition.
 - The 0.x modules are removed from `main`. Releases `0.7.0` and the unreleased 0.8 previews came
   from an experimental line that is preserved in the project history but not continued.
 
+### 1.0.0.dev1 — fixes found while migrating an application
+
+- **Link health of app-owned sources.** `watch(source)` now subscribes the monitor to any source
+  with `add_health_listener` (every `open_source` source and every `PushSource`), so a camera
+  outage is a `link_down` blind interval and health event even when the app built the source with
+  its own `on_frame` / `on_health`. Sources gain `add_health_listener` / `remove_health_listener`.
+  `watch(uri, ...)` accepts `open_source` options (`on_frame`, `on_health`, `capture_fps`,
+  `max_side`, `stall_timeout`, `backoff`, ...); its own `fps` stays the processing cap.
+- **Push stream outages.** `PushSource.set_link(up, detail="")` and
+  `Monitor.set_link(stream_id, up, detail="")` report an app-owned feed as down or up, with the
+  same health and blind interval as a camera; a frame pushed while down marks it up again and
+  starts a new epoch.
+- **Cost reporting.** `stats()` `cost_usd` is now the settled cost the judge reported. A cancelled
+  request (no usage reported) settles at 0 for reporting; its worst-case reservation still counts
+  against `max_cost_per_hour` for the window, and is shown as `cost_reserved_usd` (per stream and
+  in total). Previously the reservation was reported as spend.
+- **Per-condition cost.** `stats()["streams"][id]["conditions"]` gives `requests`, `attempts` and
+  settled `cost_usd` per condition, each request's usage split evenly (`Usage.split`) among the
+  conditions it carried.
+- **Reservations follow routes.** Judges may provide `max_attempts_for(request)` and
+  `worst_case_cost_for(request)`; a cascade counts only the members a request can reach (a pinned
+  condition its member, a verification the last member, an unpinned condition every member), each
+  at its own price. Requests pinned to a cheap member no longer reserve every member's attempts.
+  The per-stream attempt limit and the monitor-wide dollar cap hold as before.
+- **Triggers are values.** `on_change(...)` and `every(n)` are frozen and compare and hash by
+  configuration, so identical `Condition`s are equal and re-adding one is a no-op. Conditions with
+  equal triggers share one trigger step.
+- Validation builds the wheel from a clean copy, checks its files against the tracked tree, and
+  runs the quickstart against the installed wheel.
+
 ## 0.6.0 — Research preview (2026-06)
 
 ### Packaging — one install

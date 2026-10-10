@@ -517,7 +517,9 @@ class Source(Protocol):
     Keeps ``seq``/``t`` monotonic within an epoch, restarts ``seq`` at 0 and bumps
     ``stream_epoch`` on every reconnect, and reports outages as ``Health`` (``link_down`` /
     ``link_up``) rather than raising out of ``frames()``. A source may also provide
-    ``async aclose()``; the runtime calls it at shutdown when present.
+    ``async aclose()``; the runtime calls it at shutdown when present. A source that provides
+    ``add_health_listener(callback)`` (and ``remove_health_listener``) has the runtime
+    subscribed to its link health when it is watched.
     """
 
     stream_id: str
@@ -544,7 +546,9 @@ class Judge(Protocol):
 
     A judge may also set ``max_attempts``: the most provider requests one ``judge()`` call can
     make, retries and cascade hops included. The budget reserves that many attempts before
-    dispatch; a judge without it is assumed to make at most two.
+    dispatch; a judge without it is assumed to make at most two. A judge may narrow the
+    reservation per request with ``max_attempts_for(request) -> int`` (at most ``max_attempts``)
+    and ``worst_case_cost_for(request) -> float | None`` (see ``percept.judges.base``).
     """
 
     name: str

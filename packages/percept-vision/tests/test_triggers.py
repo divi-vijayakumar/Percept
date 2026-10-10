@@ -529,3 +529,35 @@ def test_low_light_scene_still_fires():
     frames = [dark] * 5 + [with_patch(dark, 12, 18, 12, 18, 30)] * 2
     dues, _ = run(OnChange(), frames, (cond(),))
     assert fired(dues) == [5]
+
+
+# --------------------------------------------------------------------------- value equality
+
+
+def test_triggers_compare_and_hash_by_configuration():
+    from percept.triggers import every, on_change
+
+    assert on_change() == on_change() and hash(on_change()) == hash(on_change())
+    assert on_change(0.2) == on_change(0.2, exit_threshold=0.1)      # the resolved configuration
+    assert on_change(0.2) != on_change(0.3) and on_change() != every(5)
+    assert every(5) == every(5.0) and hash(every(5)) == hash(every(5)) and every(5) != every(6)
+    a = Condition("door", "the door is open", trigger=every(30))
+    b = Condition("door", "the door is open", trigger=every(30))
+    assert a == b and hash(a) == hash(b) and len({a, b}) == 1
+    assert Condition("door", "the door is open", trigger=on_change()) == \
+        Condition("door", "the door is open", trigger=on_change())
+
+
+def test_trigger_objects_hold_no_runtime_state():
+    import copy
+
+    conds = (Condition("door", "the door is open"),)
+    for trigger in (OnChange(), Every(5)):
+        before = copy.deepcopy(trigger)
+        state = None
+        for i in range(5):
+            _, state = trigger.step(frame(texture(i), t=float(i)), conds, state, float(i))
+        assert trigger == before and repr(trigger) == repr(before)
+        name = "seconds" if isinstance(trigger, Every) else "threshold"
+        with pytest.raises(AttributeError):     # frozen: configuration can't drift under a running monitor
+            setattr(trigger, name, 0.5)

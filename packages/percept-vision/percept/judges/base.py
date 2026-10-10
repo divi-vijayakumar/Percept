@@ -7,6 +7,7 @@ means lives here, so every provider is held to the same contract:
 * ``parse_reply`` turns the model's text into exactly one ``Observation`` per requested
   condition, marking anything unusable as a failure instead of guessing;
 * ``worst_case_cost`` / ``cost_of`` price a request before and after it is sent;
+* ``max_attempts_for`` / ``worst_case_cost_for`` are what the runtime reserves for one request;
 * ``attribute_usage`` shares one request's usage among the observations it produced.
 
 No I/O, no clock, no asyncio.
@@ -282,6 +283,50 @@ def max_attempts(judge: object) -> int:
     """
     value = getattr(judge, "max_attempts", None)
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else attempts_for(1)
+
+
+def max_attempts_for(judge: object, request: JudgeRequest) -> int:
+    """The most provider requests ``judge.judge(request)`` may make for this request, sent whole.
+
+    A judge may narrow its ``max_attempts`` per request with an optional
+    ``max_attempts_for(request)`` method (a cascade counts only the members the request can
+    reach). A value that is not an integer in ``[0, max_attempts(judge)]``, or a hook that
+    raises, is ignored, so a hook can lower a reservation but never raise it past what the
+    monitor validated.
+    """
+    ceiling = max_attempts(judge)
+    hook = getattr(judge, "max_attempts_for", None)
+    if callable(hook):
+        try:
+            value = hook(request)
+        except Exception:  # noqa: BLE001 - a broken hook falls back to the judge-wide ceiling
+            value = None
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= ceiling:
+            return value
+    return ceiling
+
+
+def worst_case_cost_for(judge: object, request: JudgeRequest) -> float | None:
+    """The dollars to reserve before ``judge.judge(request)``, for the request sent whole; None
+    when the judge has no price (its cost is then counted only once reported).
+
+    A judge may provide ``worst_case_cost_for(request)`` (a cascade sums the members the request
+    can reach, each at its own price and attempts). Otherwise every attempt of
+    ``max_attempts_for`` is priced at ``judge.price``.
+    """
+    hook = getattr(judge, "worst_case_cost_for", None)
+    if callable(hook):
+        try:
+            value, ok = hook(request), True
+        except Exception:  # noqa: BLE001 - a broken hook falls back to pricing every attempt
+            value, ok = None, False
+        if ok and (value is None or (isinstance(value, (int, float)) and not isinstance(value, bool)
+                                     and math.isfinite(value) and value >= 0)):
+            return value
+    price = getattr(judge, "price", None)
+    if not isinstance(price, PriceModel):
+        return None
+    return max_attempts_for(judge, request) * cost_of(price, *worst_case_tokens(request, price))
 
 
 def attribute_usage(result: JudgeResult) -> tuple[Usage, ...]:

@@ -32,7 +32,7 @@ from percept import trace  # TraceWriter, read, replay(path); the pure replay is
 from percept.sources import PushSource, open_source
 from percept.triggers import every, on_change
 
-__version__ = "1.0.0.dev0"
+__version__ = "1.0.0.dev1"
 
 __all__ = [
     "Condition",

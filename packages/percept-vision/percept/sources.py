@@ -32,9 +32,11 @@ listings.
 
 Link changes are reported, never raised: ``frames()`` does not raise for a camera that is
 down. They arrive as :class:`~percept.contracts.Health` (``link_down`` once per outage,
-``link_up`` when frames flow again) through ``on_health``, called on the event loop thread,
-and the current state is always readable as ``source.link`` (``"connecting"``, ``"up"``,
-``"down"`` or ``"ended"``).
+``link_up`` when frames flow again) through ``on_health`` and every listener added with
+``add_health_listener`` (a ``Monitor`` adds one when it watches the source), called on the event
+loop thread, and the current state is always readable as ``source.link`` (``"connecting"``,
+``"up"``, ``"down"`` or ``"ended"``). A :class:`PushSource` has no connection of its own: the app
+reports its outages with ``set_link``.
 
 OpenCV is the ``video`` extra (``pip install "percept-vision[video]"``) and is imported only
 when a source needs it. HLS and DASH are read by an ``ffmpeg`` subprocess, which must be on
@@ -147,17 +149,23 @@ class _Handoff:
 
 
 class _Base:
-    """What every source shares: downscaling, the capture hooks, the handoff and closing."""
+    """What every source shares: downscaling, the capture hooks, health listeners, the handoff
+    and closing."""
 
     def __init__(self, stream_id: str, *, max_side: int, on_frame: Callable[[Frame], None] | None,
-                 preroll: PreRoll | None, capacity: int = 1, lossless: bool = False) -> None:
+                 preroll: PreRoll | None, capacity: int = 1, lossless: bool = False,
+                 on_health: Callable[[Health], None] | None = None,
+                 wall: Callable[[], float] = time.time) -> None:
         if not stream_id:
             raise ValueError("stream_id must not be empty")
         self.stream_id = stream_id
         self.max_side = max_side
         self.on_frame = on_frame
+        self.on_health = on_health
         self.preroll = preroll
         self.hook_errors = 0
+        self._listeners: list[Callable[[Health], None]] = []
+        self._wall = wall
         self._preroll_lock = threading.Lock()
         self._handoff = _Handoff(capacity, lossless)
         self._started = False
@@ -166,6 +174,47 @@ class _Base:
     def dropped(self) -> int:
         """Frames replaced in the handoff before the consumer took them."""
         return self._handoff.dropped
+
+    def add_health_listener(self, listener: Callable[[Health], None]) -> None:
+        """Also send this source's link health (``link_down`` / ``link_up``) to ``listener``,
+        on the event loop thread, after ``on_health``. Adding a listener twice has no effect."""
+        if not callable(listener):
+            raise TypeError("a health listener is callable")
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def remove_health_listener(self, listener: Callable[[Health], None]) -> None:
+        """Stop sending health to ``listener`` (no error if it was not added)."""
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def _health(self, kind: str, detail: str) -> None:
+        """Report a link change to ``on_health`` and every listener, on the loop thread."""
+        self.link = "up" if kind == "link_up" else "down"
+        if self.on_health is None and not self._listeners:
+            return
+        event = Health(kind, self.stream_id, self._wall(), scrub(detail))  # type: ignore[arg-type]
+        loop = self._handoff.loop
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        try:
+            if loop is not None and running is not loop:
+                loop.call_soon_threadsafe(self._publish, event)
+            else:
+                self._publish(event)
+        except RuntimeError:  # the loop is closed: nobody is listening
+            pass
+
+    def _publish(self, event: Health) -> None:
+        for listener in [self.on_health, *self._listeners]:
+            if listener is None:
+                continue
+            try:
+                listener(event)
+            except Exception:  # noqa: BLE001 - one broken listener must not starve the others
+                self.hook_errors += 1
 
     def _emit(self, frame: Frame, stop: threading.Event | None = None) -> None:
         if self.preroll is not None:
@@ -228,19 +277,44 @@ class PushSource(_Base):
 
     Holds at most ``maxlen`` frames; when full, the oldest is dropped. ``t`` is read from the
     monotonic clock at push time and ``t_wall`` defaults to ``time.time()``.
+
+    The app owns the connection, so it reports outages: ``set_link(False, detail)`` when its
+    feed is gone (health ``link_down``, and a ``link_down`` blind interval in a monitor watching
+    this source) and ``set_link(True)`` when it is back (``link_up``); a frame pushed while the
+    link is down also marks it up. Coming back up starts a new ``epoch`` with ``seq`` at 0, as a
+    reconnect does.
     """
 
     def __init__(self, stream_id: str = "push", *, max_side: int = 640, maxlen: int = 8, epoch: int = 0,
-                 on_frame: Callable[[Frame], None] | None = None, preroll: PreRoll | None = None) -> None:
-        super().__init__(stream_id, max_side=max_side, on_frame=on_frame, preroll=preroll, capacity=maxlen)
+                 on_frame: Callable[[Frame], None] | None = None, preroll: PreRoll | None = None,
+                 on_health: Callable[[Health], None] | None = None) -> None:
+        super().__init__(stream_id, max_side=max_side, on_frame=on_frame, preroll=preroll, capacity=maxlen,
+                         on_health=on_health)
         self.epoch = epoch
+        self.link = "up"
         self._seq = 0
         self._last_t = -float("inf")
         self._lock = threading.Lock()
 
+    def set_link(self, up: bool, detail: str = "") -> None:
+        """Report the app's feed as up or down, from any thread. Repeating the current state
+        reports nothing."""
+        with self._lock:
+            if self._handoff.closed or (self.link == "up") == bool(up):
+                return
+            self.link = "up" if up else "down"
+            if up:
+                self.epoch += 1
+                self._seq = 0
+            epoch = self.epoch
+        self._health("link_up" if up else "link_down",
+                     detail or (f"epoch {epoch}" if up else "reported down by the application"))
+
     def push(self, image: np.ndarray, t_wall: float | None = None) -> Frame:
         if self._handoff.closed:
             raise RuntimeError("push() on a closed PushSource")
+        if self.link == "down":
+            self.set_link(True, "frames pushed again")
         with self._lock:
             t = max(time.monotonic(), self._last_t)
             frame = Frame(self.stream_id, self.epoch, self._seq, t, time.time() if t_wall is None else t_wall,
@@ -305,7 +379,8 @@ class CaptureSource(_Base):
                  on_frame: Callable[[Frame], None] | None = None, preroll: PreRoll | None = None,
                  sleep: Callable[[float], Any] | None = None, clock: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time, rng: Callable[[], float] = random.random) -> None:
-        super().__init__(stream_id, max_side=max_side, on_frame=on_frame, preroll=preroll, lossless=not live)
+        super().__init__(stream_id, max_side=max_side, on_frame=on_frame, preroll=preroll, lossless=not live,
+                         on_health=on_health, wall=wall)
         if fps is not None and not (math.isfinite(fps) and fps > 0):
             raise ValueError("fps must be positive")
         if not (len(backoff) == 2 and all(math.isfinite(b) for b in backoff) and 0 < backoff[0] <= backoff[1]):
@@ -316,7 +391,6 @@ class CaptureSource(_Base):
             raise ValueError("stall_timeout must be positive or None")
         self.opener, self.live, self.loop, self.fps = opener, live, loop, fps
         self.backoff, self.jitter, self.stall_timeout = backoff, jitter, stall_timeout
-        self.on_health = on_health
         self.link = "connecting"
         self.epoch: int | None = None   # the first connection's first frame makes it the start epoch
         self.reconnects = 0             # connections after the first that delivered frames
@@ -324,7 +398,7 @@ class CaptureSource(_Base):
         self._next_epoch = epoch
         self._stop_event = threading.Event()
         self._sleep = sleep or self._stop_event.wait
-        self._clock, self._wall, self._rng = clock, wall, rng
+        self._clock, self._rng = clock, rng
         self._reader: Reader | None = None
         self._progress = 0.0            # clock() at the last sign of life of the current connection
         self._stalled = False
@@ -364,20 +438,6 @@ class CaptureSource(_Base):
             self._stalled = True
         reader.abort()
         return True
-
-    def _health(self, kind: str, detail: str) -> None:
-        self.link = "up" if kind == "link_up" else "down"
-        if self.on_health is None:
-            return
-        event = Health(kind, self.stream_id, self._wall(), scrub(detail))  # type: ignore[arg-type]
-        loop = self._handoff.loop
-        try:
-            if loop is not None:
-                loop.call_soon_threadsafe(self.on_health, event)
-            else:
-                self.on_health(event)
-        except RuntimeError:
-            pass
 
     def _run(self) -> None:
         failures = 0

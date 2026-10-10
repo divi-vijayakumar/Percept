@@ -7,15 +7,23 @@ due work), a dispatcher task (budget, priority, single flight), a committer task
 then one atomic outbox write per emitting step) and one decide state. Shared across streams:
 the judge, limited by ``max_concurrent_requests``, and the store's writer thread.
 
-Budget. A request reserves ``max_attempts(judge)`` attempts (per item for a judge that can't
-batch) against its stream's ``max_requests_per_min`` before it is sent and holds them until it
-finishes; then its actual attempts stay charged for the window. A request is admitted only while
-everything charged in that way plus its reservation fits, so no 60 s span ever holds more
-outbound attempts than the limit (for judges that report their attempts truthfully). Dollars work
-the same way over an hour, on one ledger for the whole monitor: every request reserves its worst
-case (``worst_case_cost`` for every attempt, cascade hops included) when the judge has a
-``price``; without one, only the reported cost counts (best effort). Verification uses the same
-budgets and the same concurrency limit: its own queue, not a bypass.
+Budget. A request reserves ``max_attempts_for(judge, request)`` attempts (per item for a judge
+that can't batch; a cascade counts only the members the request can reach) against its stream's
+``max_requests_per_min`` before it is sent and holds them until it finishes; then its actual
+attempts stay charged for the window. A request is admitted only while everything charged in that
+way plus its reservation fits, so no 60 s span ever holds more outbound attempts than the limit
+(for judges that report their attempts truthfully). Dollars work the same way over an hour, on one
+ledger for the whole monitor: every request reserves its worst case (``worst_case_cost_for``:
+every attempt of every member it can reach) when the judge has a price; without one, only the
+reported cost counts (best effort). A cancelled request reports no usage, so it stays charged at
+its whole reservation for the window. Verification uses the same budgets and the same concurrency
+limit: its own queue, not a bypass.
+
+Reporting is separate from that safety ledger: ``stats()`` counts ``cost_usd`` as the cost the
+judge reported (settled; a cancelled request settles at 0) and ``cost_reserved_usd`` as the
+dollars still held (requests in flight, and cancelled requests' reservations in their window).
+Each request's settled usage is also split evenly (``Usage.split``) among the conditions it
+carried, for the per-condition totals.
 
 Priority when constrained: verify, event detect, state detect, heartbeat, recheck. Event and
 state detections wait at most ``DEADLINES`` seconds, then are dropped with fate
@@ -64,9 +72,10 @@ from percept.contracts import (
     JudgeRequest,
     JudgeResult,
     Source,
+    Usage,
 )
 from percept.delivery import Outbox, OutboxUnreadable, SqliteStore, Watch, Writer, store_key
-from percept.judges.base import attribute_usage, failed_observations, max_attempts, worst_case_cost
+from percept.judges.base import attribute_usage, failed_observations, max_attempts, max_attempts_for, worst_case_cost_for
 from percept.judges.encode import to_jpeg
 from percept.replay import decision_record, encode_condition, encode_input
 from percept.sources import PushSource, open_source
@@ -96,6 +105,10 @@ COVERAGE_BUCKET_S = 60.0
 COVERAGE_BUCKETS = 1440
 DEFAULT_FPS = 5.0           # frames processed per second, per stream, unless watch(fps=...) says otherwise
 STALE_FRAME_S = 10.0        # a frame older than this is not judged as the current one
+
+
+_SOURCE_OPTIONS = frozenset({"on_frame", "on_health", "capture_fps", "max_side", "stall_timeout", "backoff",
+                             "loop", "live", "backend", "epoch", "ffmpeg"})
 
 
 def _spread(frames: tuple[Frame, ...], n: int) -> tuple[Frame, ...]:
@@ -204,6 +217,9 @@ class _Stream:
         self.m, self.source, self.id = m, source, source.stream_id
         self.outbox = Outbox(m._writer, self.id, lambda detail: self.health("store_lag", detail))
         self.budget = _Window(m.max_requests_per_min, lambda: BUDGET_WINDOW_S)
+        self.held_cost = _Window(None, lambda: COST_WINDOW_S)   # this stream's share of m._cost's reservations
+        self.cost_usd = 0.0                                     # settled: what the judge reported
+        self.per_condition: dict[str, list] = {}                # id -> [requests, attempts, cost_usd]
         self.period, self.due = (1.0 / fps if fps else 0.0), None
         self.latest_mono = self.latest_rx = 0.0
         self.halted = False
@@ -412,9 +428,9 @@ class _Stream:
         if signal.ended:
             self.blind_set("scene_reset", False)
             self.tstates = {}
-        for trigger, conds in m._groups:
+        for key, trigger, conds in m._groups:
             try:
-                due, self.tstates[id(trigger)] = trigger.step(frame, conds, self.tstates.get(id(trigger)), frame.t)
+                due, self.tstates[key] = trigger.step(frame, conds, self.tstates.get(key), frame.t)
             except Exception:  # noqa: BLE001 - a broken custom trigger skips this frame
                 log.exception("percept: trigger %r failed", trigger)
                 continue
@@ -640,9 +656,8 @@ class _Stream:
         request = JudgeRequest(f"{m._incarnation}-{next(m._ids)}", self.id, epoch, tuple(items), images,
                                evidence_t, purpose)  # type: ignore[arg-type]
         calls = 1 if m.judge.can_batch else len(items)
-        reserve = m._attempts * calls
-        price = getattr(m.judge, "price", None)
-        cost = worst_case_cost(request, price, retries=m._attempts - 1) * calls if price is not None else 0.0
+        reserve = max_attempts_for(m.judge, request) * calls
+        cost = (worst_case_cost_for(m.judge, request) or 0.0) * calls
         cost_ok = m._cost.fits(cost, now)
         if cost_ok and cost > 0 and m._cost_waiters and next(iter(m._cost_waiters)) != self.id:
             cost_ok = False             # another stream has waited longer for the shared dollar cap
@@ -653,6 +668,7 @@ class _Stream:
         m._cost_waiters.pop(self.id, None)
         self.budget.take(reserve)       # both ledgers are checked and taken in one step on the loop:
         m._cost.take(cost)              # atomic across every stream
+        self.held_cost.take(cost)
         if self.granted:
             self.granted = False
         else:
@@ -684,14 +700,20 @@ class _Stream:
             raise
         except Exception as exc:  # noqa: BLE001 - a judge that raises broke its contract: an outage
             result = JudgeResult(failed_observations(request, "unavailable", m.judge.name, f"judge raised {type(exc).__name__}"), ())
-        finally:  # a cancelled request keeps its whole reservation charged
-            used = reserve if result is None else sum(u.usage.attempts for u in result.usage)
-            spent = cost if result is None else sum(u.usage.cost_usd for u in result.usage)
+        finally:  # a cancelled request reports no usage: it keeps its whole reservation charged
+            usage = sum((u.usage for u in result.usage), Usage()) if result is not None else Usage()
+            used = reserve if result is None else usage.attempts
             self.budget.settle(reserve, used, m._mono())
-            m._cost.settle(cost, spent, m._mono())
+            m._cost.settle(cost, cost if result is None else usage.cost_usd, m._mono())
+            self.held_cost.settle(cost, cost if result is None else 0.0, m._mono())
             self.totals["requests"] += 1
             self.totals["attempts"] += used
-            self.totals["cost_usd_micros"] += round(spent * 1e6)
+            self.cost_usd += usage.cost_usd
+            for item, share in zip(request.items, usage.split(len(request.items))):
+                row = self.per_condition.setdefault(item.condition.id, [0, 0, 0.0])
+                row[0] += 1
+                row[1] += share.attempts
+                row[2] += share.cost_usd
             if m._trace is not None:
                 self.trace_request(request, result, m._mono() - t0)
             if request.purpose == "verify":
@@ -918,8 +940,11 @@ class _Stream:
         t, ob = self.totals, self.outbox
         counts = {k: t[k] for k in ("frames", "frames_capped", "frames_vetoed", "requests", "attempts",
                                     "evidence_unavailable")}
-        fates = {k: v for k, v in t.items() if k not in counts and k != "cost_usd_micros"}
-        return dict(counts, cost_usd=t["cost_usd_micros"] / 1e6, fates=fates, decisions=ob.committed,
+        fates = {k: v for k, v in t.items() if k not in counts}
+        conditions = {cid: {"requests": r, "attempts": a, "cost_usd": c}
+                      for cid, (r, a, c) in sorted(self.per_condition.items())}
+        return dict(counts, cost_usd=self.cost_usd, cost_reserved_usd=self.held_cost.used(self.m._mono()),
+                    conditions=conditions, fates=fates, decisions=ob.committed,
                     delivered=ob.delivered, redelivered=ob.redelivered, acked=ob.acked, unacked=ob.pending(),
                     pending_looks=len(self.pending), pending_verifications=len(self.verifies),
                     halted=self.halted)
@@ -1022,8 +1047,18 @@ class Monitor:
     def _active(self) -> list[str]:
         return [cid for cid in self._conds if cid not in self._paused]
 
+    @staticmethod
+    def _trigger_key(trigger: Any) -> Any:
+        """Triggers group (and keep their state) by value when hashable, else by identity: two
+        conditions with equal triggers share one step and one state."""
+        try:
+            hash(trigger)
+        except TypeError:
+            return ("id", id(trigger))
+        return trigger
+
     def _regroup(self) -> None:
-        groups: dict[int, tuple[Any, list[Condition]]] = {}
+        groups: dict[Any, tuple[Any, list[Condition]]] = {}
         for cond in self._conds.values():
             if cond.id in self._paused:
                 continue
@@ -1034,8 +1069,8 @@ class Monitor:
             else:
                 triggers = (self._default_change, self._default_heartbeat)
             for trigger in triggers:
-                groups.setdefault(id(trigger), (trigger, []))[1].append(cond)
-        self._groups = [(t, tuple(cs)) for t, cs in groups.values()]
+                groups.setdefault(self._trigger_key(trigger), (trigger, []))[1].append(cond)
+        self._groups = [(k, t, tuple(cs)) for k, (t, cs) in groups.items()]
         for stream in getattr(self, "_streams", {}).values():    # forget replaced triggers' state
             stream.tstates = {k: v for k, v in stream.tstates.items() if k in groups}
 
@@ -1091,7 +1126,7 @@ class Monitor:
         self._report(h)
         stream = self._streams.get(h.stream_id)
         if stream is not None and h.kind in ("link_down", "link_up"):
-            stream.blind_set("link_down", h.kind == "link_down")
+            stream.blind_set("link_down", h.kind == "link_down", h.detail)
 
     def _stream_for(self, occurrence_id: str) -> Optional[_Stream]:
         matches = [s for sid, s in self._streams.items() if occurrence_id.startswith(sid + "/")]
@@ -1104,7 +1139,7 @@ class Monitor:
     # ----------------------------------------------------------------- streams
 
     def watch(self, source: Union[str, Source], *, stream_id: Optional[str] = None, ack: str = "auto",
-              max_unacked: int = 100, fps: Optional[float] = DEFAULT_FPS) -> Watch:
+              max_unacked: int = 100, fps: Optional[float] = DEFAULT_FPS, **source_options: Any) -> Watch:
         """Decisions for one stream, in order, as ``Delivery`` envelopes (``async for``).
 
         ``source`` is a URI (see ``percept.open_source``), a ``Source``, or the id of a stream
@@ -1116,14 +1151,33 @@ class Monitor:
         quality gate, scene check and triggers; ``None`` processes every frame. Capture and the
         pre-roll are not slowed, and skipped frames are counted in ``coverage()``. It applies
         when the stream starts; ``push()`` starts streams at the default.
+
+        With a URI, ``source_options`` go to ``open_source`` when it opens the stream:
+        ``on_frame`` (every captured frame, for the app's own view or recording), ``on_health``,
+        ``capture_fps`` (``open_source``'s ``fps``: the capture rate, unlike ``fps`` above),
+        ``max_side``, ``stall_timeout``, ``backoff``, ``loop``, ``live``, ``backend``, ``epoch``
+        and ``ffmpeg``.
+
+        Link health: the monitor subscribes to any source with ``add_health_listener`` (every
+        source from ``open_source`` and every ``PushSource``, including ones the app built with
+        its own ``on_frame`` / ``on_health``), so an outage is a ``link_down`` blind interval and
+        health event without further wiring.
         """
         if fps is not None and not fps > 0:
             raise ValueError("fps is positive or None")
+        unknown = set(source_options) - _SOURCE_OPTIONS
+        if unknown:
+            raise TypeError(f"watch() got unexpected source options {sorted(unknown)}")
+        if source_options and not isinstance(source, str):
+            raise TypeError("source options apply when watch() opens a URI; pass them to open_source instead")
         self._bind()
         if isinstance(source, str):
             stream = self._streams.get(stream_id or source)
             if stream is None:
-                opened = open_source(source, stream_id=stream_id, on_health=self._source_health, preroll=PreRoll())
+                options = dict(source_options)
+                if "capture_fps" in options:
+                    options["fps"] = options.pop("capture_fps")
+                opened = open_source(source, stream_id=stream_id, preroll=PreRoll(), **options)
                 stream = self._streams.get(opened.stream_id) or self._add(opened, fps)
         elif isinstance(source, Source):
             if stream_id is not None and stream_id != source.stream_id:
@@ -1144,6 +1198,11 @@ class Monitor:
         if getattr(source, "preroll", 0) is None:
             source.preroll = PreRoll()  # sources that accept one are fed at capture rate
         stream = self._streams[source.stream_id] = _Stream(self, source, fps)
+        listen = getattr(source, "add_health_listener", None)
+        if callable(listen):
+            listen(self._source_health)
+            if getattr(source, "link", None) == "down":     # already down when handed over
+                stream.blind_set("link_down", True, "the link was down when the stream was added")
         for key in self._snoozes:       # snoozes set before the loop was known
             if key not in self._mutes:
                 self._schedule_mute(key)
@@ -1159,6 +1218,24 @@ class Monitor:
         if not isinstance(stream.source, PushSource):
             raise ValueError(f"stream {stream_id!r} is not a push stream")
         stream.source.push(image, t_wall)
+
+    def set_link(self, stream_id: str, up: bool, detail: str = "") -> None:
+        """Report a stream's link as down or up, for capture the app owns (``push()`` streams,
+        or a custom ``Source``). Down opens a ``link_down`` blind interval and raises health
+        ``link_down``; looks that need a current frame wait until it is up again. A
+        ``PushSource`` records it as its own (``PushSource.set_link``), so a frame pushed later
+        also marks the link up. Repeating the current state reports nothing."""
+        self._on_loop()
+        stream = self._streams.get(stream_id)
+        if stream is None:
+            raise ValueError(f"unknown stream {stream_id!r}")
+        own = getattr(stream.source, "set_link", None)
+        if callable(own):
+            own(up, detail)
+            return
+        if (("link_down", None) in stream.blind_open) != (not up):
+            self._source_health(Health("link_up" if up else "link_down", stream_id, self._wall(),  # type: ignore[arg-type]
+                                       detail or ("reported up" if up else "reported down by the application")))
 
     def poke(self, stream_id: str, condition_ids: Union[str, Sequence[str]], *, subject: Optional[str] = None,
              observed_at: Optional[float] = None, reason: str, evidence: Any = None) -> None:
@@ -1293,11 +1370,19 @@ class Monitor:
         return self._health.drain()
 
     def stats(self) -> dict:
-        """Exact counters, per stream and for health, available at any time."""
+        """Exact counters, per stream and for health, available at any time.
+
+        Cost: ``cost_usd`` is what the judge reported (settled), per stream and in total, with a
+        per-condition split under ``streams[id]["conditions"]``; ``cost_reserved_usd`` is what is
+        still held against ``max_cost_per_hour`` beyond that (requests in flight, and cancelled
+        requests, which report no usage, for the rest of their hour); ``cost_usd_in_window`` is
+        everything the hourly cap counts now."""
         return {"streams": {sid: s.stats() for sid, s in self._streams.items()},
                 "health": dict(self._health.counts), "health_dropped": self._health.dropped,
                 "store_pending": self._writer.pending, "store_failures": self._writer.failures,
                 "store_retrying": self._writer.retrying, "cost_usd_in_window": self._cost.used(self._mono()),
+                "cost_usd": sum(s.cost_usd for s in self._streams.values()),
+                "cost_reserved_usd": sum(s.held_cost.used(self._mono()) for s in self._streams.values()),
                 "trace_written": 0 if self._trace is None else self._trace.written,
                 "trace_dropped": 0 if self._trace is None else self._trace.dropped}
 
@@ -1337,6 +1422,9 @@ class Monitor:
             s.outbox.close()
         await self._writer.close(FLUSH_TIMEOUT_S)
         for s in streams:
+            unlisten = getattr(s.source, "remove_health_listener", None)
+            if callable(unlisten):
+                unlisten(self._source_health)
             close = getattr(s.source, "aclose", None)
             if close is not None:
                 try:

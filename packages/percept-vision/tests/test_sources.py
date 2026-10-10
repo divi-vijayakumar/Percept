@@ -551,3 +551,44 @@ def test_stall_check_ignores_a_reader_that_is_no_longer_current():
     assert not src._check_stall(old)
     assert not src._stalled and aborted == []
     assert src._check_stall(new) and src._stalled and aborted == [new]
+
+
+# --------------------------------------------------------------------------- health listeners
+
+
+def test_health_listeners_added_after_construction_see_every_link_change():
+    box, first, late, broken = [None], [], [], []
+
+    def bad(h):
+        broken.append(h)
+        raise RuntimeError("a broken listener")
+
+    src = CaptureSource("cam", scripted([2, "fail", 1], box), live=True, jitter=0.0, on_health=first.append,
+                        sleep=lambda s: None)
+    box[0] = src
+    src.add_health_listener(bad)
+    src.add_health_listener(late.append)
+    src.add_health_listener(late.append)            # twice: still once
+    asyncio.run(collect(src))
+    kinds = [h.kind for h in first]
+    assert kinds == ["link_down", "link_up", "link_down"]
+    assert [h.kind for h in late] == kinds and len(broken) == len(kinds)
+    src.remove_health_listener(late.append)
+    src.remove_health_listener(late.append)         # not there any more: no error
+
+
+def test_a_push_source_reports_its_link_and_starts_a_new_epoch_when_it_returns():
+    health = []
+    src = PushSource("conn", on_health=health.append)
+    a = src.push(np.zeros((8, 8, 3), np.uint8))
+    src.set_link(False, "connector gone")
+    src.set_link(False, "still gone")              # no repeat while down
+    assert src.link == "down"
+    b = src.push(np.zeros((8, 8, 3), np.uint8))    # a frame while down marks it up
+    src.set_link(False)
+    src.set_link(True)
+    c = src.push(np.zeros((8, 8, 3), np.uint8))
+    assert [h.kind for h in health] == ["link_down", "link_up", "link_down", "link_up"]
+    assert health[0].detail == "connector gone" and all(h.stream_id == "conn" for h in health)
+    assert [(f.stream_epoch, f.seq) for f in (a, b, c)] == [(0, 0), (1, 0), (2, 0)]
+    assert a.t <= b.t <= c.t

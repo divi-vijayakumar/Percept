@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "percept-vision"
-version = "1.0.0.dev0"
+version = "1.0.0.dev1"
 description = "A decision layer for live video: tells your agent, once per occurrence, when a plain-language condition becomes true."
 readme = "README.md"
 requires-python = ">=3.10"
