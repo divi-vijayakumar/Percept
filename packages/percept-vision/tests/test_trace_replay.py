@@ -382,8 +382,20 @@ def test_rotated_files_each_replay_on_their_own_and_runtime_fates_are_per_minute
     capped = [r for r in tr.read(path) if r["kind"] == "fate" and r.get("fate") == "frames_capped"]
     assert stats["frames_capped"] > 100 and 1 <= len(capped) <= 2          # one per minute bucket
     assert sum(r["n"] for r in capped) == stats["frames_capped"]
-    newest = replay(json.loads(line) for line in path.read_text().splitlines())
-    assert newest.matches, newest.differences
+    # Each file replays on its own. The newest file may legitimately hold only its opening
+    # checkpoint (rotation can land at the very end of a run); replay then says nothing was
+    # checked, which is correct. Every file that does hold inputs must reproduce exactly, and
+    # at least one rotated file must, proving the checkpoints make files self-contained.
+    files = [path] + [p for p in tmp_path.glob("t.jsonl.*") if p.suffix[1:].isdigit()]
+    self_contained = 0
+    for p in files:
+        alone = replay(json.loads(line) for line in p.read_text().splitlines() if line.strip())
+        if alone.inputs:
+            assert alone.matches, (p, alone.differences)
+            self_contained += p != path
+        else:
+            assert not alone.matches                 # an empty file never reads as a success
+    assert self_contained >= 1
     for p in tmp_path.glob("t.jsonl.*"):              # every file but the first opens with a checkpoint
         if p.suffix[1:].isdigit() and int(p.suffix[1:]) < writer.rotations:
             first = json.loads(p.read_text().splitlines()[0])
