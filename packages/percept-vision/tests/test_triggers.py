@@ -105,7 +105,7 @@ def test_localized_change_in_zone_fires_once():
     dues, state = run(OnChange(), frames, (c,))
     assert fired(dues) == [5]
     assert dues[5]["c"].startswith("change 0.")
-    assert state["conditions"]["c"]["active"]  # still settling, so it can't refire yet
+    assert any(state["conditions"]["c"]["active"])  # still settling, so those blocks can't refire yet
 
 
 def test_refires_only_after_the_change_settles():
@@ -141,12 +141,12 @@ def test_block_max_fires_where_the_whole_frame_mean_barely_moves():
 
 
 def test_slow_lighting_drift_is_absorbed():
-    frames = [texture() + 0.6 * i for i in range(100)]  # +60 grey levels over 20 s
+    frames = [texture() + 0.4 * i for i in range(100)]  # +40 grey levels over 20 s
     dues, state = run(OnChange(), frames, (cond(),))
     assert fired(dues) == []
-    assert state["conditions"]["c"]["score"] < 0.1
+    assert state["conditions"]["c"]["score"] < 0.05
     # The same total shift in one step is a change.
-    dues, _ = run(OnChange(), [texture()] * 3 + [texture() + 60], (cond(),))
+    dues, _ = run(OnChange(), [texture()] * 3 + [texture() + 40], (cond(),))
     assert fired(dues) == [3]
 
 
@@ -217,7 +217,7 @@ def test_quality_primitives():
 
 def test_quality_vetoes_smeared_and_blurred_frames():
     gate = QualityGate()
-    state = None
+    _, state = gate.check(qframe(sharp_image()), None, 0.0)
     verdict, state = gate.check(qframe(smeared_image()), state, 0.0)
     assert verdict == percept.triggers.QualityVerdict(ok=False, reason="corrupt", degraded=False)
     # Blur is relative to this stream, so it's only judged after 30 good frames.
@@ -233,25 +233,28 @@ def test_quality_vetoes_smeared_and_blurred_frames():
 def test_degraded_hysteresis():
     gate = QualityGate()
     state, flags = None, []
-    seq = [sharp_image(i) for i in range(10)] + [smeared_image()] * 5 + [sharp_image(i) for i in range(60)]
+    # Corruption is counted when it appears, so bad frames alternate with good ones.
+    seq = [sharp_image(i) for i in range(10)] + [smeared_image(), sharp_image()] * 7 + [
+        sharp_image(i) for i in range(60)]
+    bad = set(range(10, 24, 2))
     for i, img in enumerate(seq):
         verdict, state = gate.check(qframe(img, i), state, float(i))
+        assert verdict.ok == (i not in bad), i
         flags.append(verdict.degraded)
-    # 5 bad out of 15 (33%) turns it on; it stays on until bad <= 10% of the last 60.
+    # 7 bad out of 23 (30.4%) turns it on; it stays on until bad <= 10% of the last 60.
     on = flags.index(True)
-    assert on == 14
+    assert on == 22
     off = flags.index(False, on)
-    assert all(flags[on:off])
-    bad_in_window = sum(1 for j in range(max(0, off - 59), off + 1) if 10 <= j < 15)
-    assert bad_in_window / min(60, off + 1) <= 0.10
-    assert not any(flags[off:])
+    assert off == 70  # the first bad frame leaves the window: 6 of 60
+    assert all(flags[on:off]) and not any(flags[off:])
 
 
 # --------------------------------------------------------------------------- scene reset
 
 
 def drive(scene, trig, frames, conditions, dt=0.25):
-    """What the runtime does: a reset suppresses triggers and drops their state."""
+    """What the runtime does: a reset suppresses triggers and drops their state; when it ends,
+    every condition gets one look at the settled scene."""
     s_state = t_state = None
     log = []
     for i, g in enumerate(frames):
@@ -263,7 +266,10 @@ def drive(scene, trig, frames, conditions, dt=0.25):
             log.append((signal, None))
             continue
         due, t_state = trig.step(f, conditions, t_state, now)
-        log.append((signal, dict(due)))
+        due = dict(due)
+        if signal.ended:
+            due.update({c.id: "scene settled" for c in conditions})
+        log.append((signal, due))
     return log
 
 
@@ -279,7 +285,8 @@ def test_scene_reset_suppresses_then_rebuilds():
     assert suppressed == list(range(10, 18))  # 2 s at 4 fps
     assert [i for i, s in enumerate(signals) if s.ended] == [18]
     dues = [d for _, d in log]
-    assert all(not d for d in dues[:30] if d is not None)  # no trigger fires around the reset
+    assert dues[18] == {"c": "scene settled"}  # one look at the settled scene
+    assert all(not d for i, d in enumerate(dues[:30]) if d is not None and i != 18)  # nothing else
     assert "c" in dues[30]  # the rebuilt baseline is the new scene; a real change still fires
 
 
@@ -351,3 +358,83 @@ def test_step_does_not_mutate_its_input_state():
 def test_deterministic():
     frames = [texture(i % 3) for i in range(20)]
     assert run(OnChange(), frames, (cond(),))[0] == run(OnChange(), frames, (cond(),))[0]
+
+
+# --------------------------------------------------------------------------- review regressions
+
+
+def test_persistent_blur_is_not_vetoed_forever():
+    gate, state = QualityGate(), None
+    for i in range(30):
+        _, state = gate.check(qframe(sharp_image(i), i), state, float(i))
+    verdicts = []
+    for i in range(300):
+        v, state = gate.check(qframe(blurred_image(), 30 + i), state, 30.0 + i)
+        verdicts.append(v)
+    assert sum(not v.ok for v in verdicts) <= 31  # a streak past 30 frames becomes the new normal
+    assert all(v.ok for v in verdicts[-200:]) and not verdicts[-1].degraded
+
+
+def test_dimmer_but_focused_scene_is_not_blurry():
+    gate, state = QualityGate(), None
+    for i in range(30):
+        _, state = gate.check(qframe(sharp_image(i), i), state, float(i))
+    dim = (sharp_image(5) // 8).astype(np.uint8)  # lights dimmed: same structure, an eighth of the contrast
+    v, _ = gate.check(qframe(dim, 31), state, 31.0)
+    assert v.ok
+
+
+def test_fence_or_blinds_are_not_corrupt():
+    y, x = np.mgrid[0:64, 0:64]
+    fence = np.where(x % 4 < 2, 200, 50).astype(np.uint8)  # rows identical, columns vary: smear-shaped
+    gate, state = QualityGate(), None
+    for i in range(20):
+        v, state = gate.check(qframe(fence, i), state, float(i))
+        assert v.ok, i
+    # Sudden concealment still counts.
+    _, state = gate.check(qframe(sharp_image(), 20), state, 20.0)
+    v, state = gate.check(qframe(smeared_image(), 21), state, 21.0)
+    assert v.reason == "corrupt"
+
+
+def test_close_subject_is_a_trigger_not_a_reset():
+    person = with_patch(texture(), 0, GATE_H, 6, 42, 90)  # 75% of the frame, clear of the side borders
+    frames = [texture()] * 10 + [person] * 10 + [texture()] * 3
+    log = drive(SceneMonitor(), OnChange(), frames, (cond(),))
+    assert not any(s.reset or s.suppressed for s, _ in log)
+    assert [i for i, (_, d) in enumerate(log) if d and "c" in d][0] == 10
+
+
+def test_reset_ends_with_one_look_for_every_condition():
+    conditions = (cond("a"), cond("b", zones=(RIGHT_HALF,)))
+    frames = [texture()] * 10 + [255 - texture()] * 20
+    log = drive(SceneMonitor(), OnChange(), frames, conditions)
+    looks = [(i, set(d)) for i, (_, d) in enumerate(log) if d]
+    assert looks == [(18, {"a", "b"})]
+
+
+def test_slow_pan_keeps_the_window_open():
+    # After the reset the picture keeps changing over about 40% of its blocks each step: less than
+    # the reset bar, more than half of it.
+    flipped = 255 - texture()
+    frames = [texture()] * 5 + [flipped] + [with_patch(flipped, 0, GATE_H, 0, 20, 60 * (i % 2 == 0))
+                                            for i in range(12)]
+    signals = [s for s, _ in drive(SceneMonitor(), OnChange(), frames, (cond(),))]
+    assert signals[5].reset
+    assert all(0.3 < s.changed < 0.6 for s in signals[6:13])
+    assert all(s.suppressed for s in signals[5:18])
+
+
+def test_second_event_in_another_block_fires_during_absorption():
+    door = with_patch(texture(), 0, 12, 0, 6, 90)
+    person = with_patch(door, 24, 30, 36, 42, 90)
+    frames = [texture()] * 3 + [door] * 5 + [person] * 3  # the person arrives 1 s after the door opens
+    dues, _ = run(OnChange(), frames, (cond(),))
+    assert fired(dues) == [3, 8]
+
+
+def test_low_light_scene_still_fires():
+    dark = 5 + (texture() - 60) * 15 / 100  # grey 5..20
+    frames = [dark] * 5 + [with_patch(dark, 12, 18, 12, 18, 30)] * 2
+    dues, _ = run(OnChange(), frames, (cond(),))
+    assert fired(dues) == [5]

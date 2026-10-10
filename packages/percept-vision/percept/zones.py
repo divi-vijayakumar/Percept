@@ -46,6 +46,11 @@ def _zone_mask(zones: tuple[Polygon, ...], exclude: tuple[Polygon, ...], width: 
         mask = np.zeros((height, width), dtype=bool)
         for polygon in zones:
             mask |= polygon_mask(polygon, width, height)
+            # A zone too small or thin to cover a pixel centre still watches the pixel at its
+            # vertex centroid, rather than going silently blind.
+            cx = sum(p[0] for p in polygon) / len(polygon)
+            cy = sum(p[1] for p in polygon) / len(polygon)
+            mask[min(int(cy * height), height - 1), min(int(cx * width), width - 1)] = True
     else:
         mask = np.ones((height, width), dtype=bool)
     for polygon in exclude:
@@ -61,6 +66,9 @@ def zone_mask(
     height: int = 36,
 ) -> np.ndarray:
     """The pixels a condition watches: the union of ``zones`` (or everything) minus ``exclude_zones``.
+
+    Every include polygon covers at least the pixel holding its vertex centroid; exclude zones
+    may still remove everything.
 
     Returns a read-only boolean ``height x width`` array. Results are memoised, since a
     condition's zones are fixed and the same grid is asked for on every frame.

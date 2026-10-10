@@ -56,3 +56,14 @@ def test_crop_box_with_margin_and_clamp():
     assert crop_box((TOP_LEFT, RIGHT_HALF), 100, 100, margin=0.0) == (0, 0, 100, 100)
     x0, y0, x1, y1 = crop_box((((1.0, 1.0), (1.0, 1.0), (1.0, 1.0)),), 10, 10, margin=0.0)
     assert 0 <= x0 < x1 <= 10 and 0 <= y0 < y1 <= 10
+
+
+def test_tiny_or_collinear_zone_still_watches_its_centre():
+    tiny = ((0.501, 0.501), (0.502, 0.501), (0.502, 0.502))
+    line = ((0.1, 0.1), (0.5, 0.5), (0.9, 0.9))
+    for poly in (tiny, line):
+        assert not polygon_mask(poly, 48, 36).any()
+        assert zone_mask((poly,), (), 48, 36).sum() == 1
+    assert zone_mask((tiny,), (), 48, 36)[18, 24]
+    everything = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+    assert not zone_mask((tiny,), (everything,), 48, 36).any()  # excluding everything stays legal

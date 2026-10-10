@@ -136,6 +136,15 @@ def _ema(baseline: np.ndarray, gate: np.ndarray, dt: float, baseline_s: float) -
     return (baseline + np.float32(alpha) * (gate - baseline)).astype(np.float32)
 
 
+def _contrast(baseline: np.ndarray, mask: np.ndarray) -> float:
+    """The zone's robust grey-level range in the baseline, as a threshold scale in [0.25, 1]."""
+    values = baseline[mask]
+    if values.size == 0:
+        return 1.0
+    p5, p95 = np.percentile(values, [5, 95])
+    return float(np.clip((p95 - p5) / 255.0, 0.25, 1.0))
+
+
 # --------------------------------------------------------------------------- on_change
 
 
@@ -143,11 +152,21 @@ class OnChange:
     """Due when a condition's zone differs from the scene's moving average.
 
     Per step, the gate frame is computed once and compared with an exponential moving average
-    of past gate frames (time constant ``baseline_s``); each condition reads ``block_max``
-    inside its own zone mask. Hysteresis per condition: it fires when the score reaches
-    ``threshold`` and can't fire again until the score has fallen to ``exit_threshold``. A
-    lasting change (a parked car) is absorbed by the average, so it fires once on entry and
-    rearms after it settles. Slow lighting drift is absorbed the same way and never fires.
+    of past gate frames (time constant ``baseline_s``); each condition reads the per-block
+    scores of ``block_max`` inside its own zone mask. Hysteresis is per block: a block turns
+    active when its score reaches the threshold and inactive when it falls to the exit
+    threshold, and the condition is due whenever any block turns active. So a lasting change
+    (a door left open) fires once on entry and rearms after the average absorbs it, while a
+    second change in another block (someone walking through the door) still fires. Slow
+    lighting drift is absorbed by the average and never fires.
+
+    Both thresholds are scaled by the zone's contrast in the baseline,
+    ``clip((p95 - p5) / 255, 0.25, 1)``, so a dark, low-contrast scene still fires on a subject
+    that is large relative to it.
+
+    Limit: the average follows the scene, so a block that changes slowly (ramping over roughly
+    10 s or more at the default ``baseline_s``) may never reach the threshold. Pair
+    slow-approach conditions with a heartbeat (``every``).
 
     The first step has no baseline: it records one and nothing is due. Passing ``state=None``
     later rebuilds the baseline the same way (the runtime does this after a scene reset).
@@ -181,7 +200,7 @@ class OnChange:
     def step(self, frame: Frame, conditions: tuple[Condition, ...], state: Any, now: float) -> tuple[Due, Any]:
         gate = gate_frame(frame)
         if not state or state.get("baseline") is None:
-            fresh = {c.id: {"active": False, "score": 0.0} for c in conditions}
+            fresh = {c.id: {"active": [], "score": 0.0} for c in conditions}
             return {}, {"baseline": gate, "t": float(now), "conditions": fresh}
         baseline = np.asarray(state["baseline"], dtype=np.float32)
         previous = state.get("conditions", {})
@@ -189,14 +208,17 @@ class OnChange:
         per_condition: dict[str, dict[str, Any]] = {}
         for c in conditions:
             mask = zone_mask(c.zones, c.exclude_zones, GATE_W, GATE_H)
-            score = block_max(baseline, gate, mask, self.grid)
-            active = bool(previous.get(c.id, {}).get("active", False))
-            if not active and score >= self.threshold:
-                active = True
+            scores = block_scores(baseline, gate, mask, self.grid)
+            scale = _contrast(baseline, mask)
+            was = np.asarray(previous.get(c.id, {}).get("active", ()), dtype=bool)
+            if was.shape != scores.shape:  # first sight of this condition, or its zone changed
+                was = np.zeros(scores.shape, dtype=bool)
+            entering = ~was & (scores >= self.threshold * scale)
+            active = entering | (was & (scores > self.exit_threshold * scale))
+            score = float(scores.max()) if scores.size else 0.0
+            if entering.any():
                 due[c.id] = f"change {score:.2f}"
-            elif active and score <= self.exit_threshold:
-                active = False
-            per_condition[c.id] = {"active": active, "score": score}
+            per_condition[c.id] = {"active": active.tolist(), "score": score}
         new_baseline = _ema(baseline, gate, float(now) - float(state["t"]), self.baseline_s)
         return due, {"baseline": new_baseline, "t": float(now), "conditions": per_condition}
 
@@ -243,10 +265,11 @@ def on_change(
 ) -> OnChange:
     """A change trigger: judge a condition when something in its zone changes.
 
-    ``threshold`` is the ``block_max`` score (0..1, the mean absolute grey-level change of the
-    most-changed block over 255) that fires; ``exit_threshold`` (default half of it) is where
-    it rearms; ``baseline_s`` is how quickly lasting changes and lighting drift are absorbed.
-    The defaults are starting points, not calibrated values.
+    ``threshold`` is the block score (0..1, a block's mean absolute grey-level change over 255)
+    that fires, before scaling by the zone's contrast; ``exit_threshold`` (default half of it)
+    is where a block rearms; ``baseline_s`` is how quickly lasting changes and lighting drift
+    are absorbed. A change that ramps in over roughly 10 s or more may never fire: use a
+    heartbeat for slow approaches. The defaults are starting points, not calibrated values.
     """
     return OnChange(threshold=threshold, exit_threshold=exit_threshold, baseline_s=baseline_s)
 
@@ -271,43 +294,59 @@ class QualityVerdict:
     degraded: bool
 
 
-def smear_fraction(gray: np.ndarray, block: int = 8) -> float:
-    """Fraction of 8x8 blocks that look like concealed packet loss.
+def smear_map(gray: np.ndarray, block: int = 8) -> np.ndarray:
+    """Per 8x8 block: does it look like concealed packet loss?
 
     A decoder hides missing macroblocks by smearing the row above downward: rows inside the
-    block are identical while its columns still vary. Sensor noise makes that rare in real
-    footage.
+    block are identical while its columns still vary. Vertical structure (blinds, fences) looks
+    the same in one frame, which is why :class:`QualityGate` only counts blocks that newly
+    became smeared.
     """
     h, w = gray.shape
     h, w = h - h % block, w - w % block
     if h < block or w < block:
-        return 0.0
+        return np.zeros((0, 0), dtype=bool)
     b = gray[:h, :w].astype(np.float32).reshape(h // block, block, w // block, block).transpose(0, 2, 1, 3)
     down = np.abs(np.diff(b, axis=2)).mean(axis=(2, 3))
     across = np.abs(np.diff(b, axis=3)).mean(axis=(2, 3))
-    return float(((down < 0.6) & (across > 2.0)).mean())
+    return (down < 0.6) & (across > 2.0)
+
+
+def smear_fraction(gray: np.ndarray, block: int = 8) -> float:
+    """Fraction of 8x8 blocks that are smear-shaped in this one frame."""
+    m = smear_map(gray, block)
+    return float(m.mean()) if m.size else 0.0
 
 
 def sharpness(gray: np.ndarray) -> float:
-    """Variance of the 4-neighbour Laplacian over the frame's interior."""
+    """Variance of the 4-neighbour Laplacian over the interior, divided by the frame's variance.
+
+    Dividing by contrast keeps a dimmer but focused scene from reading as blurry.
+    """
     g = gray.astype(np.float32)
     if g.shape[0] < 3 or g.shape[1] < 3:
         return 0.0
     lap = g[1:-1, :-2] + g[1:-1, 2:] + g[:-2, 1:-1] + g[2:, 1:-1] - 4.0 * g[1:-1, 1:-1]
-    return float(lap.var())
+    return float(lap.var()) / max(float(g.var()), 1e-6)
 
 
 class QualityGate:
     """Vetoes frames that are corrupt (smeared blocks) or blurry, and tracks a degraded feed.
 
-    Blur is relative to this stream: a frame is blurry when its sharpness is below
-    ``blur_ratio`` times the median of recent good frames, judged only once ``blur_min_samples``
-    good frames are known (so a dark night scene isn't "blurry" by an absolute bar). The feed
-    is degraded once at least ``degraded_on`` of the last ``window`` frames were bad (with at
-    least 10 seen), and recovers at ``degraded_off`` or below.
+    Corruption is temporal: a frame is corrupt when at least ``smear_bad`` of its blocks are
+    smear-shaped now and were not in the previous frame. Structure that persists never counts.
+
+    Blur is relative to this stream: a frame is blurry when its contrast-normalised sharpness
+    is below ``blur_ratio`` times the median of recent good frames, judged only once
+    ``blur_min_samples`` good frames are known. The veto is for transient defocus: a blur streak
+    longer than ``blur_min_samples`` frames is taken as the new normal and the history restarts
+    from it, so a lasting change of view never blinds the stream.
+
+    The feed is degraded once at least ``degraded_on`` of the last ``window`` frames were bad
+    (with at least 10 seen), and recovers at ``degraded_off`` or below.
 
     Checks run on the frame as given; the runtime passes the reduced (at most 640 px wide)
-    frame it keeps for evidence.
+    frame it keeps for evidence, and passes ``state=None`` after a scene reset.
     """
 
     def __init__(
@@ -335,16 +374,25 @@ class QualityGate:
         sharp = list(state.get("sharp", ()))
         recent = list(state.get("recent", ()))
         degraded = bool(state.get("degraded", False))
+        streak = int(state.get("blur_streak", 0))
         gray = _gray(frame.image)
+        smeared = smear_map(gray)
+        before = np.asarray(state.get("smear", ()), dtype=bool)
+        if before.shape != smeared.shape:  # first frame, or the size changed: nothing to compare
+            before = smeared
         reason: str | None = None
-        if smear_fraction(gray) >= self.smear_bad:
+        if smeared.size and float((smeared & ~before).mean()) >= self.smear_bad:
             reason = "corrupt"
         else:
             s = sharpness(gray)
             if len(sharp) >= self.blur_min_samples and s < self.blur_ratio * float(np.median(sharp)):
-                reason = "blurry"
+                streak += 1
+                if streak > self.blur_min_samples:  # lasting, not transient: the new normal
+                    sharp, streak = [s], 0
+                else:
+                    reason = "blurry"
             else:
-                sharp = (sharp + [s])[-self.sharp_history:]  # only good frames define "normal"
+                sharp, streak = (sharp + [s])[-self.sharp_history:], 0  # good frames define "normal"
         recent = (recent + [reason])[-self.window:]
         bad = sum(1 for r in recent if r is not None) / len(recent)
         if not degraded and len(recent) >= 10 and bad >= self.degraded_on:
@@ -352,7 +400,8 @@ class QualityGate:
         elif degraded and bad <= self.degraded_off:
             degraded = False
         verdict = QualityVerdict(ok=reason is None, reason=reason, degraded=degraded)
-        return verdict, {"sharp": sharp, "recent": recent, "degraded": degraded}
+        return verdict, {"sharp": sharp, "recent": recent, "degraded": degraded,
+                         "blur_streak": streak, "smear": smeared.tolist()}
 
 
 # --------------------------------------------------------------------------- scene reset
@@ -363,9 +412,12 @@ class SceneSignal:
     """What :class:`SceneMonitor` saw on one frame.
 
     ``reset``: a scene reset starts on this frame (open a ``scene_reset`` blind interval).
-    ``suppressed``: triggers must not run on this frame. ``ended``: the suppression ended on
-    this frame (close the interval; triggers run again from a fresh baseline). ``changed`` is
-    the fraction of blocks that changed.
+    ``suppressed``: triggers must not run on this frame.
+    ``ended``: the suppression ended on this frame. Close the interval, restart triggers from
+    a fresh baseline, and make **every condition due once** on this frame: anything that
+    happened during the reset was absorbed into the new baseline, so the settled scene gets
+    one look (the runtime batches it, keeping the reset frame as evidence).
+    ``changed`` is the fraction of blocks that changed.
     """
 
     reset: bool = False
@@ -378,10 +430,13 @@ class SceneMonitor:
     """Detects a scene reset: most of the frame changing at once.
 
     A reset is declared when more than ``fraction`` of the blocks differ from the scene's
-    moving average by more than ``block_threshold``: a bumped camera, a PTZ move, an IR
-    day/night switch. Triggers are then suppressed for ``suppress_s``; while the picture keeps
-    changing wholesale (a PTZ still moving) the window is extended. Afterwards change triggers
-    restart from a fresh baseline.
+    moving average by more than ``block_threshold`` and the change also covers at least
+    ``border_fraction`` of the blocks on the frame's border: a bumped camera, a PTZ move, an IR
+    day/night switch. A large subject close to the camera rarely reaches every edge, so it is
+    an ordinary change, not a reset. Triggers are then suppressed for ``suppress_s``; while
+    more than ``fraction / 2`` of the blocks keep changing frame to frame (a PTZ or slow pan
+    still moving) the window is extended. Afterwards change triggers restart from a fresh
+    baseline and every condition gets one look (see :class:`SceneSignal`).
     """
 
     def __init__(
@@ -390,11 +445,13 @@ class SceneMonitor:
         block_threshold: float = 0.08,
         suppress_s: float = 2.0,
         baseline_s: float = 5.0,
+        border_fraction: float = 0.75,
         grid: tuple[int, int] = GRID,
     ) -> None:
         if not 0.0 < fraction < 1.0:
             raise ValueError("fraction is in (0, 1)")
         self.fraction = fraction
+        self.border_fraction = border_fraction
         self.block_threshold = block_threshold
         self.suppress_s = suppress_s
         self.baseline_s = baseline_s
@@ -407,17 +464,18 @@ class SceneMonitor:
             return SceneSignal(), {"baseline": gate, "t": now, "until": None}
         baseline = np.asarray(state["baseline"], dtype=np.float32)
         until = state.get("until")
-        scores = block_scores(baseline, gate, None, self.grid)
-        changed = float((scores > self.block_threshold).mean()) if scores.size else 0.0
-        wholesale = changed > self.fraction
+        gx, gy = min(self.grid[0], GATE_W), min(self.grid[1], GATE_H)
+        hit = (block_scores(baseline, gate, None, self.grid) > self.block_threshold).reshape(gy, gx)
+        changed = float(hit.mean())
+        border = np.concatenate([hit[0], hit[-1], hit[1:-1, 0], hit[1:-1, -1]])
         if until is None:
-            if wholesale:
+            if changed > self.fraction and float(border.mean()) >= self.border_fraction:
                 signal = SceneSignal(reset=True, suppressed=True, changed=changed)
                 return signal, {"baseline": gate, "t": now, "until": now + self.suppress_s}
             baseline = _ema(baseline, gate, now - float(state["t"]), self.baseline_s)
             return SceneSignal(changed=changed), {"baseline": baseline, "t": now, "until": None}
         # Suppressing: follow the picture frame to frame until it holds still.
-        until = now + self.suppress_s if wholesale else float(until)
+        until = now + self.suppress_s if changed > self.fraction / 2 else float(until)
         if now >= until:
             return SceneSignal(ended=True, changed=changed), {"baseline": gate, "t": now, "until": None}
         return SceneSignal(suppressed=True, changed=changed), {"baseline": gate, "t": now, "until": until}
