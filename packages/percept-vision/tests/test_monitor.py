@@ -1651,3 +1651,106 @@ def test_a_busy_pinned_cascade_never_exceeds_the_window_or_the_dollar_cap(monkey
     for i, (t, _) in enumerate(starts):
         assert sum(c for u, c in starts[i:] if u < t + 1.0) <= cap + 1e-12
     assert sum(s["attempts"] for s in stats["streams"].values()) == len(attempts)
+
+
+# --------------------------------------------------------------------------- review follow-ups
+
+
+def test_d2_routed_conditions_are_charged_for_the_member_they_were_asked():
+    cheap = percept.PriceModel(usd_per_mtok_in=1.0, usd_per_mtok_out=1.0, tokens_per_image=300)
+    dear = percept.PriceModel(usd_per_mtok_in=100.0, usd_per_mtok_out=100.0, tokens_per_image=300)
+    reply = answers({"detect": [Y], "verify": [Y]})
+    judge = cascade(FakeJudge(reply, name="lite", price=cheap), FakeJudge(reply, name="pro", price=dear))
+    conds = [Condition("door", "the door is open", trigger=At(0), judge="lite"),
+             Condition("fire", "there is fire", trigger=At(0), judge="pro")]
+
+    async def main():
+        async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            src.push(image())
+            got = await collect(watch, limit=2)
+            return got, m.stats()["streams"]["cam"]
+
+    got, cam = run(main())
+    (lite_sent,), (pro_sent,) = judge.members[0].sent, judge.members[1].sent   # one request, one hop each
+    per = cam["conditions"]
+    assert per["fire"]["cost_usd"] > 50 * per["door"]["cost_usd"] > 0          # pro is nearly all of it
+    assert per["door"]["cost_usd"] + per["fire"]["cost_usd"] == pytest.approx(cam["cost_usd"])
+    by_condition = {d.decision.condition_id: d.decision.cost for d in got}       # decide sees the same split
+    assert by_condition["fire"].cost_usd == pytest.approx(per["fire"]["cost_usd"])
+    assert by_condition["door"].cost_usd == pytest.approx(per["door"]["cost_usd"])
+
+
+def test_link_health_from_a_worker_thread_is_handled_on_the_loop():
+    door = Condition("door", "the door is open", trigger=Never())
+    threads = []
+
+    async def main():
+        m = percept.Monitor(FakeJudge({}), [door], store=mem())
+        report = m._report
+        m._report = lambda h: (threads.append(threading.current_thread().name), report(h))
+        src = PushSource("conn")
+        m.watch(src, fps=None)                  # its runner has not iterated frames() yet
+        worker = threading.Thread(target=src.set_link, args=(False, "gone"), name="worker")
+        worker.start()
+        worker.join()
+        await asyncio.sleep(0.05)
+        cov = m.coverage("conn")
+        await m.aclose()
+        return cov
+
+    cov = run(main())
+    assert threads == ["MainThread"] and len(link_intervals(cov)) == 1
+
+
+def test_source_options_on_an_already_watched_stream_raise():
+    async def main():
+        async with percept.Monitor(FakeJudge({}), [], store=mem()) as m:
+            m.push("cam", image())
+            m.watch("cam")
+            with pytest.raises(TypeError):
+                m.watch("cam", capture_fps=5)
+
+    run(main())
+
+
+def test_a_source_that_is_already_down_when_watched_reports_link_down():
+    async def main():
+        async with percept.Monitor(FakeJudge({}), [Condition("door", "x", trigger=Never())], store=mem()) as m:
+            src = PushSource("conn")
+            src.set_link(False, "connector not ready")
+            m.watch(src, fps=None)
+            await asyncio.sleep(0.02)
+            return m.stats(), m.coverage("conn")
+
+    stats, cov = run(main())
+    assert stats["health"].get("link_down") == 1 and len(link_intervals(cov)) == 1
+
+
+def test_a_judge_that_raises_keeps_its_reservation_charged_and_costs_nothing(monkeypatch):
+    monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
+    calls = []
+
+    class Raises:
+        name, can_batch, price, max_attempts = "raises", True, PRICE, 2
+
+        async def judge(self, request):
+            calls.append(request.request_id)
+            raise RuntimeError("broken adapter")
+
+    door = Condition("door", "the door is open", trigger=Always())
+
+    async def main():
+        async with percept.Monitor(Raises(), [door], store=mem(), max_requests_per_min=4,
+                                   max_cost_per_hour=1000.0) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            await push_frames(src, 10, pause=0.03)
+            return m.stats()
+
+    stats = run(main())
+    cam = stats["streams"]["cam"]
+    assert len(calls) == 2                           # 2 x 2 reserved attempts fill the window
+    assert cam["attempts"] == 4 and cam["cost_usd"] == 0.0 and cam["cost_reserved_usd"] > 0
+    assert stats["health"]["judge_unavailable"] >= 1

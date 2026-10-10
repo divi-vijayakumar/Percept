@@ -154,7 +154,8 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
 
     cost = cost_of(price, tokens_in, tokens_out) if price is not None else 0.0
     used = Usage(attempts, tokens_in, tokens_out, cost, max(0.0, clock() - start))
-    return observations, RequestUsage(request.request_id, judge_name, used, request_failure)
+    return observations, RequestUsage(request.request_id, judge_name, used, request_failure,
+                                      tuple(item.condition.id for item in request.items))
 
 
 def _describe(exc: BaseException) -> str:

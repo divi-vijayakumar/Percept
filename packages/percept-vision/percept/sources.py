@@ -189,18 +189,15 @@ class _Base:
             self._listeners.remove(listener)
 
     def _health(self, kind: str, detail: str) -> None:
-        """Report a link change to ``on_health`` and every listener, on the loop thread."""
-        self.link = "up" if kind == "link_up" else "down"
+        """Report a link change to ``on_health`` and every listener. Once ``frames()`` runs they
+        are called on the event loop thread, always through its queue, so reports arrive in the
+        order they were made; before that, directly on the caller's thread."""
         if self.on_health is None and not self._listeners:
             return
         event = Health(kind, self.stream_id, self._wall(), scrub(detail))  # type: ignore[arg-type]
         loop = self._handoff.loop
         try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        try:
-            if loop is not None and running is not loop:
+            if loop is not None:
                 loop.call_soon_threadsafe(self._publish, event)
             else:
                 self._publish(event)
@@ -282,7 +279,8 @@ class PushSource(_Base):
     feed is gone (health ``link_down``, and a ``link_down`` blind interval in a monitor watching
     this source) and ``set_link(True)`` when it is back (``link_up``); a frame pushed while the
     link is down also marks it up. Coming back up starts a new ``epoch`` with ``seq`` at 0, as a
-    reconnect does.
+    reconnect does. ``Monitor.set_link`` does the same for a stream the monitor created itself
+    from ``Monitor.push``, whose ``PushSource`` the app never holds.
     """
 
     def __init__(self, stream_id: str = "push", *, max_side: int = 640, maxlen: int = 8, epoch: int = 0,
@@ -294,11 +292,17 @@ class PushSource(_Base):
         self.link = "up"
         self._seq = 0
         self._last_t = -float("inf")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()   # reentrant: a listener called while it is held may push
 
     def set_link(self, up: bool, detail: str = "") -> None:
         """Report the app's feed as up or down, from any thread. Repeating the current state
-        reports nothing."""
+        reports nothing.
+
+        The change and its report happen under one lock, so concurrent ``set_link`` and
+        ``push`` calls report strictly alternating ``link_down`` / ``link_up``. Coming back up
+        starts a new epoch: an answer to a request sent before the outage is then stale and
+        changes nothing, and held states are rechecked on the new epoch's frames.
+        """
         with self._lock:
             if self._handoff.closed or (self.link == "up") == bool(up):
                 return
@@ -306,16 +310,15 @@ class PushSource(_Base):
             if up:
                 self.epoch += 1
                 self._seq = 0
-            epoch = self.epoch
-        self._health("link_up" if up else "link_down",
-                     detail or (f"epoch {epoch}" if up else "reported down by the application"))
+            self._health("link_up" if up else "link_down",
+                         detail or (f"epoch {self.epoch}" if up else "reported down by the application"))
 
     def push(self, image: np.ndarray, t_wall: float | None = None) -> Frame:
         if self._handoff.closed:
             raise RuntimeError("push() on a closed PushSource")
-        if self.link == "down":
-            self.set_link(True, "frames pushed again")
         with self._lock:
+            if self.link == "down":
+                self.set_link(True, "frames pushed again")
             t = max(time.monotonic(), self._last_t)
             frame = Frame(self.stream_id, self.epoch, self._seq, t, time.time() if t_wall is None else t_wall,
                           downscale(np.ascontiguousarray(image), self.max_side))
@@ -438,6 +441,10 @@ class CaptureSource(_Base):
             self._stalled = True
         reader.abort()
         return True
+
+    def _health(self, kind: str, detail: str) -> None:
+        self.link = "up" if kind == "link_up" else "down"
+        super()._health(kind, detail)
 
     def _run(self) -> None:
         failures = 0

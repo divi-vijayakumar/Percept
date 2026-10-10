@@ -242,3 +242,19 @@ def test_attribute_usage_sums_exactly(attempts, tin, tout, extra):
 def test_attribute_usage_without_usage_is_zero():
     obs = parse_reply(GOOD, REQ, "j")
     assert attribute_usage(JudgeResult(obs, ())) == (Usage(), Usage())
+
+
+def test_usage_goes_to_the_conditions_each_provider_request_carried():
+    from percept.judges.base import item_usage
+
+    obs = parse_reply(GOOD, REQ, "j")      # door, fall
+    usage = (RequestUsage(REQ.request_id, "lite", Usage(1, 100, 10, 0.001), condition_ids=("door", "fall")),
+             RequestUsage(REQ.request_id, "pro", Usage(2, 100, 10, 0.5), condition_ids=("fall",)))
+    door, fall = attribute_usage(JudgeResult(obs, usage))
+    assert door.cost_usd == pytest.approx(0.0005) and fall.cost_usd == pytest.approx(0.5005)
+    assert (door.attempts, fall.attempts) == (1, 2)
+    assert item_usage(REQ, JudgeResult(obs, usage)) == (door, fall)
+    # Usage that names no conditions falls back to the observations of its request id.
+    legacy = (RequestUsage(REQ.request_id, "j", Usage(2, 10, 10, 0.2)),)
+    assert attribute_usage(JudgeResult(obs, legacy)) == item_usage(REQ, JudgeResult(obs, legacy))
+    assert [s.cost_usd for s in item_usage(REQ, JudgeResult((), legacy))] == pytest.approx([0.1, 0.1])

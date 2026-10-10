@@ -352,12 +352,18 @@ class Observation:
 
 @dataclass(frozen=True)
 class RequestUsage:
-    """Usage for one provider request, shared by every observation it produced."""
+    """Usage for one provider request.
+
+    ``condition_ids`` names the conditions that provider request carried (a cascade hop carries
+    only the conditions routed or escalated to that member); its usage is shared among them.
+    Empty means every condition of the request it belongs to.
+    """
 
     request_id: str
     judge: str
     usage: Usage
     failure: Failure | None = None
+    condition_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -548,7 +554,9 @@ class Judge(Protocol):
     make, retries and cascade hops included. The budget reserves that many attempts before
     dispatch; a judge without it is assumed to make at most two. A judge may narrow the
     reservation per request with ``max_attempts_for(request) -> int`` (at most ``max_attempts``)
-    and ``worst_case_cost_for(request) -> float | None`` (see ``percept.judges.base``).
+    and ``worst_case_cost_for(request) -> float | None`` (see ``percept.judges.base``). These
+    hooks are trusted: a hook that under-reports under-reserves, and the request limit and
+    dollar cap then hold only as far as the hook is right.
     """
 
     name: str

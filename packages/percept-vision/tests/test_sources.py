@@ -592,3 +592,50 @@ def test_a_push_source_reports_its_link_and_starts_a_new_epoch_when_it_returns()
     assert health[0].detail == "connector gone" and all(h.stream_id == "conn" for h in health)
     assert [(f.stream_epoch, f.seq) for f in (a, b, c)] == [(0, 0), (1, 0), (2, 0)]
     assert a.t <= b.t <= c.t
+
+
+def test_push_source_link_changes_publish_in_order_under_concurrency():
+    class SlowPublish(PushSource):
+        """A scheduling delay between a link change and its report."""
+
+        def _health(self, kind, detail):
+            if kind == "link_down":
+                time.sleep(0.05)
+            super()._health(kind, detail)
+
+    health = []
+    src = SlowPublish("conn", on_health=health.append)
+    src.push(np.zeros((8, 8, 3), np.uint8))
+    t = threading.Thread(target=src.set_link, args=(False, "down"))
+    t.start()
+    time.sleep(0.01)
+    f = src.push(np.zeros((8, 8, 3), np.uint8))      # down meanwhile: this push brings the link back
+    t.join()
+    assert [h.kind for h in health] == ["link_down", "link_up"] and src.link == "up" and f.stream_epoch == 1
+
+    health = []
+    src = PushSource("conn", on_health=health.append)
+    stop = threading.Event()
+
+    def pusher():
+        while not stop.is_set():
+            src.push(np.zeros((8, 8, 3), np.uint8))
+            time.sleep(0)                       # let the toggler at the lock
+
+    def toggler():
+        for _ in range(150):
+            src.set_link(False)
+            time.sleep(0.0005)
+
+    pushers = [threading.Thread(target=pusher) for _ in range(2)]
+    tog = threading.Thread(target=toggler)
+    for th in [tog, *pushers]:
+        th.start()
+    tog.join()
+    stop.set()
+    for th in pushers:
+        th.join()
+    kinds = [h.kind for h in health]
+    assert kinds and all(a != b for a, b in zip(kinds, kinds[1:])) and kinds[0] == "link_down"
+    assert src.link == ("up" if kinds[-1] == "link_up" else "down")
+    assert src.epoch == kinds.count("link_up")

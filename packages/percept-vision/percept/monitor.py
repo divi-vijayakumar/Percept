@@ -75,7 +75,14 @@ from percept.contracts import (
     Usage,
 )
 from percept.delivery import Outbox, OutboxUnreadable, SqliteStore, Watch, Writer, store_key
-from percept.judges.base import attribute_usage, failed_observations, max_attempts, max_attempts_for, worst_case_cost_for
+from percept.judges.base import (
+    attribute_usage,
+    failed_observations,
+    item_usage,
+    max_attempts,
+    max_attempts_for,
+    worst_case_cost_for,
+)
 from percept.judges.encode import to_jpeg
 from percept.replay import decision_record, encode_condition, encode_input
 from percept.sources import PushSource, open_source
@@ -230,7 +237,7 @@ class _Stream:
         self.epoch, self.src_epoch, self.epoch_map = 0, None, {}
         self.latest: Optional[Frame] = None
         self.qstate = self.sstate = None
-        self.tstates: dict[int, Any] = {}
+        self.tstates: dict[Any, Any] = {}       # trigger key (see Monitor._trigger_key) -> its state
         self.degraded = False
         self.pending: dict[tuple[str, str], _Work] = {}
         self.verifies: dict[tuple[str, str], _Work] = {}
@@ -694,22 +701,26 @@ class _Stream:
 
     async def call(self, request: JudgeRequest, works: list[_Work], reserve: int, cost: float) -> None:
         m, result, t0 = self.m, None, self.m._mono()
+        unknown = True      # cancelled, or the judge raised: what it sent and spent is unknown
         try:
             result = await m.judge.judge(request)
+            unknown = False
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a judge that raises broke its contract: an outage
             result = JudgeResult(failed_observations(request, "unavailable", m.judge.name, f"judge raised {type(exc).__name__}"), ())
-        finally:  # a cancelled request reports no usage: it keeps its whole reservation charged
-            usage = sum((u.usage for u in result.usage), Usage()) if result is not None else Usage()
-            used = reserve if result is None else usage.attempts
+        finally:  # unknown usage keeps the whole reservation charged for the window, and reports 0 spent
+            usage = Usage() if unknown or result is None else sum((u.usage for u in result.usage), Usage())
+            used = reserve if unknown else usage.attempts
             self.budget.settle(reserve, used, m._mono())
-            m._cost.settle(cost, cost if result is None else usage.cost_usd, m._mono())
-            self.held_cost.settle(cost, cost if result is None else 0.0, m._mono())
+            m._cost.settle(cost, cost if unknown else usage.cost_usd, m._mono())
+            self.held_cost.settle(cost, cost if unknown else 0.0, m._mono())
             self.totals["requests"] += 1
             self.totals["attempts"] += used
             self.cost_usd += usage.cost_usd
-            for item, share in zip(request.items, usage.split(len(request.items))):
+            shares = (item_usage(request, result) if not unknown and result is not None
+                      else (Usage(),) * len(request.items))
+            for item, share in zip(request.items, shares):
                 row = self.per_condition.setdefault(item.condition.id, [0, 0, 0.0])
                 row[0] += 1
                 row[1] += share.attempts
@@ -1123,6 +1134,16 @@ class Monitor:
                   condition_id=h.condition_id, subject=h.subject)
 
     def _source_health(self, h: Health) -> None:
+        """A source's link health. Sources may call it from another thread (before ``frames()``
+        runs, or an app's worker thread): it is then handed to the loop, which owns this state."""
+        if self._loop is not None and not self._loop.is_closed():
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not self._loop:
+                self._loop.call_soon_threadsafe(self._source_health, h)
+                return
         self._report(h)
         stream = self._streams.get(h.stream_id)
         if stream is not None and h.kind in ("link_down", "link_up"):
@@ -1173,6 +1194,8 @@ class Monitor:
         self._bind()
         if isinstance(source, str):
             stream = self._streams.get(stream_id or source)
+            if stream is not None and source_options:
+                raise TypeError(f"stream {stream.id!r} is already open: source options apply only when watch() opens it")
             if stream is None:
                 options = dict(source_options)
                 if "capture_fps" in options:
@@ -1202,7 +1225,8 @@ class Monitor:
         if callable(listen):
             listen(self._source_health)
             if getattr(source, "link", None) == "down":     # already down when handed over
-                stream.blind_set("link_down", True, "the link was down when the stream was added")
+                self._source_health(Health("link_down", source.stream_id, self._wall(),
+                                           "the link was down when the stream was added"))
         for key in self._snoozes:       # snoozes set before the loop was known
             if key not in self._mutes:
                 self._schedule_mute(key)
@@ -1220,11 +1244,15 @@ class Monitor:
         stream.source.push(image, t_wall)
 
     def set_link(self, stream_id: str, up: bool, detail: str = "") -> None:
-        """Report a stream's link as down or up, for capture the app owns (``push()`` streams,
-        or a custom ``Source``). Down opens a ``link_down`` blind interval and raises health
-        ``link_down``; looks that need a current frame wait until it is up again. A
-        ``PushSource`` records it as its own (``PushSource.set_link``), so a frame pushed later
-        also marks the link up. Repeating the current state reports nothing."""
+        """Report a stream's link as down or up, for capture the app owns. Down opens a
+        ``link_down`` blind interval and raises health ``link_down``; looks that need a current
+        frame wait until it is up again. Repeating the current state reports nothing.
+
+        This is the way to reach a stream the monitor created from :meth:`push` (the app never
+        holds its ``PushSource``) or a custom ``Source``; an app that built its own
+        ``PushSource`` can call ``PushSource.set_link`` directly, from any thread. For a push
+        stream it is recorded on the source, so a frame pushed later marks the link up, and
+        coming back up starts a new epoch (see ``PushSource.set_link``)."""
         self._on_loop()
         stream = self._streams.get(stream_id)
         if stream is None:

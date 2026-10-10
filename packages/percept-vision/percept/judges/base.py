@@ -27,6 +27,7 @@ from percept.contracts import (
     JudgeResult,
     Observation,
     PriceModel,
+    RequestUsage,
     Usage,
 )
 
@@ -329,21 +330,49 @@ def worst_case_cost_for(judge: object, request: JudgeRequest) -> float | None:
     return max_attempts_for(judge, request) * cost_of(price, *worst_case_tokens(request, price))
 
 
-def attribute_usage(result: JudgeResult) -> tuple[Usage, ...]:
-    """Each observation's share of the usage of the request that produced it.
+def _allocate(usage: tuple[RequestUsage, ...], slots: list[tuple[str, str]],
+              fallback: tuple[int, ...] = ()) -> tuple[Usage, ...]:
+    """Share each provider request's usage among the slots ``(condition id, request id)`` it was for.
 
-    Aligned with ``result.observations``. All usage recorded under one request id is summed and
-    divided equally among that request's observations with ``Usage.split``, so the integer
-    counts of the shares add up exactly to the request totals.
+    A ``RequestUsage`` that names its conditions goes to the slots of those conditions; one that
+    doesn't goes to the slots of its request id; one that matches no slot goes to ``fallback``
+    (or is dropped). Usage with the same target is summed, then divided with ``Usage.split``, so
+    integer counts add up exactly.
     """
-    totals: dict[str, Usage] = {}
-    for ru in result.usage:
-        totals[ru.request_id] = totals.get(ru.request_id, Usage()) + ru.usage
-    groups: dict[str, list[int]] = {}
-    for index, ob in enumerate(result.observations):
-        groups.setdefault(ob.request_id, []).append(index)
-    shares: list[Usage] = [Usage()] * len(result.observations)
-    for request_id, indexes in groups.items():
-        for index, share in zip(indexes, totals.get(request_id, Usage()).split(len(indexes))):
-            shares[index] = share
+    groups: dict[tuple[int, ...], Usage] = {}
+    for ru in usage:
+        target: tuple[int, ...] = ()
+        if ru.condition_ids:
+            target = tuple(k for k, (cid, _) in enumerate(slots) if cid in ru.condition_ids)
+        if not target:
+            target = tuple(k for k, (_, rid) in enumerate(slots) if rid == ru.request_id)
+        target = target or fallback
+        if target:
+            groups[target] = groups.get(target, Usage()) + ru.usage
+    shares = [Usage()] * len(slots)
+    for target, total in groups.items():
+        for k, share in zip(target, total.split(len(target))):
+            shares[k] = shares[k] + share
     return tuple(shares)
+
+
+def attribute_usage(result: JudgeResult) -> tuple[Usage, ...]:
+    """Each observation's share of the usage that was spent on it.
+
+    Aligned with ``result.observations``. Each provider request's usage is divided equally
+    (``Usage.split``) among the conditions it carried (``RequestUsage.condition_ids``; when
+    empty, among the observations of its request id), so a cascade hop is charged to the
+    conditions that member was asked, and the integer counts add up exactly to the totals.
+    """
+    return _allocate(result.usage, [(ob.condition_id, ob.request_id) for ob in result.observations])
+
+
+def item_usage(request: JudgeRequest, result: JudgeResult) -> tuple[Usage, ...]:
+    """Each requested condition's share of the usage, aligned with ``request.items``.
+
+    The same attribution as :func:`attribute_usage`; usage that names no known condition and no
+    known request id is shared by every item, so nothing reported is lost.
+    """
+    observed = {ob.condition_id: ob.request_id for ob in result.observations}
+    slots = [(item.condition.id, observed.get(item.condition.id, request.request_id)) for item in request.items]
+    return _allocate(result.usage, slots, fallback=tuple(range(len(slots))))

@@ -3,11 +3,12 @@
 Portable (no shell `timeout`): every step runs as a subprocess with a Python-side timeout,
 and the quickstart's output is checked, not just its exit code.
 
-The clean-install step builds the wheel from a fresh copy of ``packages/percept-vision`` (no
-stale ``build/``), checks that the wheel's ``percept/`` files are exactly the tracked ones
-(``git ls-files``), installs it into an empty directory and runs the quickstart against that
-install, not the source tree. Building needs ``pip`` or ``uv``, and the build backend
-(setuptools) is fetched as for any wheel build.
+The clean-install step builds the wheel from a fresh copy of ``packages/percept-vision``, so it
+is immune to a stale ``build/`` directory in the checkout; checks that the wheel's ``percept/``
+files are exactly the tracked ones (``git ls-files``: an untracked or missing file fails it);
+installs it into an empty directory and runs the quickstart against that install, not the
+source tree. Building needs ``pip`` or ``uv``, and network access: the build backend
+(setuptools) is fetched as for any isolated wheel build.
 
     python tools/validate.py [--python PATH]
 """
@@ -65,7 +66,8 @@ def build_wheel(py: str, src: Path, out: Path) -> Path | None:
     wheels = sorted(out.glob("percept_vision-*.whl"))
     if result.returncode != 0 or len(wheels) != 1:
         print(result.stdout[-2000:], result.stderr[-2000:], file=sys.stderr)
-        print(f"FAILED: wheel build exited {result.returncode}, produced {[w.name for w in wheels]}")
+        print(f"FAILED: wheel build exited {result.returncode}, produced {[w.name for w in wheels]} "
+              "(the build fetches its backend: it needs network access)")
         return None
     return wheels[0]
 
@@ -96,7 +98,8 @@ def clean_install(py: str) -> bool:
             purelib = meta is not None and "Root-Is-Purelib: true" in zf.read(meta).decode()
             site = tmp / "site"
             zf.extractall(site)    # a pure-Python wheel with no scripts installs by unpacking it
-        print(f"wheel: {wheel.name}, {len(shipped)} files under percept/")
+        print(f"wheel: {wheel.name}, built from a clean copy (immune to a stale build/); "
+              f"{len(shipped)} files under percept/")
         if shipped != expected or others or not purelib:
             print(f"FAILED: the wheel does not match the tracked tree; not shipped: {sorted(expected - shipped)}; "
                   f"untracked but shipped: {sorted(shipped - expected)}; other top-level entries: {others}; "

@@ -28,8 +28,13 @@ decision per real occurrence of a plain-language condition.
   against `max_cost_per_hour` for the window, and is shown as `cost_reserved_usd` (per stream and
   in total). Previously the reservation was reported as spend.
 - **Per-condition cost.** `stats()["streams"][id]["conditions"]` gives `requests`, `attempts` and
-  settled `cost_usd` per condition, each request's usage split evenly (`Usage.split`) among the
-  conditions it carried.
+  settled `cost_usd` per condition. Each provider request's usage goes to the conditions it
+  carried (new `RequestUsage.condition_ids`, additive), so in a cascade a condition pinned to an
+  expensive member is charged for that member; the same attribution feeds decision `cost`.
+- A judge that raises is charged its whole reservation against the request limit and dollar cap
+  for the window (it was charged nothing), and reports a settled cost of 0.
+- `PushSource.set_link` and `push` are safe to call concurrently: link reports alternate strictly
+  and arrive in order. Link health reported from another thread is handled on the monitor's loop.
 - **Reservations follow routes.** Judges may provide `max_attempts_for(request)` and
   `worst_case_cost_for(request)`; a cascade counts only the members a request can reach (a pinned
   condition its member, a verification the last member, an unpinned condition every member), each
