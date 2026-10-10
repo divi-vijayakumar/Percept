@@ -33,6 +33,11 @@ decision per real occurrence of a plain-language condition.
   expensive member is charged for that member; the same attribution feeds decision `cost`.
 - A judge that raises is charged its whole reservation against the request limit and dollar cap
   for the window (it was charged nothing), and reports a settled cost of 0.
+- A request's reply limit (`max_output_tokens`) grows with the conditions it carries (room for
+  every full answer, from 400 up to 4096 tokens), so a batched reply is no longer cut off and
+  failed as malformed; the cost reservation uses the same limit.
+- The trace records each look given up unjudged (`kind: "drop"`: condition, subject, trigger
+  time, reason `budget` / `deadline` / `ended`, time waited), besides the per-minute fate counts.
 - `PushSource.set_link` and `push` are safe to call concurrently: link reports alternate strictly
   and arrive in order. Link health reported from another thread is handled on the monitor's loop.
 - **Reservations follow routes.** Judges may provide `max_attempts_for(request)` and

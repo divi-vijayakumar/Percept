@@ -49,6 +49,7 @@ import asyncio
 import itertools
 import json
 import logging
+import math
 import os
 import time
 from collections import Counter, OrderedDict, deque
@@ -93,6 +94,7 @@ from percept.zones import crop_box
 log = logging.getLogger("percept")
 
 VERIFY, EVENT, STATE, HEARTBEAT, RECHECK = 1, 2, 3, 4, 5      # priorities, highest first
+_PRIORITY_NAMES = {VERIFY: "verify", EVENT: "event", STATE: "state", HEARTBEAT: "heartbeat", RECHECK: "recheck"}
 DEADLINES = {EVENT: 3.0, STATE: 10.0}   # seconds a detection may wait before dropped_budget
 BUDGET_WINDOW_S = 60.0
 COST_WINDOW_S = 3600.0
@@ -112,10 +114,23 @@ COVERAGE_BUCKET_S = 60.0
 COVERAGE_BUCKETS = 1440
 DEFAULT_FPS = 5.0           # frames processed per second, per stream, unless watch(fps=...) says otherwise
 STALE_FRAME_S = 10.0        # a frame older than this is not judged as the current one
+MIN_OUTPUT_TOKENS = 400     # a request's reply limit: at least this, more for more conditions ...
+OUTPUT_TOKENS_BASE = 64     # ... the reply's frame ({"results": [...]}) ...
+OUTPUT_TOKENS_PER_ITEM = 80 # ... plus one full answer each (id, answer, confidence, 160-char reason) ...
+MAX_OUTPUT_TOKENS = 4096    # ... up to this ceiling
 
 
 _SOURCE_OPTIONS = frozenset({"on_frame", "on_health", "capture_fps", "max_side", "stall_timeout", "backoff",
                              "loop", "live", "backend", "epoch", "ffmpeg"})
+
+
+def _max_output_tokens(n_items: int, id_chars: int = 0) -> int:
+    """The reply limit for a request judging ``n_items`` conditions whose ids total ``id_chars``
+    characters: room for every schema-conformant answer (counted at 3 characters a token, like
+    ``judges.base.worst_case_tokens``), so a batched reply is not cut off. The cost reservation
+    reads the same number from the request."""
+    want = OUTPUT_TOKENS_BASE + n_items * OUTPUT_TOKENS_PER_ITEM + math.ceil(id_chars / 3)
+    return max(MIN_OUTPUT_TOKENS, min(MAX_OUTPUT_TOKENS, want))
 
 
 def _spread(frames: tuple[Frame, ...], n: int) -> tuple[Frame, ...]:
@@ -486,6 +501,15 @@ class _Stream:
             return None
         return f
 
+    def drop(self, w: _Work, reason: str, now: float) -> None:
+        """A look given up without being judged: counted as ``dropped_budget`` and, when tracing,
+        recorded one by one (reason ``budget``: the budget refused it; ``deadline``: it waited
+        past its deadline for a concurrency slot or for evidence; ``ended``: the stream ended)."""
+        self.fate(w.condition_id, "dropped_budget")
+        self.m._rec("drop", self.id, condition_id=w.condition_id, subject=w.subject, reason=reason,
+                    purpose="verify" if w.verify is not None else "detect", priority=_PRIORITY_NAMES[w.priority],
+                    t_trigger=w.t_trigger, waited_s=max(0.0, now - w.created))
+
     def starve(self, w: _Work) -> None:
         if not w.starved:
             w.starved = True
@@ -576,11 +600,11 @@ class _Stream:
         for key, w in list(self.pending.items()):
             if w.deadline is not None and now > w.deadline:
                 del self.pending[key]
-                self.fate(w.condition_id, "dropped_budget")
+                self.drop(w, "budget" if w.blocked else "deadline", now)
             elif self.eof and self.current() is None and w.images is None and w.frame is None:
                 del self.pending[key]               # the stream ended: no frame will come
                 self.starve(w)
-                self.fate(w.condition_id, "dropped_budget")
+                self.drop(w, "ended", now)
         refused = False
         if self.verify_task is None and self.verifies:
             for key in [k for k in self.verifies if k[0] not in m._conds]:
@@ -602,8 +626,10 @@ class _Stream:
             wait = min([wait] + later)
         if self.detect_task is None and self.pending:
             group = self.group()
-            if group:
-                refused |= self.start(group, "detect", now) == "budget"
+            if group and self.start(group, "detect", now) == "budget":
+                refused = True
+                for w in group:
+                    w.blocked = True
             deadlines = [w.deadline - now for w in self.pending.values() if w.deadline is not None]
             wait = min([wait] + deadlines)
         if refused != self.budget_blocked:
@@ -661,7 +687,9 @@ class _Stream:
             items.append(JudgeItem(cond, w.subject, gen, tuple(self.counter.get(w.condition_id, ()))))
         epoch = works[0].verify.stream_epoch if works[0].verify is not None else self.epoch
         request = JudgeRequest(f"{m._incarnation}-{next(m._ids)}", self.id, epoch, tuple(items), images,
-                               evidence_t, purpose)  # type: ignore[arg-type]
+                               evidence_t, purpose,  # type: ignore[arg-type]
+                               max_output_tokens=_max_output_tokens(len(items),
+                                                                    sum(len(i.condition.id) for i in items)))
         calls = 1 if m.judge.can_batch else len(items)
         reserve = max_attempts_for(m.judge, request) * calls
         cost = (worst_case_cost_for(m.judge, request) or 0.0) * calls
@@ -815,7 +843,7 @@ class _Stream:
                 if w is not None and w.verify.occurrence_gen == e.occurrence_gen:
                     del self.verifies[(e.condition_id, e.subject)]
                     if w.blocked:
-                        self.fate(e.condition_id, "dropped_budget")
+                        self.drop(w, "budget", self.m._mono())
                     if self.verify_task is not None and self.verify_work is w:
                         self.verify_task.cancel()
             elif t is decide.RequestRecheck:

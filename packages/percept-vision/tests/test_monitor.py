@@ -1754,3 +1754,74 @@ def test_a_judge_that_raises_keeps_its_reservation_charged_and_costs_nothing(mon
     assert len(calls) == 2                           # 2 x 2 reserved attempts fill the window
     assert cam["attempts"] == 4 and cam["cost_usd"] == 0.0 and cam["cost_reserved_usd"] > 0
     assert stats["health"]["judge_unavailable"] >= 1
+
+
+def test_the_output_token_limit_grows_with_the_conditions_in_a_request():
+    import json
+    import math
+
+    from percept.judges.base import worst_case_cost_for
+
+    conds = [Condition(f"check_{k}", f"condition number {k} holds", trigger=At(0)) for k in range(10)]
+    reserved, box = [], []
+
+    class Recording:
+        name, can_batch, price, max_attempts = "rec", True, PRICE, 2
+
+        def __init__(self):
+            self.inner = FakeJudge(answers({"detect": [N]}), price=PRICE)
+            self.requests = []
+
+        async def judge(self, request):
+            self.requests.append(request)
+            reserved.append(box[0].stats()["cost_reserved_usd"])
+            return await self.inner.judge(request)
+
+    judge = Recording()
+
+    async def main():
+        async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=1000) as m:
+            box.append(m)
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            src.push(image())
+            await asyncio.sleep(0.1)
+
+    run(main())
+    (request,) = judge.requests
+    assert len(request.items) == 10
+    full = json.dumps({"results": [{"id": c.id, "answer": "unknown", "confidence": 0.95, "reason": "r" * 160}
+                                   for c in conds]})
+    assert request.max_output_tokens >= math.ceil(len(full) / 3)     # ten full answers fit
+    assert reserved == [pytest.approx(worst_case_cost_for(judge, request))]
+    one = rt._max_output_tokens(1)
+    assert one >= 400 and rt._max_output_tokens(1000) <= rt.MAX_OUTPUT_TOKENS
+
+
+def test_every_dropped_look_is_traced_with_its_condition_trigger_time_and_reason(monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setattr(rt, "DEADLINES", {rt.EVENT: 0.1, rt.STATE: 0.1})
+    price = percept.PriceModel(usd_per_mtok_in=1000.0, usd_per_mtok_out=1000.0, tokens_per_image=1000)
+    judge = FakeJudge(answers({"detect": [N]}), price=price)
+    door = Condition("door", "the door is open", trigger=Always())
+    path = tmp_path / "trace.jsonl"
+
+    async def main():
+        async with percept.Monitor(judge, [door], store=mem(), max_requests_per_min=1000,
+                                   max_cost_per_hour=4.0, trace=path) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            await push_frames(src, 6, pause=0.05)
+            return m.coverage("cam")
+
+    cov = run(main())
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    drops = [r for r in records if r["kind"] == "drop"]
+    assert len(drops) == cov["fates"]["door"]["dropped_budget"] >= 1
+    for r in drops:
+        assert r["stream_id"] == "cam" and r["condition_id"] == "door" and r["subject"] == "scene"
+        assert r["reason"] == "budget" and r["purpose"] == "detect" and isinstance(r["t_trigger"], float)
+        assert r["waited_s"] >= 0.1
+    assert any(r["kind"] == "fate" and r.get("event") == "runtime" and r["fate"] == "dropped_budget"
+               for r in records)                                      # the per-minute counts stay
