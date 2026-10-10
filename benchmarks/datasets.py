@@ -51,9 +51,11 @@ def _video_seconds(path: str) -> float:
         cap.release()
 
 
-def _with_negatives(case_id: str, present: list[str], vocab: list[str], n: int, seed: int) -> list[str]:
+def _with_negatives(case_id: str, present: list[str], vocab: list[str], n: int, seed: int,
+                    exclude: set = frozenset()) -> list[str]:
+    """``present`` plus ``n`` labels that never occur in the case (nor in ``exclude``)."""
     rng = random.Random(f"{seed}:{case_id}")
-    absent = sorted(set(vocab) - set(present))
+    absent = sorted(set(vocab) - set(present) - set(exclude))
     return sorted(set(present)) + sorted(rng.sample(absent, min(n, len(absent))))
 
 
@@ -92,7 +94,7 @@ def long_sparse(pool: list[VideoCase], *, occupancies=(0.05, 0.2, 0.5), length_s
                 per_level: int = 1, negatives: int = 2, seed: int = 0) -> list[VideoCase]:
     """Declared-synthetic long timelines at several occupancy levels (see the module docstring)."""
     rng = random.Random(seed)
-    vocab = sorted({c.label for case in pool for c in case.conditions})
+    vocab = sorted({c.label for case in pool for c in case.conditions} | {o.label for c in pool for o in c.occurrences})
     out = []
     for occ in occupancies:
         for k in range(per_level):
@@ -105,11 +107,12 @@ def long_sparse(pool: list[VideoCase], *, occupancies=(0.05, 0.2, 0.5), length_s
             watched = sorted({o.label for c in targets for o in c.occurrences})
             distract = [c for c in pool if c not in targets and not {o.label for o in c.occurrences} & set(watched)]
             gap = max(0.0, length_s - used) / max(1, len(targets))
-            segments, occs, t = [], [], 0.0
+            segments, occs, t, shown = [], [], 0.0, set()
             for case in targets:
                 fill = gap
                 if distract and rng.random() < 0.5:     # half the gaps carry a distractor clip
                     d = rng.choice(distract)
+                    shown |= {o.label for o in d.occurrences}   # never a negative: it happens on screen
                     take = min(fill, d.duration)
                     segments.append(Segment(d.segments[0].path, 0.0, take))
                     fill -= take
@@ -121,7 +124,8 @@ def long_sparse(pool: list[VideoCase], *, occupancies=(0.05, 0.2, 0.5), length_s
                 occs += [Occurrence(o.label, t + o.start, t + o.end) for o in case.occurrences]
                 t += case.duration
             cid = f"sparse-{int(occ * 100):02d}pct-{k}"
-            conds = tuple(CondSpec(lb, f"{lb} begins") for lb in _with_negatives(cid, watched, vocab, negatives, seed))
+            labels = _with_negatives(cid, watched, vocab, negatives, seed, exclude=shown)
+            conds = tuple(CondSpec(lb, f"{lb} begins") for lb in labels)
             out.append(VideoCase(cid, "perception-test-sparse", tuple(segments), conds, tuple(occs), synthetic=True,
                                  notes=f"synthetic: {len(targets)} clips at {used / max(t, 1):.0%} occupancy"))
     return out

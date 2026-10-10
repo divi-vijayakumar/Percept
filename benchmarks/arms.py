@@ -1,11 +1,15 @@
 """The arms: ways to turn the same footage and condition text into decisions.
 
-* ``percept``: a ``Monitor`` with its defaults (change trigger, confirm/verify, request budget),
-  fed in real time through a ``PushSource``. Public API only.
+* ``percept``: a ``Monitor`` with its defaults (change trigger, confirm/verify, request budget of
+  6 attempts a minute, 2 reserved per request), fed in real time through a ``PushSource``.
+* ``percept-matched``: the same with ``max_requests_per_min`` raised (``--percept-budget``,
+  default 12: the request rate of ``chunk5``), so budget is not the only difference.
+  Both use only Percept's public API.
 * ``chunk<T>``: judge the last ``T`` seconds every ``T`` seconds with every condition batched,
   then a plain cooldown per condition: what a developer writes in an afternoon.
-* ``detector_debounce``: an OpenCV detector (HOG people detector or MOG2 motion) with a
-  cooldown; only for conditions a detector can express, the others are reported unsupported.
+* ``detector_debounce``: an OpenCV detector (MOG2 motion, or OpenCV 4's HOG people detector run
+  on a 320-pixel frame: a weak detector) with a cooldown; only for conditions a detector can
+  express, the others are reported unsupported.
 * ``detector_then_vlm``: the same detectors gate judge calls; a condition no detector expresses
   is gated by motion.
 
@@ -17,9 +21,9 @@ attributed to a stage in every arm.
 from __future__ import annotations
 
 import asyncio
+import resource
+import sys
 import time
-import tracemalloc
-import warnings
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +31,7 @@ from typing import Optional
 
 from percept import Condition, JudgeItem, JudgeRequest, MemoryStore, Monitor, PushSource
 from percept import trace as ptrace
+from percept.clips import PreRoll
 
 from benchmarks.cases import Feed, VideoCase
 
@@ -67,6 +72,17 @@ class ArmResult:
     cost_usd: float = 0.0
     requests: int = 0
     aborted: bool = False
+    cooldown_s: float = 0.0     # how long one decision suppresses the next for its condition
+    seconds: float = 0.0        # footage actually watched (less than the case when aborted)
+    frames_capped: int = 0      # frames the Monitor skipped (must be 0 for a publishable run)
+    error: str = ""             # the case failed: recorded, scored as skipped
+
+
+def _finish(result: ArmResult, feed: Feed, complete: bool) -> ArmResult:
+    result.digest = feed.digest
+    result.seconds = feed.case.duration if complete else feed.frames / feed.fps
+    result.aborted = result.aborted or not complete
+    return result
 
 
 # --------------------------------------------------------------------------- detectors
@@ -116,6 +132,11 @@ class Detectors:
 # --------------------------------------------------------------------------- baselines
 
 
+def _feed(case: VideoCase, fps: float, timelines) -> Feed:
+    """The case's frames, each one noted with its case time (the oracle reads that)."""
+    return Feed(case, fps, note=lambda t, image: timelines.note(case.case_id, t, image))
+
+
 async def frames_of(feed: Feed):
     """The feed's frames, decoded on a worker thread so other cases keep running."""
     frames = iter(feed)
@@ -128,8 +149,8 @@ class Baseline:
 
     def __init__(self, arm: str, case: VideoCase, judge, timelines, cooldown_s: float = COOLDOWN_S) -> None:
         timelines.set(case.case_id, 0.0, 1.0)      # evidence times are case times
-        self.case, self.judge, self.cooldown = case, judge, cooldown_s
-        self.result = ArmResult(arm, case.case_id)
+        self.case, self.judge, self.cooldown, self.timelines = case, judge, cooldown_s, timelines
+        self.result = ArmResult(arm, case.case_id, cooldown_s=cooldown_s)
         self.history: deque = deque()
         self.last_emit: dict[str, float] = {}
         self.conds = {c.id: Condition(c.id, c.text, kind=c.kind) for c in case.conditions}
@@ -175,7 +196,7 @@ class Baseline:
 async def run_chunk(case: VideoCase, judge, timelines, period_s: float, *, cooldown_s: float = COOLDOWN_S,
                     fps: float = 5.0) -> ArmResult:
     b = Baseline(f"chunk{period_s:g}", case, judge, timelines, cooldown_s)
-    feed, due, t = Feed(case, fps), period_s, 0.0
+    feed, due, t, complete = _feed(case, fps, timelines), period_s, 0.0, False
     async for t, image in frames_of(feed):
         b.remember(t, image, period_s + 1.0)
         if t >= due:
@@ -183,10 +204,11 @@ async def run_chunk(case: VideoCase, judge, timelines, period_s: float, *, coold
             due += period_s
         if judge.tripped.is_set():
             break
-    if t > due - period_s + 1.0:                    # the last, shorter chunk
-        await b.ask(list(b.conds), b.clip(due - period_s, t))
-    b.result.digest = feed.digest
-    return b.result
+    else:
+        complete = True
+        if t > due - period_s + 1.0:                # the last, shorter chunk
+            await b.ask(list(b.conds), b.clip(due - period_s, t))
+    return _finish(b.result, feed, complete and not judge.tripped.is_set())
 
 
 async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, cooldown_s: float = COOLDOWN_S,
@@ -197,7 +219,7 @@ async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, coo
              for c in case.conditions}
     b.result.unsupported = [cid for cid, g in gates.items() if g is None]
     det = Detectors({g for g in gates.values() if g})
-    feed, gate_until = Feed(case, fps), {}
+    feed, gate_until, complete = _feed(case, fps, timelines), {}, False
     async for t, image in frames_of(feed):
         b.remember(t, image, CLIP_S + 1.0)
         fired = det.step(t, image) if det.kinds else set()
@@ -211,54 +233,61 @@ async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, coo
             await b.ask(ids, b.clip(t - CLIP_S, t))
         if judge.tripped.is_set():
             break
-    b.result.digest = feed.digest
-    return b.result
+    else:
+        complete = True
+    return _finish(b.result, feed, complete and not judge.tripped.is_set())
 
 
 # --------------------------------------------------------------------------- Percept
 
 
 async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, speed: float = 1.0,
-                      fps: float = 5.0, stats: Optional[dict] = None) -> ArmResult:
+                      fps: float = 5.0, max_requests_per_min: Optional[int] = None,
+                      rearm_s: Optional[float] = None, arm: str = "percept",
+                      stats: Optional[dict] = None) -> ArmResult:
     """One ``Monitor`` per case, frames pushed at ``speed`` times real time (1.0 is the faithful
-    setting: Percept's budget and timers run on the real clock)."""
-    result = ArmResult("percept", case.case_id)
-    conditions = [Condition(c.id, c.text, kind=c.kind) for c in case.conditions]
-    source = PushSource(case.case_id)
-    feed, anchor = Feed(case, fps), time.time() + 0.2
+    setting: Percept's budget and timers run on the real clock). ``None`` keeps a default. Frames
+    are already sampled to ``fps``, so the Monitor processes every one (``watch(fps=None)``)."""
+    extra = {} if rearm_s is None else {"rearm_s": rearm_s}
+    conditions = [Condition(c.id, c.text, kind=c.kind, **extra) for c in case.conditions]
+    result = ArmResult(arm, case.case_id, cooldown_s=conditions[0].rearm_s if conditions else 0.0)
+    preroll = PreRoll()
+    source = PushSource(case.case_id, preroll=preroll)
+    feed, anchor, complete = _feed(case, fps, timelines), time.time() + 0.2, False
     timelines.set(case.case_id, anchor, speed)
     peak_preroll, lag = 0, 0.0
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")     # MemoryStore warns that it isn't crash-safe: fine here
-        monitor = Monitor(judge, conditions, store=MemoryStore(), trace=trace_path)
+    budget = {} if max_requests_per_min is None else {"max_requests_per_min": max_requests_per_min}
+    monitor = Monitor(judge, conditions, store=MemoryStore(), trace=trace_path, **budget)
     async with monitor:
-        decisions = monitor.watch(source, ack="auto", fps=fps * speed)
+        decisions = monitor.watch(source, ack="auto", fps=None)
 
         async def play() -> None:
-            nonlocal peak_preroll, lag
+            nonlocal peak_preroll, lag, complete
             try:
                 async for t, image in frames_of(feed):
                     if judge.tripped.is_set():
                         break
                     wall = anchor + t / speed
                     await asyncio.sleep(max(0.0, wall - time.time()))
+                    if judge.tripped.is_set():                  # the cap closed the monitor meanwhile
+                        break
                     lag = max(lag, time.time() - wall)          # how far pacing fell behind real time
                     source.push(image, t_wall=wall)
-                    ring = getattr(source, "preroll", None)
-                    peak_preroll = max(peak_preroll, len(ring) if ring is not None else 0)
+                    peak_preroll = max(peak_preroll, len(preroll))
+                else:
+                    complete = True
             finally:
                 source.close()
 
         async def stop_on_cap() -> None:
             await judge.tripped.wait()
-            result.aborted = True
             await monitor.aclose()
 
         player, stopper = asyncio.create_task(play()), asyncio.create_task(stop_on_cap())
+        media = lambda w: timelines.media(case.case_id, w)    # noqa: E731
         async for delivery in decisions:
             d = delivery.decision
             ev = [e.t_wall for e in d.evidence] or [d.t_observed]
-            media = lambda w: timelines.media(case.case_id, w)    # noqa: E731
             if d.type == "met":
                 result.preds.append(Pred(d.condition_id, media(min(ev)), media(max(ev)), media(d.t_decided),
                                          d.confidence))
@@ -268,11 +297,12 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
         stopper.cancel()
         s = monitor.stats()["streams"].get(case.case_id, {})
         result.cost_usd, result.requests = s.get("cost_usd", 0.0), s.get("requests", 0)
-    result.digest = feed.digest
+        result.frames_capped = s.get("frames_capped", 0)
+    _finish(result, feed, complete and not judge.tripped.is_set())
     if stats is not None:
         stats["preroll_frames"] = max(stats.get("preroll_frames", 0), peak_preroll)
         stats["max_push_lag_s"] = round(max(stats.get("max_push_lag_s", 0.0), lag), 3)
-    _read_trace(result, trace_path, lambda w: timelines.media(case.case_id, w))
+    _read_trace(result, trace_path, media)
     return result
 
 
@@ -284,20 +314,26 @@ def _read_trace(result: ArmResult, path: Path, media) -> None:
             result.looks.append(Look(o["condition_id"], media(o["evidence_t"][0]), media(o["evidence_t"][1]),
                                      o["answer"], o["failure"], o["purpose"]))
         elif rec["kind"] == "fate" and rec.get("event") == "runtime" and rec["fate"] == "dropped_budget":
-            t0 = media(rec["bucket_wall"])          # counted per minute: the drop is somewhere in it
+            # Approximate: the trace counts drops per minute, so the drop is somewhere in that minute.
+            t0 = media(rec["bucket_wall"])
             result.budget_drops.append((rec["condition_id"], t0, t0 + 60.0 * (media(1.0) - media(0.0))))
 
 
+def _rusage() -> tuple[float, float]:
+    """(CPU seconds, peak resident set in MB) of this process so far."""
+    r = resource.getrusage(resource.RUSAGE_SELF)
+    scale = 1e6 if sys.platform == "darwin" else 1e3      # ru_maxrss: bytes on macOS, KiB on Linux
+    return r.ru_utime + r.ru_stime, r.ru_maxrss / scale
+
+
 class Footprint:
-    """CPU seconds and peak traced memory over a block of work."""
+    """CPU seconds over a block of work, and the process's peak resident memory when it ended
+    (a high-water mark for the whole run so far: run one arm per process for a per-arm peak)."""
 
     def __enter__(self) -> "Footprint":
-        if not tracemalloc.is_tracing():
-            tracemalloc.start()
-        tracemalloc.reset_peak()
-        self.cpu0 = time.process_time()
+        self.cpu0, _ = _rusage()
         return self
 
     def __exit__(self, *exc) -> None:
-        self.cpu_s = time.process_time() - self.cpu0
-        self.peak_mb = tracemalloc.get_traced_memory()[1] / 1e6
+        cpu, self.peak_rss_mb = _rusage()
+        self.cpu_s = cpu - self.cpu0

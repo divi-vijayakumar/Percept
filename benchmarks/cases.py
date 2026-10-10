@@ -123,8 +123,8 @@ class Feed:
     its longest side at most ``max_side``, sampled to ``fps``. ``digest`` covers every frame
     yielded so far."""
 
-    def __init__(self, case: VideoCase, fps: float = 5.0, max_side: int = 640) -> None:
-        self.case, self.fps, self.max_side = case, fps, max_side
+    def __init__(self, case: VideoCase, fps: float = 5.0, max_side: int = 640, note=None) -> None:
+        self.case, self.fps, self.max_side, self.note = case, fps, max_side, note   # note(t, image) per frame
         self._h = hashlib.sha256()
         self.frames = 0
 
@@ -176,5 +176,7 @@ class Feed:
                 self._h.update(f"{t:.3f}".encode())
                 self._h.update(np.ascontiguousarray(image).tobytes())
                 self.frames += 1
+                if self.note is not None:
+                    self.note(t, image)
                 yield t, image
             offset += seg.duration

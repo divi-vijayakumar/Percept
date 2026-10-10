@@ -7,10 +7,12 @@ import unittest
 try:
     import cv2  # noqa: F401
 except ImportError:  # the harness needs the video extra
-    raise unittest.SkipTest('benchmarks need OpenCV: pip install "percept-vision[video]"')
+    raise unittest.SkipTest('benchmarks need OpenCV: pip install -r benchmarks/requirements.txt')
 
+import numpy as np
 import pytest
 
+from percept import JudgeItem, JudgeRequest, Condition
 from benchmarks import arms, datasets, judging, metrics, run
 from benchmarks.arms import ArmResult, Look, Pred
 from benchmarks.cases import CondSpec, Occurrence, Segment, VideoCase
@@ -19,6 +21,11 @@ from benchmarks.cases import CondSpec, Occurrence, Segment, VideoCase
 def pred(t0, t1=None, decided=None, cid="a"):
     t1 = t0 if t1 is None else t1
     return Pred(cid, t0, t1, t1 if decided is None else decided, 0.9)
+
+
+def watched(arm, case_id, seconds, **kw):
+    """An ArmResult for a case the arm actually watched."""
+    return ArmResult(arm, case_id, digest="1:x", seconds=seconds, **kw)
 
 
 @pytest.fixture(scope="module")
@@ -51,6 +58,12 @@ def test_matching_tolerance_and_evidence_intervals():
     assert len(metrics.match([pred(0, 30)], occ, tol=0.0)["matched"]) == 1
 
 
+def test_no_credit_for_deciding_before_the_onset():
+    occ = [Occurrence("a", 10, 12)]
+    assert len(metrics.match([pred(8.0, 9.4)], occ, tol=2.0)["false"]) == 1      # ends before onset - 0.5
+    assert len(metrics.match([pred(8.0, 9.6)], occ, tol=2.0)["matched"]) == 1
+
+
 # --------------------------------------------------------------------------- metrics
 
 
@@ -58,20 +71,32 @@ def test_metric_formulas():
     conds = (CondSpec("a", "a begins"), CondSpec("b", "b begins"))
     case = VideoCase("x", "t", (Segment("unused.mp4", 0, 1800),), conds,
                      (Occurrence("a", 100, 105), Occurrence("a", 500, 505)))
-    r = ArmResult("arm", "x", cost_usd=0.3, requests=3)
+    r = watched("arm", "x", 1800, cost_usd=0.3, requests=3)
     r.preds = [pred(101, decided=103), pred(102, decided=104), pred(900, cid="b")]
     r.looks = [Look("a", 499, 501, "no", None)]
     s = metrics.score([r], {"x": case}, tol=1.0)
-    assert s["recall"] == 0.5 and s["precision"] == pytest.approx(1 / 3)
+    assert s["recall"] == 0.5 and s["precision"] == pytest.approx(1 / 3) and s["recall_ceiling"] == 1.0
     assert s["false_per_hour"] == 2.0 and s["false_on_absent_conditions"] == 1
     assert s["duplicates_per_occurrence"] == 1.0 and s["latency_p50_s"] == 3.0
     assert s["cost_per_hour"] == pytest.approx(0.6) and s["cost_per_true_event"] == pytest.approx(0.3)
     assert s["misses_by_stage"]["judge_said_no"] == 1 and sum(s["misses_by_stage"].values()) == 1
 
 
+def test_skipped_and_cut_short_cases_leave_the_denominators():
+    conds = (CondSpec("a", "a"),)
+    occs = (Occurrence("a", 100, 105), Occurrence("a", 2000, 2005))
+    cases = {k: VideoCase(k, "t", (Segment("u.mp4", 0, 3600),), conds, occs) for k in ("x", "y", "z")}
+    results = [watched("arm", "x", 1800, preds=[pred(101)]),          # cut short at 1800 s by the cap
+               ArmResult("arm", "y", aborted=True),                     # never started
+               ArmResult("arm", "z", error="RuntimeError: boom")]
+    s = metrics.score(results, cases, tol=1.0)
+    assert s["cases"] == 1 and s["source_hours"] == 0.5 and s["occurrences"] == 1 and s["recall"] == 1.0
+    assert [k["case_id"] for k in s["skipped"]] == ["y", "z"] and "boom" in s["skipped"][1]["reason"]
+
+
 def test_unsupported_conditions_are_not_scored():
     case = VideoCase("x", "t", (Segment("unused.mp4", 0, 3600),), (CondSpec("a", "a"),), (Occurrence("a", 1, 2),))
-    s = metrics.score([ArmResult("d", "x", unsupported=["a"])], {"x": case}, tol=1.0)
+    s = metrics.score([watched("d", "x", 3600, unsupported=["a"])], {"x": case}, tol=1.0)
     assert s["occurrences"] == 0 and s["recall"] is None and s["unsupported"] == ["x/a"]
 
 
@@ -82,10 +107,19 @@ def test_unsupported_conditions_are_not_scored():
     ([Look("a", 9, 11, "unknown", "timeout")], [], "judge_failed"),
     ([Look("a", 9, 11, "no", None), Look("a", 10, 12, "unknown", "timeout")], [], "judge_said_no"),
     ([Look("a", 9, 11, "no", None), Look("a", 9, 11, "yes", None, "detect")], [], "decide_suppressed"),
+    ([Look("a", 9, 11, "yes", None), Look("a", 9, 11, "no", None, "verify")], [], "verify_rejected"),
     ([Look("a", 30, 34, "yes", None)], [], "trigger_never_fired"),     # a look elsewhere doesn't count
 ])
 def test_stage_attribution(looks, drops, stage):
     assert metrics.attribute(Occurrence("a", 10, 12), looks, drops, tol=1.0) == stage
+
+
+def test_cooldown_absorbed_and_the_recall_ceiling():
+    occs = [Occurrence("a", 10, 12), Occurrence("a", 20, 22), Occurrence("a", 60, 62)]
+    looks = [Look("a", 19, 21, "yes", None)]
+    assert metrics.attribute(occs[1], looks, [], 1.0, reports=(10.5,), cooldown=30.0) == "cooldown_absorbed"
+    assert metrics.attribute(occs[1], looks, [], 1.0, reports=(10.5,), cooldown=5.0) == "decide_suppressed"
+    assert metrics.reachable(occs, 30.0, 1.0) == 2 and metrics.reachable(occs, 0.0, 1.0) == 3
 
 
 # --------------------------------------------------------------------------- the spend cap
@@ -96,7 +130,16 @@ def test_cost_cap_aborts_cleanly_and_is_never_exceeded(clips):
     result = asyncio.run(arms.run_chunk(clips[0], guard, timelines, 2.0))
     assert guard.tripped.is_set() and guard.refused >= 1 and result.aborted
     assert 0 < guard.spent <= 0.0008 and guard.held == 0
-    assert any(lk.failed == "budget" for lk in result.looks)
+    assert result.seconds < clips[0].duration
+
+
+def test_cost_cap_stops_the_percept_arm(clips, tmp_path):
+    guard, timelines = oracle_guard(clips, cap=0.0008, latency=0.05)
+    guard.inner.realtime = True
+    result = asyncio.run(arms.run_percept(clips[0], guard, timelines, tmp_path / "t.jsonl", speed=4.0,
+                                          max_requests_per_min=600))
+    assert guard.tripped.is_set() and result.aborted and 0 < guard.spent <= 0.0008
+    assert result.seconds < clips[0].duration
 
 
 def test_a_cap_needs_a_price(clips):
@@ -108,13 +151,37 @@ def test_a_cap_needs_a_price(clips):
 # --------------------------------------------------------------------------- arms and the oracle
 
 
-def test_oracle_answers_onsets_from_ground_truth(clips):
-    oracle = judging.OracleJudge(clips, judging.Timelines(), fn_rate=0.0, fp_rate=0.0)
-    case = clips[0]
+def _request(case, timelines, frames, purpose="detect"):
+    item = JudgeItem(Condition("red_square_appears", "a red square appears", kind="event"))
+    return JudgeRequest("r", case.case_id, 0, (item,), tuple(f[1] for f in frames),
+                        (frames[0][0], frames[-1][0]), purpose)
+
+
+def test_oracle_answers_from_the_sampled_frames_not_the_interval(clips):
+    case, timelines = clips[0], judging.Timelines()
+    timelines.set(case.case_id, 0.0)
     red = next(o for o in case.occurrences if o.label == "red square appears")
-    assert oracle.truth(case.case_id, red.label, red.start - 1, red.start + 1)
-    assert not oracle.truth(case.case_id, red.label, red.start + 2.5, red.start + 3)
-    assert not oracle.truth(case.case_id, "green square appears", 0, case.duration)
+    images = [np.full((4, 4, 3), i, np.uint8) for i in range(3)]
+    before, after = red.start - 3.0, red.start + 4.0          # an interval spanning the onset ...
+    for t, image in zip((before, after), images):
+        timelines.note(case.case_id, t, image)
+    oracle = judging.OracleJudge(clips, timelines, fn_rate=0.0, fp_rate=0.0)
+    sparse = _request(case, timelines, [(before, images[0]), (after, images[1])])
+    assert oracle._answer(sparse)["red_square_appears"][0] == "no"     # ... but no frame shows it
+    timelines.note(case.case_id, red.start + 0.4, images[2])
+    dense = _request(case, timelines, [(before, images[0]), (red.start + 0.4, images[2]), (after, images[1])])
+    assert oracle._answer(dense)["red_square_appears"][0] == "yes"
+
+
+def test_oracle_noise_depends_on_the_evidence_only(clips):
+    case, timelines = clips[0], judging.Timelines()
+    timelines.set(case.case_id, 0.0)
+    image = np.zeros((4, 4, 3), np.uint8)
+    timelines.note(case.case_id, 1.0, image)
+    oracle = judging.OracleJudge(clips, timelines, fn_rate=0.5, fp_rate=0.5)
+    answers = {oracle._answer(_request(case, timelines, [(1.0, image)], p))["red_square_appears"]
+               for p in ("detect", "verify")}
+    assert len(answers) == 1
 
 
 def test_baseline_arms_see_identical_evidence(clips):
@@ -124,6 +191,7 @@ def test_baseline_arms_see_identical_evidence(clips):
     digests = {r.digest for r in results}
     assert len(digests) == 1 and not next(iter(digests)).startswith("0:")
     assert results[1].unsupported == [] and results[0].preds      # motion expresses every synthetic condition
+    assert all(r.seconds == case.duration and r.cooldown_s == arms.COOLDOWN_S for r in results)
 
 
 async def _baselines(case, guard, timelines):
@@ -132,22 +200,53 @@ async def _baselines(case, guard, timelines):
             await arms.run_detector(case, guard, timelines, then_vlm=True)]
 
 
+def test_long_sparse_negatives_never_appear_in_distractors():
+    vocab = [f"l{i}" for i in range(12)]
+    pool = [VideoCase(f"c{i}", "t", (Segment(f"c{i}.mp4", 0, 20),), (), (Occurrence(vocab[i], 2, 4),))
+            for i in range(12)]
+    for case in datasets.long_sparse(pool, occupancies=(0.1, 0.3), length_s=200, negatives=6, seed=3):
+        shown = {o.label for s in case.segments for c in pool if c.segments[0].path == s.path and not s.hold
+                 for o in c.occurrences}
+        present = {o.label for o in case.occurrences}
+        negatives = {c.label for c in case.conditions} - present
+        assert negatives and not negatives & shown
+
+
+def test_a_failing_case_is_recorded_not_fatal(clips, tmp_path, monkeypatch):
+    async def boom(*a, **k):
+        raise RuntimeError("decoder exploded")
+    monkeypatch.setattr(arms, "run_chunk", boom)
+    out = tmp_path / "run"
+    assert run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "chunk5,detector_debounce",
+                     "--out", str(out)]) == 0
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["skipped"][0]["arm"] == "chunk5" and "decoder exploded" in manifest["skipped"][0]["reason"]
+    assert not manifest["publishable"] and "some cases were skipped" in manifest["not_publishable"]
+
+
 def test_dry_run_end_to_end(tmp_path):
     out = tmp_path / "run"
-    code = run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "percept,chunk5,detector_then_vlm",
-                     "--speed", "3", "--oracle-latency", "0.2", "--out", str(out), "--max-cost-usd", "1"])
+    code = run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "percept,percept-matched,chunk5",
+                     "--speed", "3", "--oracle-latency", "0.2", "--out", str(out), "--max-cost-usd", "1",
+                     "--percept-rearm", "30"])
     assert code == 0
     manifest = json.loads((out / "manifest.json").read_text())
-    assert manifest["arms"] == ["percept", "chunk5", "detector_then_vlm"] and not manifest["aborted"]
+    assert manifest["arms"] == ["percept", "percept-matched", "chunk5"] and not manifest["aborted"]
     assert all(len(set(d.values())) == 1 for d in manifest["frame_digests"].values())
     assert manifest["cases"][0]["media"] and manifest["percept"]["package_sha256"]
+    config = manifest["monitor_config"]
+    assert config["percept"]["max_requests_per_min"] == 6 and config["percept-matched"]["max_requests_per_min"] == 12
+    assert config["percept"]["attempts_reserved_per_request"] == 2 and config["percept"]["condition"]["rearm_s"] == 30
+    assert manifest["harness"]["clip_frames"] == arms.CLIP_FRAMES and not manifest["publishable"]
     table = json.loads((out / "metrics.json").read_text())
     assert table["percept"]["requests"] > 0 and table["percept"]["recall"] is not None
+    assert table["percept"]["frames_capped"] == 0
     text = (out / "report.md").read_text()
-    for heading in ("Dry run", "## Every arm", "## Misses by stage", "## Footprint", "## Where Percept loses",
-                    "Identical evidence: yes", "only 1.0x results are publishable"):
+    for heading in ("Dry run", "Publishable: no", "## Every arm", "recall ceiling", "## Misses by stage",
+                    "## Footprint", "## Where `percept` loses", "## Where `percept-matched` loses",
+                    "Identical evidence: yes", "only 1.0x results are publishable", "2 reserved per request"):
         assert heading in text
-    assert (out / "traces" / "synthetic-0.jsonl").exists()
+    assert (out / "traces" / "percept" / "synthetic-0.jsonl").exists()
 
 
 def test_meva_activity_lines_parse():
@@ -157,15 +256,21 @@ def test_meva_activity_lines_parse():
         [Occurrence("person_picks_up_object", 91.5, 94.0)]
 
 
-def test_e2_config_is_a_scaffold():
+def test_configs():
+    e1 = json.loads((run.Path(run.__file__).parent / "configs" / "e1.json").read_text())
+    assert e1["dataset"] == "meva" and e1["cooldown"] == e1["percept_rearm"] == 30.0
+    assert "percept-matched" in e1["arms"]
     with pytest.raises(SystemExit, match="scaffold"):
         run.main(["--config", str(run.Path(run.__file__).parent / "configs" / "e2.json")])
 
 
 def test_dry_run_reports_an_abort(tmp_path):
     out = tmp_path / "run"
-    code = run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "chunk5,chunk10", "--out", str(out),
-                     "--max-cost-usd", "0.0005"])
+    code = run.main(["--dataset", "synthetic", "--limit", "2", "--arms", "chunk5,chunk10", "--out", str(out),
+                     "--max-cost-usd", "0.0005", "--parallel", "1"])
     assert code == 3
     assert "Aborted: spend cap reached" in (out / "report.md").read_text()
-    assert json.loads((out / "manifest.json").read_text())["spent_usd"] <= 0.0005
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["spent_usd"] <= 0.0005 and manifest["skipped"]
+    table = json.loads((out / "metrics.json").read_text())
+    assert table["chunk10"]["cases"] == 0 and table["chunk10"]["source_hours"] == 0
