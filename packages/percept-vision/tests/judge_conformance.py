@@ -13,6 +13,10 @@ last step repeating once the list runs out. Each step is ``(kind, payload)``:
 A real adapter maps these onto recorded responses of its own wire format; the reply texts
 are the canonical model outputs below.
 
+A composite judge (a cascade) exposes its member judges as ``members``. Observations and usage
+may then carry a member's name instead of its own, but a failure the composite makes up itself
+(here: a condition routed to a member it doesn't have) carries the composite's own name.
+
 A judge may expose ``sent``: a list of ``(prompt, images, max_output_tokens, request)`` for
 every provider request it made, as ``FakeJudge`` does. When it does, what went out is checked
 too: the prompt is ``build_prompt`` of the request sent, the images are JPEGs in the request's
@@ -122,6 +126,22 @@ def check_sent(scenario: Scenario, judge: Judge, request: JudgeRequest, sent: li
         assert max_output_tokens == request.max_output_tokens, f"{where}: max_output_tokens is the request's"
 
 
+def judge_names(judge: Judge) -> set[str]:
+    """The names a judge's observations and usage may carry: its own, and its members'."""
+    return {judge.name} | {member.name for member in getattr(judge, "members", ())}
+
+
+def check_composite(judge: Judge) -> None:
+    """A condition routed to a member the composite doesn't have fails under its own name."""
+    where = f"[{judge.name}/unknown_route]"
+    request = replace(make_request(SCENARIOS[0]), purpose="detect", items=(
+        JudgeItem(Condition("nowhere", "Routed to no member", judge="no-such-member")),))
+    result, _ = asyncio.run(_run(judge, request))
+    (ob,) = result.observations
+    assert ob.failure == "unavailable", f"{where} failure {ob.failure!r}"
+    assert ob.judge == judge.name, f"{where} a failure the composite made up carries its own name"
+
+
 def check_result(scenario: Scenario, judge: Judge, request: JudgeRequest, result: JudgeResult) -> None:
     where = f"[{judge.name}/{scenario.name}]"
     allowed = _request_ids(request)
@@ -140,10 +160,11 @@ def check_result(scenario: Scenario, judge: Judge, request: JudgeRequest, result
         assert (ob.stream_id, ob.stream_epoch) == ("cam-1", 4), where
         assert (ob.subject, ob.occurrence_gen) == (item.subject, item.occurrence_gen), where
         assert ob.condition_version == item.condition.version, where
-        assert (ob.evidence_t, ob.purpose, ob.judge) == (request.evidence_t, "verify", judge.name), where
+        assert (ob.evidence_t, ob.purpose) == (request.evidence_t, "verify"), where
+        assert ob.judge in judge_names(judge), f"{where} {ob.condition_id}: judge {ob.judge!r}"
     assert result.usage, f"{where} usage is reported for every request sent"
     for ru in result.usage:
-        assert ru.request_id in allowed and ru.judge == judge.name, where
+        assert ru.request_id in allowed and ru.judge in judge_names(judge), where
         assert ru.usage.attempts >= 1, where
         if judge.price is not None:
             reserve = worst_case_cost(allowed[ru.request_id], judge.price, retries=ru.usage.attempts - 1)
@@ -178,3 +199,5 @@ def assert_conformant(make_judge) -> None:
         check_result(scenario, judge, request, result)
         if sent is not None:
             check_sent(scenario, judge, request, sent[already:])
+        if getattr(judge, "members", None) and scenario is SCENARIOS[0]:
+            check_composite(judge)

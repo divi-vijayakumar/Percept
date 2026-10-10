@@ -9,10 +9,10 @@ importable; install the matching extra to use one. ``cascade`` chains judges, ch
 """
 
 from percept.judges import base, fake, policy
-from percept.judges.cascade import cascade
-from percept.judges.claude import claude
+from percept.judges._cascade import cascade
+from percept.judges._claude import claude
 from percept.judges.fake import FakeJudge
-from percept.judges.gemini import gemini
-from percept.judges.openai_compat import openai_compatible
+from percept.judges._gemini import gemini
+from percept.judges._openai_compat import openai_compatible
 
 __all__ = ["FakeJudge", "base", "cascade", "claude", "fake", "gemini", "openai_compatible", "policy"]

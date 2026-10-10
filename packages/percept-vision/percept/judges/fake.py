@@ -24,7 +24,7 @@ from typing import Any, Callable, Mapping, Union
 
 from percept.contracts import JudgeRequest, JudgeResult, PriceModel
 from percept.judges import policy
-from percept.judges.base import Prompt, RawReply
+from percept.judges.base import Prompt, RawReply, attempts_for
 
 ScriptReply = Union[str, BaseException, Mapping[str, tuple]]
 Script = Callable[[JudgeRequest], ScriptReply]
@@ -64,6 +64,7 @@ class FakeJudge:
         self.price = price
         self.latency_s = latency_s
         self.retries = retries
+        self.max_attempts = attempts_for(retries)
         self.clock = clock or VirtualClock()
         # Every provider request, retries included: (prompt, jpeg images, max_output_tokens, request).
         self.sent: list[tuple[Prompt, tuple[bytes, ...], int, JudgeRequest]] = []

@@ -5,12 +5,13 @@ import pytest
 
 from percept.contracts import Condition, Judge, JudgeItem, JudgeRequest, JudgeResult, PriceModel
 from percept.judges import FakeJudge, cascade
-from percept.judges.base import RetryableError, worst_case_cost
+from percept.judges.base import RetryableError, max_attempts, worst_case_cost
 from judge_conformance import assert_conformant
 from test_fake_judge import fake_for
 
-CHEAP = PriceModel(usd_per_mtok_in=0.1, usd_per_mtok_out=0.4, tokens_per_image=258)   # test values only
-STRONG = PriceModel(usd_per_mtok_in=3.0, usd_per_mtok_out=15.0, tokens_per_image=1600)
+# Synthetic prices, not any vendor's.
+CHEAP = PriceModel(usd_per_mtok_in=1.0, usd_per_mtok_out=2.0, tokens_per_image=100)
+STRONG = PriceModel(usd_per_mtok_in=2.0, usd_per_mtok_out=4.0, tokens_per_image=200)
 
 
 def make_request(*conditions, purpose="detect", deadline_s=8.0, request_id="r1"):
@@ -83,14 +84,15 @@ def test_a_pinned_condition_goes_only_to_its_judge():
     assert asked(fast) == [("b",)] and asked(strong) == [("a",)]
 
 
-def test_verification_goes_straight_to_the_strongest_judge():
+def test_verification_goes_straight_to_the_strongest_judge_and_ignores_routes():
     fast = FakeJudge({"a": ("yes", 0.9, "")}, name="fast")
-    strong = FakeJudge({"a": ("yes", 0.95, ""), "b": ("no", 0.9, "")}, name="strong")
-    conditions = (Condition("a", "cond a", kind="event"), Condition("b", "cond b", judge="strong"))
+    strong = FakeJudge({"a": ("yes", 0.95, ""), "b": ("no", 0.9, ""), "c": ("no", 0.9, "")}, name="strong")
+    conditions = (Condition("a", "cond a", kind="event"), Condition("b", "cond b", judge="fast"),
+                  Condition("c", "cond c", judge="nobody"))
     result = run(cascade(fast, strong), make_request(*conditions, purpose="verify"))
-    assert [o.judge for o in result.observations] == ["strong", "strong"]
+    assert [(o.judge, o.failure) for o in result.observations] == [("strong", None)] * 3
     assert all(o.purpose == "verify" for o in result.observations)
-    assert fast.sent == [] and asked(strong) == [("a", "b")]
+    assert fast.sent == [] and asked(strong) == [("a", "b", "c")]
 
 
 def test_hops_share_the_deadline():
@@ -110,6 +112,25 @@ def test_hops_share_the_deadline():
     assert strong.sent == []   # no time left for the second hop
     _, _, _, sent = fast.sent[0]
     assert sent.deadline_s == pytest.approx(0.1)
+
+
+def test_a_condition_the_deadline_left_unasked_fails_under_the_cascades_name():
+    clock_t = [0.0]
+    strong = FakeJudge({"b": ("yes", 0.9, "")}, name="strong")
+
+    class Slow:
+        name, can_batch, price = "slow", True, None
+
+        async def judge(self, request):
+            clock_t[0] += 1.0
+            return JudgeResult((), ())
+
+    judge = cascade(Slow(), strong)
+    judge._clock = lambda: clock_t[0]
+    conditions = (Condition("a", "cond a", judge="slow"), Condition("b", "cond b", judge="strong"))
+    a, b = run(judge, make_request(*conditions, deadline_s=0.5)).observations
+    assert (a.failure, a.judge) == ("missing", "slow")
+    assert (b.failure, b.judge) == ("timeout", judge.name)
 
 
 def test_one_observation_per_item_even_when_a_member_misbehaves():
@@ -135,7 +156,11 @@ def test_price_batching_and_name():
     fast = FakeJudge({}, name="fast", price=CHEAP)
     strong = FakeJudge({}, name="strong", price=STRONG, can_batch=False)
     both = cascade(fast, strong)
-    assert isinstance(both, Judge) and both.name == "cascade(fast>strong)" and both.hops == 2
+    assert isinstance(both, Judge) and both.name == "cascade(fast>strong)"
+    assert both.members == (fast, strong)
+    assert max_attempts(both) == both.max_attempts == 4   # two members, one retry each
+    assert max_attempts(cascade(fast, FakeJudge({}, name="x", retries=2), strong)) == 7
+    assert max_attempts(object()) == 2                     # no attribute: one call, one retry
     assert both.can_batch is False and cascade(fast).can_batch is True
     assert cascade(fast, FakeJudge({}, name="free")).price is None
     request = make_request()
@@ -161,6 +186,5 @@ def test_bad_construction(bad):
 
 @pytest.mark.parametrize("price", [None, CHEAP])
 def test_a_single_member_cascade_is_conformant(price):
-    # The suite requires observations and usage to carry the judge's own name, so the cascade
-    # takes its member's name here.
-    assert_conformant(lambda scenario: cascade(fake_for(scenario, price=price), name="fake"))
+    assert_conformant(lambda scenario: cascade(fake_for(scenario, price=price)))
+

@@ -8,12 +8,14 @@ next member, together with every other unsettled condition of the request. When 
 settles a condition, the last real answer stands (a weak answer beats a later failure); with no
 real answer at all, the last failure stands.
 
-* ``Condition.judge`` names a member: the condition is asked of that member only, whatever
-  the purpose. An unknown name fails the condition as ``unavailable``.
-* Verification requests (``purpose="verify"``) go straight to the last member, the strongest.
+* Detection: ``Condition.judge`` names a member, and the condition is asked of that member
+  only. An unknown name fails the condition as ``unavailable``.
+* Verification requests (``purpose="verify"``) go straight to the last member, the strongest,
+  for every condition; routes are not applied.
 * All hops share the request's deadline. Every hop's ``RequestUsage`` is returned, so each
   attempt is visible to the budget. Hops reuse the request id; ``RequestUsage.judge`` and
-  ``Observation.judge`` name the member that made the request.
+  ``Observation.judge`` name the member that made the request. Failures the cascade makes up
+  itself (an unknown route, a condition the deadline left unasked) carry the cascade's name.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from dataclasses import replace
 from typing import Callable, Sequence
 
 from percept.contracts import Failure, Judge, JudgeItem, JudgeRequest, JudgeResult, Observation, PriceModel, RequestUsage
-from percept.judges.base import failed_observations
+from percept.judges.base import failed_observations, max_attempts
 
 
 def _combined_price(judges: Sequence[Judge]) -> PriceModel | None:
@@ -53,12 +55,12 @@ class Cascade:
             raise ValueError("give one threshold per judge (None: the condition's min_confidence)")
         if any(t is not None and not 0.0 <= t <= 1.0 for t in thresholds):
             raise ValueError("thresholds are in [0, 1]")
-        self.judges = tuple(judges)
+        self.members = tuple(judges)
         self.thresholds = thresholds
         self.name = name or "cascade(" + ">".join(names) + ")"
         self.can_batch = all(j.can_batch for j in judges)
         self.price = _combined_price(judges)
-        self.hops = len(judges)  # the most members one request can be sent to
+        self.max_attempts = sum(max_attempts(j) for j in judges)  # every member, every retry
         self._index = {n: k for k, n in enumerate(names)}
         self._clock = clock
 
@@ -75,13 +77,15 @@ class Cascade:
 
     async def judge(self, request: JudgeRequest) -> JudgeResult:
         start = self._clock()
-        last = len(self.judges) - 1
+        last = len(self.members) - 1
         standing: dict[str, Observation] = {}
         route: dict[str, tuple[int, bool]] = {}   # condition id -> (first member, pinned)
         for item in request.items:
             cid, pin = item.condition.id, item.condition.judge
-            if pin is None:
-                route[cid] = (last if request.purpose == "verify" else 0, False)
+            if request.purpose == "verify":
+                route[cid] = (last, False)
+            elif pin is None:
+                route[cid] = (0, False)
             elif pin in self._index:
                 route[cid] = (self._index[pin], True)
             else:
@@ -89,7 +93,7 @@ class Cascade:
         open_ids = set(route)
         usage: list[RequestUsage] = []
 
-        for k, member in enumerate(self.judges):
+        for k, member in enumerate(self.members):
             items = tuple(i for i in request.items if i.condition.id in open_ids
                           and (route[i.condition.id][0] == k if route[i.condition.id][1]
                                else route[i.condition.id][0] <= k))
@@ -127,7 +131,7 @@ def cascade(*judges: Judge, thresholds: Sequence[float | None] | None = None, na
     ``thresholds`` gives, per judge, the confidence at or above which its yes/no stands; None
     (the default, or an entry) uses each condition's ``min_confidence``. The last judge's answer
     always stands. ``name`` defaults to ``"cascade(<member>><member>...)"``. ``price`` is set only
-    when every member has one, and then covers asking every member; ``hops`` is the number of
-    members, the most member judges one request is passed to.
+    when every member has one, and then covers asking every member; ``max_attempts`` is the sum
+    of the members' (see ``base.max_attempts``).
     """
     return Cascade(judges, thresholds, name)

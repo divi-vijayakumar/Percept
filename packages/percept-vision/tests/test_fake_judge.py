@@ -10,7 +10,7 @@ from percept.contracts import Condition, Judge, JudgeItem, JudgeRequest, JudgeRe
 from percept.judges import FakeJudge, policy
 from percept.judges.base import Prompt, RefusalError, RetryableError, attribute_usage, worst_case_cost
 
-PRICE = PriceModel(usd_per_mtok_in=0.3, usd_per_mtok_out=2.5, tokens_per_image=258)
+PRICE = PriceModel(usd_per_mtok_in=1.0, usd_per_mtok_out=2.0, tokens_per_image=100)  # synthetic, not a vendor price
 
 
 def fake_for(scenario, *, can_batch=True, price=None):

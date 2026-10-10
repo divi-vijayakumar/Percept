@@ -36,10 +36,11 @@ class GeminiJudge(Adapter):
     the conditions; JSON output constrained to the requested ids."""
 
     def __init__(self, model: str, *, name: str, price: PriceModel | None, can_batch: bool, client: Any,
-                 structured_output: bool) -> None:
+                 structured_output: bool, thinking_budget: int | None) -> None:
         super().__init__(name, price=price, can_batch=can_batch, client=client)
         self.model = model
         self.structured_output = structured_output
+        self.thinking_budget = thinking_budget
 
     def build(self, prompt: Prompt, images: tuple[bytes, ...], max_output_tokens: int,
               request: JudgeRequest) -> dict:
@@ -50,6 +51,8 @@ class GeminiJudge(Adapter):
                                   "response_mime_type": "application/json"}
         if self.structured_output:
             config["response_json_schema"] = reply_schema(request, closed=False)
+        if self.thinking_budget is not None:
+            config["thinking_config"] = {"thinking_budget": self.thinking_budget}
         return {"model": self.model, "contents": [{"role": "user", "parts": parts}], "config": config}
 
     async def _request(self, prompt: Prompt, images: tuple[bytes, ...], max_output_tokens: int,
@@ -71,24 +74,35 @@ class GeminiJudge(Adapter):
             raise RefusalError(f"finish reason {finish}", tokens_in, tokens_out)
         parts = getattr(getattr(candidates[0], "content", None), "parts", None) or []
         text = "".join(p.text for p in parts if getattr(p, "text", None) and not getattr(p, "thought", False))
-        return RawReply(text, tokens_in, tokens_out)
+        return RawReply(text, tokens_in, tokens_out, truncated=finish == "MAX_TOKENS")
 
 
 def gemini(model: str, *, api_key: str | None = None, price: PriceModel | None = None, can_batch: bool = True,
-           client: Any = None, name: str | None = None, structured_output: bool = True) -> GeminiJudge:
+           client: Any = None, name: str | None = None, structured_output: bool = True,
+           thinking_budget: int | None = 0) -> GeminiJudge:
     """A Gemini judge for ``model``.
 
     ``api_key`` defaults to ``GEMINI_API_KEY``, then ``GOOGLE_API_KEY``. ``client`` replaces the SDK
     client (it needs ``client.aio.models.generate_content``). ``name`` (default: the model id) is
     the judge's name in observations and the route name a ``Condition.judge`` pins to.
     ``structured_output=False`` drops the response schema for models that reject one; JSON is
-    still requested. Retries are the policy's: the SDK client is built without its own.
+    still requested.
+
+    ``thinking_budget`` caps the model's thinking tokens, which count against the request's
+    ``max_output_tokens``: a model that thinks freely can spend the whole limit and return no
+    answer. The default 0 turns thinking off where the model allows it. Some models cannot
+    turn it off and reject 0 (they need at least 128, or a thinking level instead); pass a
+    budget they accept and raise ``max_output_tokens`` to match, or None to send no setting.
+
+    Retries are the policy's: the SDK client gets its own ``httpx`` client, which keeps the SDK
+    off its ``aiohttp`` transport and that transport's internal, uncounted reconnect retry.
     """
     if client is None:
         genai = require("google.genai", "gemini")
         key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not key:
             raise ValueError("gemini judge needs an API key: pass api_key= or set GEMINI_API_KEY")
-        client = genai.Client(api_key=key)
+        httpx = require("httpx", "gemini")
+        client = genai.Client(api_key=key, http_options={"httpx_async_client": httpx.AsyncClient()})
     return GeminiJudge(model, name=name or model, price=price, can_batch=can_batch, client=client,
-                       structured_output=structured_output)
+                       structured_output=structured_output, thinking_budget=thinking_budget)

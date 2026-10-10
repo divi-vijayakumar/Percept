@@ -20,11 +20,12 @@ from PIL import Image
 from percept.contracts import Condition, JudgeItem, JudgeRequest, PriceModel
 from percept.judges import claude, gemini, openai_compatible
 from percept.judges.adapter import map_error, reply_schema, require, retry_after
-from percept.judges.base import RetryableError, build_prompt
+from percept.judges import policy
+from percept.judges.base import RetryableError, build_prompt, max_attempts
 from judge_conformance import assert_conformant
 
-PRICE = PriceModel(usd_per_mtok_in=1.0, usd_per_mtok_out=2.0, tokens_per_image=258)  # test values only
-TOKENS_IN, TOKENS_OUT = 3 * 258 + 100, 80
+PRICE = PriceModel(usd_per_mtok_in=1.0, usd_per_mtok_out=2.0, tokens_per_image=100)  # synthetic, not a vendor price
+TOKENS_IN, TOKENS_OUT = 3 * 100 + 100, 80
 
 
 class StatusError(Exception):
@@ -194,6 +195,14 @@ def test_gemini_request():
     assert config["response_mime_type"] == "application/json"
     assert config["response_json_schema"] == reply_schema(req, closed=False)
     assert config["response_json_schema"]["properties"]["results"]["items"]["properties"]["id"]["enum"] == ["red", "door"]
+    assert config["thinking_config"] == {"thinking_budget": 0}   # thinking off by default
+
+
+@pytest.mark.parametrize("budget,expected", [(None, None), (128, {"thinking_budget": 128})])
+def test_gemini_thinking_budget(budget, expected):
+    judge, provider = build(GeminiWire, [("reply", OK)], thinking_budget=budget)
+    run(judge, request())
+    assert provider.calls[0]["config"].get("thinking_config") == expected
 
 
 def test_claude_request():
@@ -216,10 +225,19 @@ def test_claude_request():
     assert fmt["schema"]["additionalProperties"] is False
 
 
-@pytest.mark.parametrize("base_url,param", [(None, "max_completion_tokens"), ("http://localhost:8000/v1", "max_tokens")])
-def test_openai_request(base_url, param):
+@pytest.mark.parametrize("base_url,token_param,param", [
+    (None, "auto", "max_completion_tokens"),
+    ("https://api.openai.com/v1", "auto", "max_completion_tokens"),
+    ("https://my-team.openai.azure.com/openai/v1", "auto", "max_completion_tokens"),
+    ("https://my-team.cognitiveservices.azure.com/openai/v1", "auto", "max_completion_tokens"),
+    ("http://localhost:8000/v1", "auto", "max_tokens"),
+    ("http://127.0.0.1:11434/v1", "auto", "max_tokens"),
+    ("http://localhost:8000/v1", "max_completion_tokens", "max_completion_tokens"),
+    (None, "max_tokens", "max_tokens"),
+])
+def test_openai_request(base_url, token_param, param):
     provider = Provider(OpenAIWire, [("reply", OK)])
-    judge = openai_compatible("m", base_url=base_url, client=OpenAIWire.client(provider))
+    judge = openai_compatible("m", base_url=base_url, client=OpenAIWire.client(provider), token_param=token_param)
     req = request()
     assert [o.answer for o in run(judge, req).observations] == ["yes", "no"]
     call = provider.calls[0]
@@ -254,6 +272,12 @@ def test_name_defaults_to_the_model_and_sent_is_off_by_default(wire):
     run(judge, request())
     assert judge.sent is None
     assert wire.make(client=object(), name="fast").name == "fast"
+    assert max_attempts(judge) == judge.max_attempts == 2
+
+
+def test_openai_rejects_an_unknown_token_param():
+    with pytest.raises(ValueError):
+        openai_compatible("m", client=object(), token_param="max_output_tokens")
 
 
 # --------------------------------------------------------------------------- replies and refusals
@@ -286,8 +310,6 @@ def test_refusals_fail_as_refused_and_keep_their_usage(wire, response):
 @pytest.mark.parametrize("wire,response", [
     (GeminiWire, NS(usage_metadata=NS(prompt_token_count=50, candidates_token_count=None), prompt_feedback=None,
                     candidates=[])),
-    (GeminiWire, GeminiWire.reply('{"results": [', finish="MAX_TOKENS")),
-    (ClaudeWire, ClaudeWire.reply('{"results": [', stop="max_tokens")),
     (OpenAIWire, NS(choices=[], usage=NS(prompt_tokens=50, completion_tokens=0))),
     (OpenAIWire, OpenAIWire.reply("not json at all")),
 ])
@@ -295,6 +317,19 @@ def test_empty_or_truncated_replies_are_malformed_with_usage(wire, response):
     result = outcome(wire, response)
     assert {o.failure for o in result.observations} == {"malformed"}
     assert result.usage[0].usage.tokens_in > 0
+
+
+@pytest.mark.parametrize("wire,response", [
+    (GeminiWire, GeminiWire.reply("", finish="MAX_TOKENS")),          # thinking spent the limit
+    (GeminiWire, GeminiWire.reply('{"results": [', finish="MAX_TOKENS")),
+    (ClaudeWire, ClaudeWire.reply('{"results": [', stop="max_tokens")),
+    (OpenAIWire, OpenAIWire.reply('{"results": [', finish="length")),
+    (OpenAIWire, OpenAIWire.reply(OK, finish="length")),               # parseable, still cut off
+])
+def test_truncated_replies_say_so(wire, response):
+    result = outcome(wire, response)
+    assert {(o.failure, o.reason) for o in result.observations} == {("malformed", policy.TRUNCATED)}
+    assert result.usage[0].usage.tokens_out > 0
 
 
 def test_gemini_skips_thought_parts():
@@ -460,6 +495,9 @@ def test_real_clients_are_built_without_sdk_retries(monkeypatch):
     assert claude("m", api_key="test").client.max_retries == 0
     local = openai_compatible("m", base_url="http://localhost:11434/v1")
     assert local.client.max_retries == 0 and local.token_param == "max_tokens"
+    import httpx
+    pinned = gemini("m", api_key="test").client
+    assert isinstance(pinned._api_client._async_httpx_client, httpx.AsyncClient)  # not aiohttp
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):

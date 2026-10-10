@@ -50,6 +50,7 @@ class RawReply:
     text: str
     tokens_in: int = 0
     tokens_out: int = 0
+    truncated: bool = False  # the provider stopped at max_output_tokens
 
 
 class RetryableError(Exception):
@@ -269,6 +270,18 @@ def worst_case_cost(request: JudgeRequest, price: PriceModel, *, retries: int = 
 def attempts_for(retries: int) -> int:
     """The most provider requests one ``policy.call`` with ``retries`` can make."""
     return retries + 1
+
+
+def max_attempts(judge: object) -> int:
+    """The most provider requests one ``judge.judge(request)`` call may make, retries and cascade
+    hops included, for a request the judge sends whole (a non-batching judge makes this many
+    per item).
+
+    Read from the judge's optional ``max_attempts`` attribute; a judge without one is assumed
+    to make one call with the policy's default single retry.
+    """
+    value = getattr(judge, "max_attempts", None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else attempts_for(1)
 
 
 def attribute_usage(result: JudgeResult) -> tuple[Usage, ...]:

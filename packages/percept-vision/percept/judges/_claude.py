@@ -53,7 +53,8 @@ class ClaudeJudge(Adapter):
             raise RefusalError("stop reason refusal", tokens_in, tokens_out)
         blocks = getattr(response, "content", None) or []
         text = "".join(b.text for b in blocks if getattr(b, "type", None) == "text" and getattr(b, "text", None))
-        return RawReply(text, tokens_in, tokens_out)
+        truncated = getattr(response, "stop_reason", None) == "max_tokens"
+        return RawReply(text, tokens_in, tokens_out, truncated=truncated)
 
 
 def claude(model: str, *, api_key: str | None = None, price: PriceModel | None = None, can_batch: bool = True,

@@ -13,11 +13,11 @@ from typing import Any
 
 from percept.contracts import ANSWERS, JudgeRequest, JudgeResult, PriceModel
 from percept.judges import policy
-from percept.judges.base import Prompt, RawReply, RefusalError, RetryableError
+from percept.judges.base import Prompt, RawReply, RefusalError, RetryableError, attempts_for
 
 RETRYABLE_STATUS = frozenset({408, 429})          # plus every 5xx (529 is "overloaded")
 CONNECTION_ERRORS = frozenset({"APIConnectionError", "TransportError", "NetworkError",
-                               "RemoteProtocolError", "ClientConnectionError"})
+                               "RemoteProtocolError", "ClientConnectionError", "ClientPayloadError"})
 
 
 def require(module: str, extra: str) -> ModuleType:
@@ -129,6 +129,8 @@ class Adapter:
     """
 
     sent: list | None = None
+    retries = 1                          # passed to ``policy.call``
+    max_attempts = attempts_for(retries)  # see ``base.max_attempts``
 
     def __init__(self, name: str, *, price: PriceModel | None, can_batch: bool, client: Any) -> None:
         self.name = name
@@ -138,7 +140,7 @@ class Adapter:
 
     async def judge(self, request: JudgeRequest) -> JudgeResult:
         return await policy.call(self._send, request, judge_name=self.name, price=self.price,
-                                 batch=self.can_batch)
+                                 retries=self.retries, batch=self.can_batch)
 
     async def _send(self, prompt: Prompt, images: tuple[bytes, ...], max_output_tokens: int,
                     request: JudgeRequest) -> RawReply:

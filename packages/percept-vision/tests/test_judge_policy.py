@@ -13,7 +13,7 @@ from percept.judges.base import RawReply, RefusalError, RetryableError, attribut
 from percept.judges.encode import to_jpeg
 from percept.judges.fake import VirtualClock
 
-PRICE = PriceModel(usd_per_mtok_in=1.0, usd_per_mtok_out=4.0, tokens_per_image=100)
+PRICE = PriceModel(usd_per_mtok_in=1.0, usd_per_mtok_out=4.0, tokens_per_image=100)  # synthetic
 OK = json.dumps({"results": [{"id": "a", "answer": "yes", "confidence": 0.9, "reason": "r"},
                              {"id": "b", "answer": "no", "confidence": 0.8, "reason": "r"}]})
 
@@ -119,6 +119,13 @@ def test_refusal():
     result = run(Provider(RefusalError("safety")))
     assert kinds(result) == ["refused"] * 2 and result.usage[0].failure == "refused"
     assert "safety" in result.observations[0].reason
+
+
+def test_a_truncated_reply_is_malformed_and_keeps_its_usage():
+    result = run(Provider(RawReply(OK, 900, 400, truncated=True)), price=PRICE)
+    assert kinds(result) == ["malformed"] * 2 and result.usage[0].failure == "malformed"
+    assert all(o.reason == policy.TRUNCATED for o in result.observations)
+    assert (result.usage[0].usage.tokens_in, result.usage[0].usage.tokens_out) == (900, 400)
 
 
 def test_a_billed_refusal_keeps_its_usage():

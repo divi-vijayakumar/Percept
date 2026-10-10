@@ -28,7 +28,7 @@ from percept.judges.base import (
     worst_case_tokens,
 )
 
-PRICE = PriceModel(usd_per_mtok_in=0.3, usd_per_mtok_out=2.5, tokens_per_image=258)
+PRICE = PriceModel(usd_per_mtok_in=1.0, usd_per_mtok_out=2.0, tokens_per_image=100)  # synthetic, not a vendor price
 
 
 def make_request(n_images=2, purpose="detect"):
@@ -198,7 +198,7 @@ def test_extract_json_skips_objects_without_results():
 
 
 def test_cost_of():
-    assert cost_of(PRICE, 1_000_000, 1_000_000) == pytest.approx(2.8)
+    assert cost_of(PRICE, 1_000_000, 1_000_000) == pytest.approx(3.0)
     assert cost_of(PRICE, 0, 0) == 0
 
 

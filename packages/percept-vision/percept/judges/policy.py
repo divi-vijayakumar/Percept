@@ -40,6 +40,7 @@ from percept.judges.encode import MAX_SIDE, to_jpeg
 
 Send = Callable[[Prompt, "tuple[bytes, ...]", int, JudgeRequest], Awaitable[RawReply]]
 
+TRUNCATED = "reply truncated at max_output_tokens"
 BACKOFF_S = 0.25  # the retry waits BACKOFF_S to 2 * BACKOFF_S, unless the provider says otherwise
 
 
@@ -138,7 +139,10 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
     except Exception as exc:  # noqa: BLE001 - failures are reported, never raised
         failure, reason = "unavailable", _describe(exc)
 
-    if failure is None:
+    if failure is None and getattr(reply, "truncated", False):
+        observations = failed_observations(request, "malformed", judge_name, TRUNCATED)
+        request_failure: Failure | None = "malformed"
+    elif failure is None:
         try:
             observations = parse_reply(reply.text, request, judge_name)
         except Exception as exc:  # noqa: BLE001 - "never raises" must not depend on the parser
