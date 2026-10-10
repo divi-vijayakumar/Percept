@@ -336,4 +336,161 @@ def test_real_ffmpeg_reads_a_generated_file(tmp_path):
     assert 8 <= len(frames) <= 11
     assert all(f.image.shape == (360, 640, 3) for f in frames)
     assert [f.seq for f in frames] == list(range(len(frames)))
+    assert np.allclose(np.diff([f.t_wall for f in frames]), 0.2)  # media time, not decode speed
     assert src.link == "ended"
+    ring = PreRoll(seconds=8, fps=2)
+    frames = asyncio.run(collect(open_source("file://" + str(path), backend="ffmpeg", preroll=ring)))
+    assert len(frames) == 20 and np.allclose(np.diff([f.t_wall for f in frames]), 0.1)  # ffprobe rate
+    assert 4 <= len(ring) <= 5  # 2 s of video in half-second slots
+
+
+# --------------------------------------------------------------------------- review regressions
+
+FAKE_FFMPEG = '''#!{exe}
+import os, sys, time
+url = sys.argv[sys.argv.index("-i") + 1]
+frame = b"P6\\n4 4\\n255\\n" + bytes(48)
+sys.stdout.buffer.write(frame * int(os.environ.get("FAKE_FRAMES", "0")))
+sys.stdout.flush()
+sys.stderr.write("Connection refused while opening " + url + "\\n")
+sys.stderr.flush()
+time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
+sys.exit(int(os.environ.get("FAKE_CODE", "0")))
+'''
+
+
+@pytest.fixture
+def fake_ffmpeg(tmp_path):
+    path = tmp_path / "ffmpeg"
+    path.write_text(FAKE_FFMPEG.format(exe=sys.executable))
+    path.chmod(0o755)
+    return str(path)
+
+
+async def until_health(src, predicate, limit_s=8.0):
+    """Drive frames() until ``predicate(frames, health)`` holds, then close."""
+    frames, health = [], []
+    src.on_health = health.append
+
+    async def consume():
+        async for frame in src.frames():
+            frames.append(frame)
+
+    task = asyncio.ensure_future(consume())
+    t0 = time.monotonic()
+    while not predicate(frames, health) and time.monotonic() - t0 < limit_s and not task.done():
+        await asyncio.sleep(0.02)
+    await src.aclose()
+    await asyncio.wait_for(task, 5)
+    return frames, health
+
+
+@pytest.mark.parametrize("uri, live", [
+    ("http://cam.local/video.mjpg", True),
+    ("https://cam.local/live/stream", True),
+    ("rtsp://cam.local/stream", True),
+    ("http://media.local/clip.mp4", False),
+    ("https://media.local/a/b.MKV?sig=1", False),
+])
+def test_url_liveness_classification(uri, live, fake_ffmpeg):
+    assert open_source(uri, backend="ffmpeg", ffmpeg=fake_ffmpeg).live is live
+
+
+def test_live_override(fake_ffmpeg):
+    assert open_source("http://media.local/clip.mp4", live=True, backend="ffmpeg", ffmpeg=fake_ffmpeg).live
+    assert not open_source("http://cam.local/video.mjpg", live=False, backend="ffmpeg", ffmpeg=fake_ffmpeg).live
+
+
+def test_http_camera_outage_reconnects_instead_of_ending(fake_ffmpeg, monkeypatch):
+    monkeypatch.setenv("FAKE_FRAMES", "2")
+    src = open_source("http://cam.local/video.mjpg", backend="ffmpeg", ffmpeg=fake_ffmpeg, backoff=(0.05, 0.05))
+    frames, health = asyncio.run(until_health(src, lambda f, h: any(x.stream_epoch >= 1 for x in f)))
+    assert any(f.stream_epoch >= 1 for f in frames)
+    assert "link_down" in [h.kind for h in health]
+
+
+def test_stalled_live_stream_is_torn_down_and_retried(fake_ffmpeg, monkeypatch):
+    monkeypatch.setenv("FAKE_SLEEP", "60")  # alive, answering nothing: a playlist that never grows
+    src = open_source("https://cdn.local/live/index.m3u8", ffmpeg=fake_ffmpeg, stall_timeout=0.3,
+                      backoff=(0.05, 0.05))
+    t0 = time.monotonic()
+    _, health = asyncio.run(until_health(src, lambda f, h: len(src.delays) >= 2))
+    assert time.monotonic() - t0 < 6
+    assert health and health[0].kind == "link_down" and "stalled" in health[0].detail
+    assert len(src.delays) >= 2
+
+
+def test_stall_watchdog_aborts_a_blocked_reader():
+    aborted = []
+
+    class Hung(Reader):
+        def __init__(self):
+            self.gate = threading.Event()
+
+        def read(self):
+            self.gate.wait(30)
+            return None
+
+        def abort(self):
+            aborted.append(1)
+            self.gate.set()
+
+    src = CaptureSource("cam", Hung, live=True, stall_timeout=0.2, backoff=(0.05, 0.05))
+    _, health = asyncio.run(until_health(src, lambda f, h: bool(h)))
+    assert aborted and "stalled" in health[0].detail
+
+
+def test_credentials_never_leave_the_uri(fake_ffmpeg, monkeypatch):
+    monkeypatch.setenv("FAKE_FRAMES", "1")
+    monkeypatch.setenv("FAKE_CODE", "1")
+    uri = "rtsp://admin:s3cret@127.0.0.1:1/stream?token=t0k"
+    src = open_source(uri, backend="ffmpeg", ffmpeg=fake_ffmpeg, backoff=(0.05, 0.05))
+    assert src.stream_id == "rtsp://127.0.0.1:1/stream"
+    names = []
+    frames, health = asyncio.run(until_health(
+        src, lambda f, h: names.extend(t.name for t in threading.enumerate()) or len(h) >= 1))
+    assert frames and health and "Connection refused" in health[0].detail
+    seen = [src.stream_id, repr(src), str(src), *names, *(repr(f) for f in frames), *(repr(h) for h in health)]
+    assert not [s for s in seen if "s3cret" in s or "t0k" in s]
+    with pytest.raises(RuntimeError) as err:
+        open_source(uri, ffmpeg="no-such-ffmpeg-binary", backend="ffmpeg")
+    assert "s3cret" not in str(err.value)
+
+
+def test_backoff_and_jitter_are_validated():
+    for kwargs in (dict(jitter=1.5), dict(jitter=-0.1), dict(backoff=(-1.0, 2.0)), dict(backoff=(3.0, 2.0)),
+                   dict(backoff=(float("nan"), 2.0)), dict(stall_timeout=0)):
+        with pytest.raises(ValueError):
+            CaptureSource("cam", Reader, live=True, **kwargs)
+
+
+def test_loop_carries_t_wall_forward_and_keeps_the_ring():
+    ring = PreRoll(seconds=8, fps=2)
+    src = CaptureSource("file", lambda: ScriptedReader(20, media_fps=10.0), live=False, loop=True,
+                        preroll=ring, wall=lambda: 1_000.0)
+
+    async def run():
+        out = []
+        async for frame in src.frames():
+            out.append(frame)
+            if frame.stream_epoch == 2:
+                break
+        await src.aclose()
+        return out
+
+    frames = asyncio.run(run())
+    walls = [f.t_wall for f in frames]
+    assert np.all(np.diff(walls) > 0)
+    assert np.allclose(np.diff(walls), 0.1)
+    assert len(ring) > 8
+
+
+def test_epoch_is_none_before_the_first_frame():
+    assert CaptureSource("cam", Reader, live=True).epoch is None
+
+
+def test_read_ppm_rejects_oversized_frames():
+    with pytest.raises(ValueError):
+        read_ppm(io.BytesIO(b"P6\n4000 4000\n255\n"), max_pixels=640 * 640)
+    with pytest.raises(ValueError):
+        read_ppm(io.BytesIO(b"P6\n0 4\n255\n"))

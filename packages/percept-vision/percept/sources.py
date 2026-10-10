@@ -10,11 +10,21 @@ hook and :class:`~percept.clips.PreRoll` on the capture thread first, so the pre
 sees the stream at capture rate even when the consumer does not. Files are the exception: a
 file has nothing to lose by waiting, so a file source hands over every sampled frame.
 
-Live sources (RTSP, webcams, HLS/DASH) reconnect forever with jittered exponential backoff
-(2 s doubling to 30 s by default). ``stream_epoch`` increases by one each time a connection
-delivers its first frame, and ``seq`` restarts at 0 in every epoch. ``t`` is the process's
-monotonic clock and ``t_wall`` Unix time, both read when the frame arrives; for a file both
-advance with the video's own timeline instead, so a file reads the same at any decode speed.
+Live sources (every ``scheme://`` URL except one naming a container file such as ``.mp4``,
+and webcams) reconnect forever with jittered exponential backoff (2 s doubling to 30 s by
+default), and a live connection that delivers nothing for ``stall_timeout`` seconds is torn
+down and retried. ``stream_epoch`` increases by one each time a connection delivers its first
+frame, and ``seq`` restarts at 0 in every epoch.
+
+Clocks: ``Frame.t`` is the stream clock, monotonic within an epoch and never lower than the
+epoch before. For a live source it is ``time.monotonic()`` at arrival and ``t_wall`` is Unix
+time at arrival. For a file both follow the video's own timeline, anchored at open (and
+carried forward across ``loop`` restarts), so a file reads the same at any decode speed and
+``t`` may run ahead of ``time.monotonic()``. Compare ``frame.t`` only with another
+``frame.t``. ``Health.t_wall`` is always real wall time.
+
+Credentials never leave the URI: the default ``stream_id`` drops ``user:password@``, the
+query string and the fragment, and health details are scrubbed of credentials.
 
 Link changes are reported, never raised: ``frames()`` does not raise for a camera that is
 down. They arrive as :class:`~percept.contracts.Health` (``link_down`` once per outage,
@@ -30,14 +40,17 @@ when a source needs it. HLS and DASH are read by an ``ffmpeg`` subprocess, which
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import random
+import re
 import shutil
 import subprocess
 import threading
 import time
 from collections import deque
 from typing import Any, AsyncIterator, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 
@@ -239,7 +252,11 @@ class PushSource(_Base):
 
 
 class Reader:
-    """A blocking frame reader. ``read`` returns ``(image, media_s)`` or None at end."""
+    """A blocking frame reader. ``read`` returns ``(image, media_s)`` or None at end.
+
+    ``media_s`` is the frame's position on the video's own timeline, or None for a live
+    reader whose frames are stamped with the clock when they arrive.
+    """
 
     def read(self) -> tuple[np.ndarray, float | None] | None:
         raise NotImplementedError
@@ -256,44 +273,80 @@ class CaptureSource(_Base):
 
     ``opener`` makes a connected reader and raises when it can't. ``live=True`` reconnects
     forever; ``live=False`` (a file) ends at EOF, or restarts it in a new epoch if ``loop``.
-    ``sleep`` (default: an interruptible wait), ``clock``, ``wall`` and ``rng`` are injectable.
+
+    Clocks. ``Frame.t`` is the stream clock: monotonic within an epoch and never lower than
+    the epoch before it. For a live reader it is ``time.monotonic()`` at arrival. For a file it
+    is the media timeline anchored at open, so it can run ahead of ``time.monotonic()`` while
+    a file decodes faster than real time; compare ``frame.t`` only with another ``frame.t``.
+    ``Frame.t_wall`` follows the same rule (Unix time at arrival, or the media timeline
+    anchored at the wall clock when the file opened, carried forward across loop restarts).
+    ``Health.t_wall`` is always real wall time.
+
+    A live connection that delivers no frame for ``stall_timeout`` seconds is aborted and treated
+    as a failure (``link_down``, then backoff and reconnect). Aborting kills an ffmpeg reader
+    at once; an OpenCV read can't be interrupted, so it ends at its own read timeout, and
+    ``aclose`` may return while the thread finishes that bounded read.
+
+    ``epoch`` is None until the first frame. ``sleep`` (default: an interruptible wait),
+    ``clock``, ``wall`` and ``rng`` are injectable for tests.
     """
 
     def __init__(self, stream_id: str, opener: Callable[[], Reader], *, live: bool, loop: bool = False,
                  fps: float | None = None, max_side: int = 640, epoch: int = 0,
                  backoff: tuple[float, float] = (2.0, 30.0), jitter: float = 0.1,
+                 stall_timeout: float | None = 30.0,
                  on_health: Callable[[Health], None] | None = None,
                  on_frame: Callable[[Frame], None] | None = None, preroll: PreRoll | None = None,
                  sleep: Callable[[float], Any] | None = None, clock: Callable[[], float] = time.monotonic,
                  wall: Callable[[], float] = time.time, rng: Callable[[], float] = random.random) -> None:
         super().__init__(stream_id, max_side=max_side, on_frame=on_frame, preroll=preroll, lossless=not live)
-        if fps is not None and not fps > 0:
+        if fps is not None and not (math.isfinite(fps) and fps > 0):
             raise ValueError("fps must be positive")
-        if not 0 < backoff[0] <= backoff[1]:
-            raise ValueError("backoff is (first, max) with 0 < first <= max")
+        if not (len(backoff) == 2 and all(math.isfinite(b) for b in backoff) and 0 < backoff[0] <= backoff[1]):
+            raise ValueError("backoff is (first, max) seconds with 0 < first <= max")
+        if not (math.isfinite(jitter) and 0 <= jitter < 1):
+            raise ValueError("jitter is a fraction in [0, 1)")
+        if stall_timeout is not None and not (math.isfinite(stall_timeout) and stall_timeout > 0):
+            raise ValueError("stall_timeout must be positive or None")
         self.opener, self.live, self.loop, self.fps = opener, live, loop, fps
-        self.backoff, self.jitter = backoff, jitter
+        self.backoff, self.jitter, self.stall_timeout = backoff, jitter, stall_timeout
         self.on_health = on_health
         self.link = "connecting"
-        self.epoch = epoch - 1          # the first connection's first frame makes it `epoch`
+        self.epoch: int | None = None   # the first connection's first frame makes it the start epoch
         self.reconnects = 0             # connections after the first that delivered frames
         self.delays: deque[float] = deque(maxlen=64)  # recent backoff delays, for inspection
-        self._first_epoch = epoch
+        self._next_epoch = epoch
         self._stop_event = threading.Event()
         self._sleep = sleep or self._stop_event.wait
         self._clock, self._wall, self._rng = clock, wall, rng
         self._reader: Reader | None = None
+        self._progress = 0.0            # clock() at the last sign of life of the current connection
+        self._stalled = False
+        self._last = (-math.inf, -math.inf, 0.0)  # (t, t_wall, media step) of the last frame
         self._thread: threading.Thread | None = None
 
+    def __repr__(self) -> str:
+        return f"CaptureSource({self.stream_id!r}, link={self.link!r}, epoch={self.epoch})"
+
     def _start(self) -> None:
-        self._thread = threading.Thread(target=self._run, name=f"percept-capture-{self.stream_id}", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="percept-capture", daemon=True)
         self._thread.start()
+        if self.live and self.stall_timeout is not None:  # a file's handoff may wait on the consumer
+            threading.Thread(target=self._watchdog, name="percept-capture-watchdog", daemon=True).start()
+
+    def _watchdog(self) -> None:
+        assert self.stall_timeout is not None
+        while not self._stop_event.wait(min(1.0, self.stall_timeout / 4)):
+            reader = self._reader
+            if reader is not None and not self._stalled and self._clock() - self._progress > self.stall_timeout:
+                self._stalled = True
+                reader.abort()
 
     def _health(self, kind: str, detail: str) -> None:
         self.link = "up" if kind == "link_up" else "down"
         if self.on_health is None:
             return
-        event = Health(kind, self.stream_id, self._wall(), detail)  # type: ignore[arg-type]
+        event = Health(kind, self.stream_id, self._wall(), scrub(detail))  # type: ignore[arg-type]
         loop = self._handoff.loop
         try:
             if loop is not None:
@@ -305,10 +358,9 @@ class CaptureSource(_Base):
 
     def _run(self) -> None:
         failures = 0
-        last_t = -float("inf")
         try:
             while not self._stop_event.is_set():
-                got, error, last_t = self._connection(last_t)
+                got, error = self._connection()
                 if self._stop_event.is_set():
                     break
                 if not self.live:  # a file: EOF ends it, or restarts it in a new epoch if looping
@@ -330,40 +382,47 @@ class CaptureSource(_Base):
             self.link = "ended"
             self._handoff.close()
 
-    def _connection(self, last_t: float) -> tuple[bool, str | None, float]:
-        """Read one connection to its end. Returns (delivered frames, error, last t)."""
+    def _connection(self) -> tuple[bool, str | None]:
+        """Read one connection to its end. Returns (delivered frames, error)."""
         try:
             reader = self.opener()
         except Exception as exc:  # noqa: BLE001 - every open failure is retried the same way
-            return False, f"{type(exc).__name__}: {exc}", last_t
+            return False, f"{type(exc).__name__}: {exc}"
+        self._progress, self._stalled = self._clock(), False
         self._reader = reader
-        got, error, seq, due = False, None, 0, None
-        t0, w0 = max(self._clock(), last_t), self._wall()
+        got, error, seq, due, prev_media = False, None, 0, None, None
+        last_t, last_wall, step = self._last
+        t0, w0 = max(self._clock(), last_t + step), max(self._wall(), last_wall + step)
         period = 1.0 / self.fps if self.fps else 0.0
         try:
             while not self._stop_event.is_set():
                 item = reader.read()
                 if item is None:
                     break
+                self._progress = self._clock()
                 image, media_s = item
                 if media_s is None:
-                    t, t_wall = max(self._clock(), last_t), self._wall()
+                    t, t_wall = max(self._clock(), last_t), max(self._wall(), last_wall)
                 else:
-                    t, t_wall = max(t0 + media_s, last_t), w0 + media_s
+                    t, t_wall = max(t0 + media_s, last_t), max(w0 + media_s, last_wall)
+                    step = media_s - prev_media if prev_media is not None else step
+                    prev_media = media_s
                 if period:
                     if due is not None and t < due - 0.1 * period:
                         continue
                     due = (t if due is None or t - due > period else due) + period
                 if not got:
                     got = True
-                    self.epoch += 1
-                    self.reconnects = self.epoch - self._first_epoch
+                    self.reconnects += self.epoch is not None
+                    self.epoch = self._next_epoch
+                    self._next_epoch += 1
                     if self.link == "down":
                         self._health("link_up", f"epoch {self.epoch}")
                     self.link = "up"
                 frame = Frame(self.stream_id, self.epoch, seq, t, t_wall,
                               downscale(np.ascontiguousarray(image), self.max_side))
-                seq, last_t = seq + 1, t
+                seq, last_t, last_wall = seq + 1, t, t_wall
+                self._last = (t, t_wall, step)
                 self._emit(frame, self._stop_event)
         except Exception as exc:  # noqa: BLE001 - a read failure is a link failure
             error = f"{type(exc).__name__}: {exc}"
@@ -373,7 +432,9 @@ class CaptureSource(_Base):
                 reader.close()
             except Exception:  # noqa: BLE001
                 pass
-        return got, error, last_t
+        if self._stalled and not self._stop_event.is_set():
+            error = f"stalled: no frame for {self.stall_timeout:g} s"
+        return got, error
 
     def _stop(self) -> None:
         self._stop_event.set()
@@ -383,7 +444,11 @@ class CaptureSource(_Base):
         super()._stop()
 
     async def aclose(self, timeout: float = 5.0) -> None:
-        """Stop capture and wait (up to ``timeout``) for the thread and any subprocess to end."""
+        """Stop capture and wait (up to ``timeout``) for the thread and any subprocess to end.
+
+        An OpenCV read in progress can't be interrupted; the thread then ends after that read
+        returns (bounded by the read timeout) and this may return first.
+        """
         self._stop()
         if self._thread is not None:
             await asyncio.to_thread(self._thread.join, timeout)
@@ -391,17 +456,36 @@ class CaptureSource(_Base):
 
 # --------------------------------------------------------------------------- readers
 
+_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s'\"<>]+")
+
+
+def redact(uri: str) -> str:
+    """A URI safe to show: no credentials, query string or fragment."""
+    parts = urlsplit(uri)
+    if not parts.scheme or not parts.netloc:
+        return uri
+    return urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, "", ""))
+
+
+def scrub(text: str) -> str:
+    """Redact every URL in ``text`` (credentials, query string and fragment removed)."""
+    return _URL.sub(lambda m: redact(m.group(0)), text)
+
 
 class Cv2Reader(Reader):
     """OpenCV capture. Files report media time from the frame index."""
 
-    def __init__(self, target: str | int, *, file: bool) -> None:
+    TIMEOUT_MS = 10_000
+
+    def __init__(self, target: str | int, *, file: bool, label: str = "") -> None:
         cv2 = _cv2()
-        if isinstance(target, str) and target.lower().startswith(("rtsp://", "rtsps://")):
-            params = [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10_000, cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10_000]
-            with _ENV_LOCK:  # TCP transport; a value the caller exported wins
+        if isinstance(target, str) and "://" in target:
+            params = [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, self.TIMEOUT_MS, cv2.CAP_PROP_READ_TIMEOUT_MSEC, self.TIMEOUT_MS]
+            rtsp = target.lower().startswith(("rtsp://", "rtsps://"))
+            with _ENV_LOCK:  # TCP transport for RTSP; a value the caller exported wins
                 preset = os.environ.get(_FFMPEG_ENV)
-                os.environ.setdefault(_FFMPEG_ENV, "rtsp_transport;tcp")
+                if rtsp:
+                    os.environ.setdefault(_FFMPEG_ENV, "rtsp_transport;tcp")
                 try:
                     self.cap = cv2.VideoCapture(target, cv2.CAP_FFMPEG, params)
                 finally:
@@ -411,7 +495,7 @@ class Cv2Reader(Reader):
             self.cap = cv2.VideoCapture(target)
         if not self.cap.isOpened():
             self.cap.release()
-            raise ConnectionError(f"could not open {target!r}")
+            raise ConnectionError(f"could not open {label or 'the source'}")
         self.src_fps = (self.cap.get(cv2.CAP_PROP_FPS) or 30.0) if file else None
         self.index = 0
 
@@ -442,6 +526,19 @@ def ffmpeg_command(uri: str, *, fps: float | None = None, max_side: int = 640, f
     return cmd + ["-i", uri, "-an", "-sn", "-vf", ",".join(filters), "-f", "image2pipe", "-vcodec", "ppm", "-"]
 
 
+def probe_rate(path: str, ffprobe: str = "ffprobe") -> float | None:
+    """The video's frame rate from ``ffprobe``, or None when it can't be read."""
+    try:
+        out = subprocess.run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                              "stream=r_frame_rate", "-of", "csv=p=0", path],
+                             capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL).stdout
+        num, _, den = out.strip().splitlines()[0].partition("/")
+        rate = float(num) / float(den or 1)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, ZeroDivisionError):
+        return None
+    return rate if math.isfinite(rate) and rate > 0 else None
+
+
 def _read_exact(stream: Any, n: int) -> bytes | None:
     chunks, left = [], n
     while left:
@@ -453,8 +550,11 @@ def _read_exact(stream: Any, n: int) -> bytes | None:
     return b"".join(chunks)
 
 
-def read_ppm(stream: Any) -> np.ndarray | None:
-    """Read one binary PPM (P6) frame from ``stream`` as BGR; None at a clean or torn end."""
+def read_ppm(stream: Any, max_pixels: int | None = None) -> np.ndarray | None:
+    """Read one binary PPM (P6) frame from ``stream`` as BGR; None at a clean or torn end.
+
+    ``max_pixels`` rejects a header announcing a larger frame (``ValueError``).
+    """
     fields: list[bytes] = []
     token = b""
     while len(fields) < 4:
@@ -465,11 +565,15 @@ def read_ppm(stream: Any) -> np.ndarray | None:
             if token:
                 fields.append(token)
                 token = b""
+        elif len(token) > 16:
+            raise ValueError("malformed PPM header")
         else:
             token += byte
-    if fields[0] != b"P6" or fields[3] != b"255":
-        raise ValueError(f"not an 8-bit PPM frame: {b' '.join(fields)!r}")
+    if fields[0] != b"P6" or fields[3] != b"255" or not (fields[1].isdigit() and fields[2].isdigit()):
+        raise ValueError(f"not an 8-bit PPM frame: {b' '.join(fields)[:40]!r}")
     w, h = int(fields[1]), int(fields[2])
+    if w < 1 or h < 1 or (max_pixels is not None and w * h > max_pixels):
+        raise ValueError(f"PPM frame size {w}x{h} is out of bounds")
     data = _read_exact(stream, w * h * 3)
     if data is None:
         return None
@@ -477,15 +581,42 @@ def read_ppm(stream: Any) -> np.ndarray | None:
 
 
 class FfmpegReader(Reader):
-    """Frames decoded by an ffmpeg subprocess. ``abort`` kills it, so no process outlives us."""
+    """Frames decoded by an ffmpeg subprocess. ``abort`` kills it, so no process outlives us.
 
-    def __init__(self, command: list[str]) -> None:
+    With ``rate`` (frames per second of the output), frames carry media time from their index,
+    so a file reads the same at any decode speed. The last line ffmpeg wrote to stderr, with
+    credentials removed, is kept as ``last_error`` and reported when the process fails.
+    """
+
+    def __init__(self, command: list[str], *, rate: float | None = None, max_pixels: int | None = None) -> None:
+        self.rate, self.max_pixels, self.index = rate, max_pixels, 0
+        self.last_error = ""
         self.proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL)
+                                     stderr=subprocess.PIPE)
+        self._stderr = threading.Thread(target=self._drain, name="percept-ffmpeg-stderr", daemon=True)
+        self._stderr.start()
+
+    def _drain(self) -> None:
+        assert self.proc.stderr is not None
+        for raw in self.proc.stderr:
+            line = raw.decode("utf-8", "replace").strip()
+            if line:
+                self.last_error = scrub(line)[:300]
 
     def read(self) -> tuple[np.ndarray, float | None] | None:
-        image = read_ppm(self.proc.stdout)
-        return None if image is None else (image, None)
+        image = read_ppm(self.proc.stdout, self.max_pixels)
+        if image is None:
+            try:
+                code = self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                return None
+            self._stderr.join(1)
+            if code != 0:
+                raise ConnectionError(f"ffmpeg exited with {code}: {self.last_error or 'no message'}")
+            return None
+        media_s = None if self.rate is None else self.index / self.rate
+        self.index += 1
+        return image, media_s
 
     def abort(self) -> None:
         if self.proc.poll() is None:
@@ -496,45 +627,66 @@ class FfmpegReader(Reader):
         try:
             self.proc.wait(timeout=5)
         finally:
-            if self.proc.stdout is not None:
-                self.proc.stdout.close()
+            for pipe in (self.proc.stdout, self.proc.stderr):
+                if pipe is not None:
+                    pipe.close()
 
 
 # --------------------------------------------------------------------------- open_source
 
+CONTAINER_SUFFIXES = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v")
+
 
 def open_source(uri: str, *, stream_id: str | None = None, fps: float | None = None, max_side: int = 640,
-                loop: bool = False, backend: str = "auto", epoch: int = 0,
-                backoff: tuple[float, float] = (2.0, 30.0),
+                loop: bool = False, live: bool | None = None, backend: str = "auto", epoch: int = 0,
+                backoff: tuple[float, float] = (2.0, 30.0), stall_timeout: float | None = 30.0,
                 on_health: Callable[[Health], None] | None = None,
                 on_frame: Callable[[Frame], None] | None = None,
                 preroll: PreRoll | None = None, ffmpeg: str = "ffmpeg") -> CaptureSource:
     """Open a camera, file or stream as a :class:`~percept.contracts.Source`.
 
     ``uri`` is ``rtsp://``/``rtsps://`` (OpenCV), ``webcam:N`` (OpenCV device N), an HLS or
-    DASH manifest URL ending in ``.m3u8``/``.mpd`` (ffmpeg), or a file path or other URL
-    (OpenCV). ``backend="ffmpeg"`` forces the ffmpeg reader for any input. ``fps`` caps the
-    sampling rate; frames are shrunk so their longest side is at most ``max_side``. Nothing is
-    read until ``frames()`` is iterated. Missing OpenCV or ffmpeg raises here, not later.
+    DASH manifest URL ending in ``.m3u8``/``.mpd`` (ffmpeg), or a file path, ``file://`` URL
+    or other URL (OpenCV). ``backend="ffmpeg"`` forces the ffmpeg reader for any input.
+
+    Every ``scheme://`` URL is live (reconnects forever) unless its path ends in a container
+    suffix such as ``.mp4``; local files are not. ``live`` overrides the guess. ``fps`` caps
+    the sampling rate; frames are shrunk so their longest side is at most ``max_side``.
+
+    ``stream_id`` defaults to the URI without credentials, query string or fragment; the raw
+    URI never appears in frames, health events or errors. Nothing is read until ``frames()``
+    is iterated. Missing OpenCV or ffmpeg raises here, not later.
     """
     if backend not in ("auto", "cv2", "ffmpeg"):
         raise ValueError("backend is 'auto', 'cv2' or 'ffmpeg'")
     low = uri.lower()
+    local = low.startswith("file://") or "://" not in low
     path = uri[7:] if low.startswith("file://") else uri
-    is_url = "://" in low
-    manifest = low.startswith(("http://", "https://")) and low.split("?", 1)[0].endswith(MANIFEST_SUFFIXES)
     webcam = low.startswith("webcam:")
-    live = webcam or manifest or low.startswith(("rtsp://", "rtsps://", "rtmp://", "srt://", "udp://"))
-    if not is_url and not webcam and not os.path.exists(path):
+    url_path = urlsplit(low).path
+    manifest = not local and url_path.endswith(MANIFEST_SUFFIXES)
+    if live is None:
+        live = webcam or (not local and not url_path.endswith(CONTAINER_SUFFIXES))
+    if local and not webcam and not os.path.exists(path):
         raise FileNotFoundError(f"no such video file: {path!r}")
+    name = stream_id or ("webcam:" + low.split(":", 1)[1].lstrip("/") if webcam else redact(uri))
     common: dict[str, Any] = dict(live=live, loop=loop, max_side=max_side, epoch=epoch, backoff=backoff,
-                                  on_health=on_health, on_frame=on_frame, preroll=preroll)
-    name = stream_id or uri
+                                  stall_timeout=stall_timeout, on_health=on_health, on_frame=on_frame,
+                                  preroll=preroll)
     if backend == "ffmpeg" or (backend == "auto" and manifest):
-        if shutil.which(ffmpeg) is None:
-            raise RuntimeError(f"{uri!r} is read with ffmpeg, and no {ffmpeg!r} binary is on PATH")
+        binary = shutil.which(ffmpeg)
+        if binary is None:
+            raise RuntimeError(f"{name} is read with ffmpeg, and no {ffmpeg!r} binary is on PATH")
         command = ffmpeg_command(path, fps=fps, max_side=max_side, ffmpeg=ffmpeg)
-        return CaptureSource(name, lambda: FfmpegReader(command), **common)
+        ffprobe = os.path.join(os.path.dirname(binary), "ffprobe")
+        rates: list[float | None] = []
+
+        def ffmpeg_opener() -> Reader:
+            if not live and not rates:  # media time for files: the output rate, probed once
+                rates.append(fps or probe_rate(path, ffprobe if os.path.exists(ffprobe) else "ffprobe"))
+            return FfmpegReader(command, rate=None if live else rates[0], max_pixels=max_side * max_side)
+
+        return CaptureSource(name, ffmpeg_opener, **common)
     _cv2()
     target: str | int = int(low.split(":", 1)[1].lstrip("/") or 0) if webcam else path
-    return CaptureSource(name, lambda: Cv2Reader(target, file=not live and not is_url), fps=fps, **common)
+    return CaptureSource(name, lambda: Cv2Reader(target, file=not live, label=name), fps=fps, **common)

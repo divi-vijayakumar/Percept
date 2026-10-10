@@ -60,3 +60,11 @@ def test_looping_file_bumps_epoch_and_resets_seq(video):
     assert frames[N].stream_epoch == 1
     assert all(max(f.image.shape[:2]) <= 320 for f in frames)
     assert np.all(np.diff([f.t for f in frames]) >= 0)
+    assert np.all(np.diff([f.t_wall for f in frames]) > 0)  # t_wall never steps back across loops
+
+
+def test_file_url_uses_media_time(video):
+    src = open_source("file://" + video)
+    frames = asyncio.run(collect(src))
+    assert not src.live and len(frames) == N
+    assert np.allclose(np.diff([f.t_wall for f in frames]), 1 / FPS)
