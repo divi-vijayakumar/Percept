@@ -370,3 +370,9 @@ def test_unverified_health_and_capacity_fate_exist():
     from percept.contracts import FATES, HEALTH_KINDS
     assert "unverified" in HEALTH_KINDS and "dropped_capacity" in FATES
     Health("unverified", "cam", 1.0, condition_id="fall", subject="scene")
+
+
+def test_trace_dropped_is_a_health_kind():
+    from percept.contracts import HEALTH_KINDS
+    assert "trace_dropped" in HEALTH_KINDS
+    assert Health("trace_dropped", "cam", 1.0, detail="trace: 3 records dropped").kind == "trace_dropped"

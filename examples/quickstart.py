@@ -60,6 +60,7 @@ async def main(trace_path: Path) -> None:
     ]
     # MemoryStore keeps decisions in memory (it warns that this isn't crash-safe); the default
     # store is a SQLite file. `trace=` records every step so the run can be replayed below.
+    # max_requests_per_min=600 lets this demo look every 0.3 s; the default (6) protects a real budget.
     async with Monitor(FakeJudge(judge_script), conditions, store=MemoryStore(),
                        max_requests_per_min=600, trace=trace_path) as monitor:
         camera = PushSource("dock-cam")
@@ -78,18 +79,23 @@ async def main(trace_path: Path) -> None:
         player = asyncio.create_task(play())
         async for delivery in decisions:
             d = delivery.decision
-            print(f"{d.type:<10} {d.condition_id:<13} {d.reason}  (confidence {d.confidence:.2f})")
+            # An uncertain decision carries the first look's confidence, not a verified one.
+            label = "first look's confidence" if d.type == "uncertain" else "confidence"
+            print(f"{d.type:<10} {d.condition_id:<13} {d.reason}  ({label} {d.confidence:.2f})")
         await player
 
         coverage = monitor.coverage("dock-cam")
-        print("\ncoverage: what was looked at, and what happened to each look")
+        print("\ncoverage: what was looked at, and what came of each look")
         for condition_id, fates in coverage["fates"].items():
-            print(f"  {condition_id:<13} {fates}")
-        print(f"  blind intervals: {len(coverage['blind_intervals'])}")
+            unsure = fates.get("judged_weak", 0) + fates.get("failed", 0)   # no usable answer
+            looks = fates.get("judged", 0) + unsure
+            print(f"  {condition_id:<13} looked at {looks} times; {unsure} of those looks couldn't tell")
+        print(f"  time when nothing could be seen or judged: {len(coverage['blind_intervals'])} intervals")
 
     # Every decision can be reproduced from the trace, without the video or the judge.
-    result = percept.replay(percept.trace.read(trace_path))
-    print(f"\nreplay matches: {result.matches}")
+    result = percept.trace.replay(trace_path)
+    verdict = "reproduced exactly" if result.matches else f"DIFFER: {result.differences}"
+    print(f"\nreplay: {result.recorded} decisions from {result.inputs} inputs {verdict}")
 
 
 if __name__ == "__main__":

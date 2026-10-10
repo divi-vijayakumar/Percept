@@ -56,7 +56,10 @@ def decode_input(data: Mapping[str, Any]) -> decide.Input:
             o["evidence_t"] = tuple(o["evidence_t"])
             return decide.Observed(Observation(**o), Usage(**data["usage"]))
         cls = _INPUTS[kind]
-        return cls(**{k: v for k, v in data.items() if k != "type"})
+        args = {k: v for k, v in data.items() if k != "type"}
+        if cls is decide.Snooze:
+            args["until"] = _number(args["until"])
+        return cls(**args)
     except (KeyError, TypeError) as exc:
         raise ValueError(f"malformed decide input: {exc!r}") from exc
 
@@ -75,14 +78,22 @@ def decode_condition(data: Mapping[str, Any]) -> Condition:
     return Condition(**raw)
 
 
-def decision_summary(d: Decision) -> dict:
-    """The fields of a decision that replay compares (plus when it was decided)."""
-    return {"decision_id": d.decision_id, "occurrence_id": d.occurrence_id, "type": d.type,
-            "cause": d.cause, "condition_id": d.condition_id, "subject": d.subject,
-            "t_decided": d.t_decided}
+_NOT_REPLAYED = ("evidence", "keyframe_jpeg_b64")     # chosen by the runtime from frames, after decide
+_ENVELOPE = ("v", "t_wall", "kind")
 
 
-_COMPARED = ("decision_id", "occurrence_id", "type", "cause", "condition_id", "subject")
+def decision_record(d: Decision) -> dict:
+    """A decision's wire form (``Decision.to_dict``) without the frame-derived fields: what a
+    trace records and what replay compares, field by field."""
+    data = d.to_dict()
+    for name in _NOT_REPLAYED:
+        del data[name]
+    return data
+
+
+def _number(value: Any) -> float:
+    """A float as a trace writes it: non-finite values are the strings ``Infinity`` etc."""
+    return float(value)
 
 
 # --------------------------------------------------------------------------- replay
@@ -90,14 +101,20 @@ _COMPARED = ("decision_id", "occurrence_id", "type", "cause", "condition_id", "s
 
 @dataclass(frozen=True)
 class ReplayResult:
-    """What a replay produced. ``matches`` is True when, for every stream, the replayed
-    decisions equal the recorded ones (ids, types, causes, conditions, subjects) in order;
-    otherwise ``differences`` says where they first part, one line per problem."""
+    """What a replay produced.
+
+    ``matches`` is True when at least one input was replayed and, for every stream, the replayed
+    decisions equal the recorded ones in order, every wire field but evidence and keyframe.
+    Otherwise ``differences`` says where they first part, one line per problem. ``inputs``,
+    ``recorded`` and ``streams`` say how much was checked: an empty trace never matches.
+    """
 
     decisions: tuple[Decision, ...]
     matches: bool
     differences: tuple[str, ...]
     inputs: int = 0
+    recorded: int = 0
+    streams: int = 0
 
 
 class _Replay:
@@ -126,11 +143,13 @@ class _Replay:
             return
         self.stream(sid)
         if kind == "restore":
-            self.states[sid] = decide.from_dict(rec["snapshot"])
+            snapshot = dict(rec["snapshot"])
+            snapshot["snoozes"] = [[c, s, _number(u)] for c, s, u in snapshot["snoozes"]]
+            self.states[sid] = decide.from_dict(snapshot)
         elif kind == "conditions":
             self.conditions[sid] = {c["id"]: decode_condition(c) for c in rec["conditions"]}
         elif kind == "decision":
-            self.recorded[sid].append(dict(rec))
+            self.recorded[sid].append({k: v for k, v in rec.items() if k not in _ENVELOPE})
         else:
             self.step(n, sid, rec)
 
@@ -155,11 +174,11 @@ class _Replay:
         for sid in self.order:
             if self.skipped.get(sid):
                 out.append(f"stream {sid!r}: {self.skipped[sid]} inputs before any restore record were not replayed")
-            got = [{k: decision_summary(d)[k] for k in _COMPARED} for d in self.produced[sid]]
-            want = [{k: r.get(k) for k in _COMPARED} for r in self.recorded[sid]]
+            got = [decision_record(d) for d in self.produced[sid]]
+            want = self.recorded[sid]
             for i, (g, w) in enumerate(zip(got, want)):
                 if g != w:
-                    diff = {k: (w[k], g[k]) for k in _COMPARED if w[k] != g[k]}
+                    diff = {k: (w.get(k), g.get(k)) for k in sorted(set(g) | set(w)) if w.get(k) != g.get(k)}
                     out.append(f"stream {sid!r}: decision #{i + 1} differs (recorded, replayed): {diff}")
                     break
             if len(got) != len(want):
@@ -185,6 +204,9 @@ def replay(records: Iterable[Mapping[str, Any]]) -> ReplayResult:
             r.feed(n, rec)
         except (KeyError, TypeError, ValueError) as exc:
             r.problems.append(f"record {n}: unreadable {rec.get('kind')!r} record: {exc!r:.200}")
-    differences = tuple(r.compare())
-    return ReplayResult(tuple(r.decisions), not differences, differences, r.inputs)
+    differences = r.compare()
+    if not r.inputs:
+        differences.append("no decide inputs were replayed: nothing was checked")
+    return ReplayResult(tuple(r.decisions), not differences, tuple(differences), r.inputs,
+                        sum(len(v) for v in r.recorded.values()), len(r.order))
 

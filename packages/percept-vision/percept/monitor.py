@@ -68,9 +68,9 @@ from percept.contracts import (
 from percept.delivery import Outbox, OutboxUnreadable, SqliteStore, Watch, Writer, store_key
 from percept.judges.base import attribute_usage, failed_observations, max_attempts, worst_case_cost
 from percept.judges.encode import to_jpeg
-from percept.replay import decision_summary, encode_condition, encode_input
+from percept.replay import decision_record, encode_condition, encode_input
 from percept.sources import PushSource, open_source
-from percept.trace import FORMAT as TRACE_FORMAT, TraceWriter
+from percept.trace import FORMAT as TRACE_FORMAT, TraceWriter, scrub
 from percept.triggers import Every, QualityGate, SceneMonitor, every, on_change
 from percept.zones import crop_box
 
@@ -240,6 +240,8 @@ class _Stream:
         self.budget_blocked = False
         self.eof = False
         self.traced_versions: Optional[dict] = None     # the condition set last written to the trace
+        self.traced_fates: Counter = Counter()          # runtime fates of this minute, not yet traced
+        self.traced_bucket: Optional[int] = None
         self.tasks: set[asyncio.Task] = set()
         for cid in m._paused:           # paused before this stream existed
             self.blind_set("paused", True, "paused by the application", cid)
@@ -272,13 +274,32 @@ class _Stream:
                                             condition_id))
 
     def fate(self, condition_id: str, fate: str, n: int = 1, *, record: bool = True) -> None:
-        if record:
-            self.m._rec("fate", self.id, event="runtime", fate=fate, condition_id=condition_id, n=n)
         bucket = int(self.m._wall() // COVERAGE_BUCKET_S)
+        if record and self.m._trace is not None:    # one record per minute, condition and fate
+            if bucket != self.traced_bucket:
+                self.trace_fates()
+                self.traced_bucket = bucket
+            self.traced_fates[(condition_id, fate)] += n
         if not self.fates or self.fates[-1][0] != bucket:
             self.fates.append((bucket, Counter()))
         self.fates[-1][1][(condition_id, fate)] += n
         self.totals[fate] += n
+
+    def trace_fates(self) -> None:
+        """Write the runtime fates counted in the current minute."""
+        for (cid, fate), n in sorted(self.traced_fates.items()):
+            self.m._rec("fate", self.id, event="runtime", fate=fate, condition_id=cid, n=n,
+                        bucket_wall=(self.traced_bucket or 0) * COVERAGE_BUCKET_S)
+        self.traced_fates.clear()
+
+    def checkpoint_records(self) -> list[dict]:
+        """This stream's restore and conditions records, to open a new trace file."""
+        if self.state is None:
+            return []
+        m = self.m
+        self.traced_versions = {cid: c.version for cid, c in m._conds.items()}
+        return [m._record("restore", self.id, restored=False, checkpoint=True, snapshot=decide.to_dict(self.state)),
+                m._record("conditions", self.id, conditions=[encode_condition(c) for c in m._conds.values()])]
 
     # ----------------------------------------------------------------- capture
 
@@ -305,7 +326,7 @@ class _Stream:
             raise
         except Exception as exc:  # noqa: BLE001 - a broken source ends its stream, it doesn't crash the monitor
             log.exception("percept: stream %s stopped", self.id)
-            self.health("link_down", f"source failed: {type(exc).__name__}: {exc}"[:200])
+            self.health("link_down", f"source failed: {type(exc).__name__}: {scrub(str(exc))[:80]}")
         finally:
             self.eof = True
             self.wake.set()
@@ -662,7 +683,7 @@ class _Stream:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a judge that raises broke its contract: an outage
-            result = JudgeResult(failed_observations(request, "unavailable", m.judge.name, f"judge raised {exc!r}"[:160]), ())
+            result = JudgeResult(failed_observations(request, "unavailable", m.judge.name, f"judge raised {type(exc).__name__}"), ())
         finally:  # a cancelled request keeps its whole reservation charged
             used = reserve if result is None else sum(u.usage.attempts for u in result.usage)
             spent = cost if result is None else sum(u.usage.cost_usd for u in result.usage)
@@ -725,6 +746,7 @@ class _Stream:
             return
         m, now = self.m, self.m._wall()
         if m._trace is not None:
+            m._checkpoint_if_due()
             versions = {cid: c.version for cid, c in m._conds.items()}
             if versions != self.traced_versions:
                 self.traced_versions = versions
@@ -770,7 +792,9 @@ class _Stream:
             elif t is decide.StoreCounterExample:
                 self.spawn(self.store_counter(e))
         for d in r.decisions:
-            m._rec("decision", self.id, **decision_summary(d))
+            fields = decision_record(d)
+            del fields["stream_id"]         # the record's own stream_id
+            m._rec("decision", self.id, **fields)
         if r.decisions:
             self.commits.put_nowait((json.dumps({"decide": decide.to_dict(r.state)}).encode(),
                                      tuple((d, *self.evidence_for(d)) for d in r.decisions)))
@@ -855,10 +879,14 @@ class _Stream:
                 self.health("store_lag", "this stream is halted: its outbox record is unreadable")
             failures = w.failures
             trace = self.m._trace
-            if trace is not None and trace.dropped > self.m._trace_reported:
-                self.health("store_lag", f"trace: {trace.dropped - self.m._trace_reported} records dropped"
-                                         + (f" ({trace.error})" if trace.error else ""))
-                self.m._trace_reported = trace.dropped
+            if trace is not None:
+                if self.traced_fates and self.traced_bucket != int(self.m._wall() // COVERAGE_BUCKET_S):
+                    self.trace_fates()
+                self.m._checkpoint_if_due()
+                if trace.dropped > self.m._trace_reported:
+                    self.health("trace_dropped", f"trace: {trace.dropped - self.m._trace_reported} records dropped"
+                                                 + (f" ({trace.error})" if trace.error else ""))
+                    self.m._trace_reported = trace.dropped
 
     # ----------------------------------------------------------------- reports
 
@@ -977,6 +1005,8 @@ class Monitor:
         self._regroup()
         self._owns_trace = isinstance(trace, (str, os.PathLike))
         self._trace: Optional[TraceWriter] = TraceWriter(trace) if self._owns_trace else trace  # type: ignore[arg-type]
+        if self._trace is not None:
+            self._trace.checkpoints = True     # rotate where the runtime can open the file with a checkpoint
         self._trace_reported = 0    # trace records whose loss health has reported
 
     # ----------------------------------------------------------------- internals
@@ -1039,11 +1069,18 @@ class Monitor:
                 return
         self._slots -= 1
 
+    def _record(self, kind: str, stream_id: str, **fields: Any) -> dict:
+        return {"v": TRACE_FORMAT, "t_wall": self._wall(), "stream_id": stream_id, "kind": kind, **fields}
+
     def _rec(self, kind: str, stream_id: str, **fields: Any) -> None:
         """Write one trace record, when tracing. Never blocks and never raises."""
         if self._trace is not None:
-            self._trace.write({"v": TRACE_FORMAT, "t_wall": self._wall(), "stream_id": stream_id, "kind": kind,
-                               **fields})
+            self._trace.write(self._record(kind, stream_id, **fields))
+
+    def _checkpoint_if_due(self) -> None:
+        """The trace file is full: start the next one with every stream's state (on the loop)."""
+        if self._trace is not None and self._trace.rotate_due:
+            self._trace.checkpoint([r for s in self._streams.values() for r in s.checkpoint_records()])
 
     def _report(self, h: Health) -> None:
         self._health.put(h)
@@ -1309,6 +1346,8 @@ class Monitor:
         if self._owns_store:
             self.store.close()
         if self._trace is not None:     # last: everything above may still write records
+            for s in streams:
+                s.trace_fates()
             await asyncio.to_thread(self._trace.close if self._owns_trace else self._trace.flush, FLUSH_TIMEOUT_S)
         self._health.closed = True
         self._health.ready.set()

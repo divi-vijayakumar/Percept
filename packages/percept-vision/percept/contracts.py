@@ -46,6 +46,7 @@ HealthKind = Literal[
     "capacity",
     "store_lag",
     "unverified",       # an event candidate closed without a verified answer
+    "trace_dropped",    # trace records were lost (writer queue full, disk failing, path in use)
 ]
 
 # A zone is a polygon in normalised image coordinates: (x, y) with 0 <= x, y <= 1.

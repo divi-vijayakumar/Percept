@@ -73,7 +73,7 @@ class Cascade:
         try:
             return await member.judge(request)
         except Exception as exc:  # noqa: BLE001 - a judge that breaks its contract is an outage
-            return JudgeResult(failed_observations(request, "unavailable", member.name, f"judge raised {exc!r}"[:160]), ())
+            return JudgeResult(failed_observations(request, "unavailable", member.name, f"judge raised {type(exc).__name__}"), ())
 
     async def judge(self, request: JudgeRequest) -> JudgeResult:
         start = self._clock()

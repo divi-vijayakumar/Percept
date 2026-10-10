@@ -20,6 +20,6 @@ def test_the_quickstart_prints_met_cleared_uncertain_coverage_and_a_matching_rep
     types = [line.split()[0] for line in lines if re.match(r"^(met|cleared|uncertain|expired)\s", line)]
     assert types == ["met", "cleared", "uncertain"], done.stdout
     assert any(line.startswith("coverage:") for line in lines)
-    assert any("box_in_zone" in line and "judged" in line for line in lines if line.startswith("  "))
-    assert lines[-1] == "replay matches: True"
+    assert re.fullmatch(r"replay: 3 decisions from \d+ inputs reproduced exactly", lines[-1]), lines[-1]
+    assert any(re.match(r"^  box_in_zone\s+looked at \d+ times", line) for line in lines), done.stdout
     assert "cv2" not in done.stderr
