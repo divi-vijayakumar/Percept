@@ -43,7 +43,7 @@ Issues = "https://github.com/divi-vijayakumar/Percept/issues"
 include = ["percept*"]
 
 [tool.setuptools.package-data]
-percept = ["py.typed"]
+percept = ["py.typed", "decision.schema.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
