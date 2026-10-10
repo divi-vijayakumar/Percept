@@ -346,6 +346,10 @@ class QualityGate:
     frame are taken as structure. Known residual: corruption already present on the first frame
     after a (re)start is not detected.
 
+    Known residual: sharpness is a Laplacian-to-gradient ratio, and sensor noise has a high
+    ratio, so on low-detail scenes with visible noise a defocused lens can read as sharp. The
+    error is in the safe direction (the frame is still judged, never silently dropped).
+
     Blur is relative to this stream: a frame is blurry when its sharpness (see
     :func:`sharpness`) is below ``blur_ratio`` times the median of recent good frames, judged
     only once ``blur_min_samples`` good frames are known. The veto is for transient defocus: a
