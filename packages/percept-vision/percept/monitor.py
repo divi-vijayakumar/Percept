@@ -41,9 +41,10 @@ import asyncio
 import itertools
 import json
 import logging
+import os
 import time
 from collections import Counter, OrderedDict, deque
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Callable, Iterable, Optional, Sequence, Union
 
 import numpy as np
@@ -67,7 +68,9 @@ from percept.contracts import (
 from percept.delivery import Outbox, OutboxUnreadable, SqliteStore, Watch, Writer, store_key
 from percept.judges.base import attribute_usage, failed_observations, max_attempts, worst_case_cost
 from percept.judges.encode import to_jpeg
+from percept.replay import decision_summary, encode_condition, encode_input
 from percept.sources import PushSource, open_source
+from percept.trace import FORMAT as TRACE_FORMAT, TraceWriter
 from percept.triggers import Every, QualityGate, SceneMonitor, every, on_change
 from percept.zones import crop_box
 
@@ -236,6 +239,7 @@ class _Stream:
         self.judge_failures = 0
         self.budget_blocked = False
         self.eof = False
+        self.traced_versions: Optional[dict] = None     # the condition set last written to the trace
         self.tasks: set[asyncio.Task] = set()
         for cid in m._paused:           # paused before this stream existed
             self.blind_set("paused", True, "paused by the application", cid)
@@ -252,20 +256,24 @@ class _Stream:
         return task
 
     def health(self, kind: str, detail: str = "", condition_id: Optional[str] = None) -> None:
-        self.m._health.put(Health(kind, self.id, self.m._wall(), detail, condition_id=condition_id))  # type: ignore[arg-type]
+        self.m._report(Health(kind, self.id, self.m._wall(), detail, condition_id=condition_id))  # type: ignore[arg-type]
 
     def blind_set(self, kind: str, on: bool, detail: str = "", condition_id: Optional[str] = None) -> None:
         key, now = (kind, condition_id), self.m._wall()
         if on and key not in self.blind_open:
             self.blind_open[key] = (now, detail)
+            self.m._rec("blind", self.id, blind_kind=kind, state="open", detail=detail, condition_id=condition_id)
         elif not on and key in self.blind_open:
             start, detail = self.blind_open.pop(key)
+            self.m._rec("blind", self.id, blind_kind=kind, state="close", detail=detail, condition_id=condition_id)
             if len(self.blind) == self.blind.maxlen:
                 self.blind_dropped += 1
             self.blind.append(BlindInterval(kind, self.id, start, max(start, now), detail,  # type: ignore[arg-type]
                                             condition_id))
 
-    def fate(self, condition_id: str, fate: str, n: int = 1) -> None:
+    def fate(self, condition_id: str, fate: str, n: int = 1, *, record: bool = True) -> None:
+        if record:
+            self.m._rec("fate", self.id, event="runtime", fate=fate, condition_id=condition_id, n=n)
         bucket = int(self.m._wall() // COVERAGE_BUCKET_S)
         if not self.fates or self.fates[-1][0] != bucket:
             self.fates.append((bucket, Counter()))
@@ -323,9 +331,13 @@ class _Stream:
                                          "aside and decide state starts over under a new incarnation")
         if state is not None:
             self.state, self.epoch = state, state.stream_epoch + 1
+            if m._trace is not None:
+                m._rec("restore", self.id, restored=True, snapshot=decide.to_dict(state))
             self.step(decide.EpochStarted(self.epoch, restart=True))
         else:
             self.state = decide.new_state(self.id, created_at=wall)
+            if m._trace is not None:
+                m._rec("restore", self.id, restored=False, snapshot=decide.to_dict(self.state))
         ids = sorted(m._conds)
         for cid, raw in zip(ids, await m._writer.load([store_key("counterexamples", self.id, "/" + c) for c in ids])):
             if raw is not None:
@@ -644,7 +656,7 @@ class _Stream:
             lru.popitem(last=False)
 
     async def call(self, request: JudgeRequest, works: list[_Work], reserve: int, cost: float) -> None:
-        m, result = self.m, None
+        m, result, t0 = self.m, None, self.m._mono()
         try:
             result = await m.judge.judge(request)
         except asyncio.CancelledError:
@@ -659,12 +671,26 @@ class _Stream:
             self.totals["requests"] += 1
             self.totals["attempts"] += used
             self.totals["cost_usd_micros"] += round(spent * 1e6)
+            if m._trace is not None:
+                self.trace_request(request, result, m._mono() - t0)
             if request.purpose == "verify":
                 self.verify_task = None
             else:
                 self.detect_task = None
             m._release()
         self.absorb(request, result, works)
+
+    def trace_request(self, request: JudgeRequest, result: Optional[JudgeResult], latency: float) -> None:
+        if result is None:
+            usage, failure = [], "cancelled"
+        else:
+            usage = [dict(asdict(u.usage), judge=u.judge, failure=u.failure) for u in result.usage]
+            failed = [o.failure for o in result.observations if o.failed]
+            failure = failed[0] if failed and len(failed) == len(result.observations) else None
+        self.m._rec("request", self.id, request_id=request.request_id, judge=self.m.judge.name,
+                    purpose=request.purpose, stream_epoch=request.stream_epoch,
+                    condition_ids=[i.condition.id for i in request.items], usage=usage,
+                    latency_s=latency, failure=failure)
 
     def absorb(self, request: JudgeRequest, result: JudgeResult, works: list[_Work]) -> None:
         failed = [u for u in result.usage if u.failure is not None]
@@ -697,14 +723,23 @@ class _Stream:
         if self.state is None:
             self.backlog.append(inp)
             return
-        r = decide.step(self.state, inp, self.m._wall(), self.m._conds)
+        m, now = self.m, self.m._wall()
+        if m._trace is not None:
+            versions = {cid: c.version for cid, c in m._conds.items()}
+            if versions != self.traced_versions:
+                self.traced_versions = versions
+                m._rec("conditions", self.id, conditions=[encode_condition(c) for c in m._conds.values()])
+            m._rec("decide_input", self.id, input=encode_input(inp), now=now, versions=versions)
+        r = decide.step(self.state, inp, now, m._conds)
         self.state = r.state
         loop = asyncio.get_running_loop()
         for e in r.effects:
             t = type(e)
             if t is decide.Trace:
+                m._rec("fate", self.id, event=e.event, condition_id=e.condition_id, subject=e.subject,
+                       fate=e.fate, occurrence_id=e.occurrence_id, detail=e.detail)
                 if e.fate is not None:
-                    self.fate(e.condition_id, e.fate)
+                    self.fate(e.condition_id, e.fate, record=False)
             elif t is decide.ScheduleTimer:
                 key = (e.condition_id, e.subject, e.kind)
                 old = self.timers.pop(key, None)
@@ -731,9 +766,11 @@ class _Stream:
             elif t is decide.RequestRecheck:
                 self.enqueue(e.condition_id, e.subject, RECHECK)
             elif t is decide.EmitHealth:
-                self.m._health.put(e.health)
+                m._report(e.health)
             elif t is decide.StoreCounterExample:
                 self.spawn(self.store_counter(e))
+        for d in r.decisions:
+            m._rec("decision", self.id, **decision_summary(d))
         if r.decisions:
             self.commits.put_nowait((json.dumps({"decide": decide.to_dict(r.state)}).encode(),
                                      tuple((d, *self.evidence_for(d)) for d in r.decisions)))
@@ -817,6 +854,11 @@ class _Stream:
             if self.halted:
                 self.health("store_lag", "this stream is halted: its outbox record is unreadable")
             failures = w.failures
+            trace = self.m._trace
+            if trace is not None and trace.dropped > self.m._trace_reported:
+                self.health("store_lag", f"trace: {trace.dropped - self.m._trace_reported} records dropped"
+                                         + (f" ({trace.error})" if trace.error else ""))
+                self.m._trace_reported = trace.dropped
 
     # ----------------------------------------------------------------- reports
 
@@ -875,6 +917,9 @@ class Monitor:
     ``max_cost_per_hour`` is one cap for the whole monitor, reserved (worst case) before each
     request and reconciled after, guaranteed for judges with a ``price`` and best-effort otherwise;
     ``max_concurrent_requests`` limits requests in flight across every stream.
+    ``trace`` (a path or a :class:`~percept.trace.TraceWriter`) records every runtime event as
+    JSON lines, without images or credentials, so a run can be inspected and replayed
+    (``percept.replay``); None (the default) records nothing.
 
     Configuration errors raise here, in :meth:`add` and in :meth:`watch`. Nothing raises
     during operation: outages, failures, budget exhaustion and store lag are reported by
@@ -884,7 +929,7 @@ class Monitor:
 
     def __init__(self, judge: Judge, conditions: Iterable[Condition] = (), *, store: Any = None,
                  max_requests_per_min: int = 6, max_cost_per_hour: Optional[float] = None,
-                 max_concurrent_requests: int = 4) -> None:
+                 max_concurrent_requests: int = 4, trace: Union[None, str, os.PathLike, TraceWriter] = None) -> None:
         if not isinstance(judge, Judge):
             raise TypeError("judge must implement the Judge protocol (name, can_batch, price, async judge)")
         for name, value in (("max_requests_per_min", max_requests_per_min),
@@ -893,6 +938,8 @@ class Monitor:
                 raise ValueError(f"{name} is an integer >= 1")
         if max_cost_per_hour is not None and not max_cost_per_hour > 0:
             raise ValueError("max_cost_per_hour is positive or None")
+        if not (trace is None or isinstance(trace, (str, os.PathLike, TraceWriter))):
+            raise TypeError("trace is None, a path or a TraceWriter")
         self.judge = judge
         self._attempts = max_attempts(judge)
         if max_requests_per_min < self._attempts:
@@ -928,6 +975,9 @@ class Monitor:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._closing = self._closed = False
         self._regroup()
+        self._owns_trace = isinstance(trace, (str, os.PathLike))
+        self._trace: Optional[TraceWriter] = TraceWriter(trace) if self._owns_trace else trace  # type: ignore[arg-type]
+        self._trace_reported = 0    # trace records whose loss health has reported
 
     # ----------------------------------------------------------------- internals
 
@@ -989,8 +1039,19 @@ class Monitor:
                 return
         self._slots -= 1
 
-    def _source_health(self, h: Health) -> None:
+    def _rec(self, kind: str, stream_id: str, **fields: Any) -> None:
+        """Write one trace record, when tracing. Never blocks and never raises."""
+        if self._trace is not None:
+            self._trace.write({"v": TRACE_FORMAT, "t_wall": self._wall(), "stream_id": stream_id, "kind": kind,
+                               **fields})
+
+    def _report(self, h: Health) -> None:
         self._health.put(h)
+        self._rec("health", h.stream_id, health_kind=h.kind, detail=h.detail, count=h.count,
+                  condition_id=h.condition_id, subject=h.subject)
+
+    def _source_health(self, h: Health) -> None:
+        self._report(h)
         stream = self._streams.get(h.stream_id)
         if stream is not None and h.kind in ("link_down", "link_up"):
             stream.blind_set("link_down", h.kind == "link_down")
@@ -1082,6 +1143,8 @@ class Monitor:
             images = tuple(np.asarray(i) for i in ((evidence,) if isinstance(evidence, np.ndarray) else evidence))
             if not images or any(i.dtype != np.uint8 for i in images):
                 raise ValueError("poke evidence is one or more uint8 images")
+        self._rec("poke", stream_id, condition_ids=ids, subject=subject, observed_at=observed_at, reason=reason,
+                  evidence_images=0 if images is None else len(images))
         for cid in ids:
             prio = EVENT if self._conds[cid].kind == "event" else STATE
             stream.enqueue(cid, subject or decide.SCENE, prio, t_trigger=observed_at, images=images)
@@ -1197,7 +1260,9 @@ class Monitor:
         return {"streams": {sid: s.stats() for sid, s in self._streams.items()},
                 "health": dict(self._health.counts), "health_dropped": self._health.dropped,
                 "store_pending": self._writer.pending, "store_failures": self._writer.failures,
-                "store_retrying": self._writer.retrying, "cost_usd_in_window": self._cost.used(self._mono())}
+                "store_retrying": self._writer.retrying, "cost_usd_in_window": self._cost.used(self._mono()),
+                "trace_written": 0 if self._trace is None else self._trace.written,
+                "trace_dropped": 0 if self._trace is None else self._trace.dropped}
 
     def coverage(self, stream_id: str, since_wall: float = 0.0) -> dict:
         """Fates per condition (counted per minute, from the minute holding ``since_wall``) and
@@ -1243,6 +1308,8 @@ class Monitor:
                     log.exception("percept: closing stream %s failed", s.id)
         if self._owns_store:
             self.store.close()
+        if self._trace is not None:     # last: everything above may still write records
+            await asyncio.to_thread(self._trace.close if self._owns_trace else self._trace.flush, FLUSH_TIMEOUT_S)
         self._health.closed = True
         self._health.ready.set()
         self._closed = True

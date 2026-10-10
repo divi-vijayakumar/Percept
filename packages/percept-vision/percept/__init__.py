@@ -28,7 +28,10 @@ from percept import decide  # internal for now: the runtime drives it; not expor
 from percept import judges
 from percept.delivery import MemoryStore, SqliteStore
 from percept.monitor import Monitor
+from percept import trace
+from percept.replay import replay
 from percept.sources import PushSource, open_source
+from percept.trace import TraceWriter
 from percept.triggers import every, on_change
 
 __version__ = "1.0.0.dev0"
@@ -54,10 +57,12 @@ __all__ = [
     "Source",
     "SqliteStore",
     "Store",
+    "TraceWriter",
     "Trigger",
     "Usage",
     "every",
     "judges",
     "on_change",
     "open_source",
+    "replay",
 ]
