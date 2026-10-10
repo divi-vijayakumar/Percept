@@ -8,7 +8,8 @@ confirmation, verification bookkeeping, holding, clearing, expiry, rearm, cooldo
 staleness, identities, capacity and the coverage fate of every observation. Budget, dispatch,
 retries, judging, delivery and storage belong to the shell.
 
-Section references (``§n``) point at the decide transition specification. The rules in brief:
+Section references (``§n``) point at the decision-semantics document that will be published
+with the documentation. The rules in brief:
 
 * Every stored time is wall clock (§3). Deadlines are data and timers are hints: each input
   that touches a key first applies every deadline that has passed, so a late or lost timer
@@ -21,7 +22,15 @@ Section references (``§n``) point at the decide transition specification. The r
   and recheck on arrival time.
 
 Purity: no I/O, no clock, no randomness. The state passed in is never mutated; keys are frozen
-values shared between the old and the new state, and one step costs O(keys) at most.
+values shared between the old and the new state.
+
+Cost: one step is O(K) in the number of keys on the stream (K <= ``max_keys``), because it
+builds a shallow working copy of the key map; everything else a step does touches only the keys
+it names, except an epoch start, which visits every key once (O(K log K) for the sorted order).
+At the default ``max_keys`` this is negligible.
+
+:func:`step` dispatches on the exact input type: the input classes below are accepted, and
+subclasses of them are not.
 """
 
 from __future__ import annotations
@@ -356,11 +365,14 @@ def decision_view(state: StreamDecideState) -> dict:
 # --------------------------------------------------------------------------- snapshots
 
 
+SNAPSHOT_FORMAT = 1
 _KEY_FIELDS: tuple[str, ...] = tuple(Key.__dataclass_fields__)
+_PHASES: frozenset[str] = frozenset(STATE_PHASES + EVENT_PHASES)
 
 
 def to_dict(state: StreamDecideState) -> dict:
-    """A plain-JSON snapshot. Keys and snoozes are sorted, so equal states give equal dicts."""
+    """A plain-JSON snapshot, tagged with ``SNAPSHOT_FORMAT``. Keys and snoozes are sorted, so
+    equal states give equal dicts."""
 
     def key_dict(key: Key) -> dict:
         data = {name: getattr(key, name) for name in _KEY_FIELDS}
@@ -370,6 +382,7 @@ def to_dict(state: StreamDecideState) -> dict:
         return data
 
     return {
+        "format": SNAPSHOT_FORMAT,
         "stream_id": state.stream_id,
         "stream_epoch": state.stream_epoch,
         "incarnation": state.incarnation,
@@ -384,10 +397,25 @@ def to_dict(state: StreamDecideState) -> dict:
 
 
 def from_dict(data: Mapping) -> StreamDecideState:
-    """The inverse of :func:`to_dict`."""
+    """The inverse of :func:`to_dict`.
+
+    Raises ``ValueError`` for anything that is not a snapshot this version wrote: a missing or
+    unknown ``format``, an unknown phase, a missing or unknown field, or a wrong shape.
+    """
+    try:
+        return _from_dict(data)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"malformed decide snapshot: {exc!r}") from exc
+
+
+def _from_dict(data: Mapping) -> StreamDecideState:
+    if data.get("format") != SNAPSHOT_FORMAT:
+        raise ValueError(f"unsupported snapshot format {data.get('format')!r}")
     keys: dict[KeyId, Key] = {}
     for raw in data["keys"]:
         raw = dict(raw)
+        if raw.get("phase") not in _PHASES:
+            raise ValueError(f"unknown phase {raw.get('phase')!r}")
         raw["interval"] = None if raw["interval"] is None else tuple(raw["interval"])
         raw["request_ids"] = tuple(raw["request_ids"])
         raw["cost"] = Usage(**raw["cost"])
@@ -582,7 +610,8 @@ def _emit(st: _Step, key: Key, cond: Condition, type_: str, cause: Optional[str]
         request_ids=key.request_ids, cause=cause))
     key = replace(key, decisions=n, cost=Usage(), request_ids=())
     if type_ == "met":
-        key = replace(key, met_emitted=True, last_met=st.now)
+        # `expired` later carries the confidence of the met the agent actually received.
+        key = replace(key, met_emitted=True, last_met=st.now, met_confidence=confidence)
     elif type_ == "uncertain":
         key = replace(key, last_uncertain=st.now)
     return key, True
@@ -664,7 +693,6 @@ def _accept(st: _Step, key: Key, cond: Condition, confidence: float, reason: str
     else:
         key = replace(key, phase=REPORTED, rearm_until=now + cond.rearm_s)
         st.emit(ScheduleTimer(cond.id, key.subject, "rearm", key.rearm_until))
-    key = replace(key, met_confidence=confidence)
     key, emitted = _emit(st, key, cond, "met", None, reason, confidence, key.window_start)
     if not emitted and cond.kind == "state":
         key = replace(key, met_pending=True)
@@ -988,7 +1016,12 @@ def _on_false_alarm(st: _Step, inp: FalseAlarm) -> None:
 
 
 def _on_snooze(st: _Step, inp: Snooze) -> None:
-    """Replace semantics; ``until <= now`` cancels. Snoozes that have ended are dropped too."""
+    """Replace semantics; ``until <= now`` cancels. Snoozes that have ended are dropped too.
+    A snooze for a condition not in ``conditions`` is ignored, so none can leak."""
+    _sync_condition(st, inp.condition_id)
+    if inp.condition_id not in st.conditions:
+        st.trace("control_ignored", inp.condition_id, inp.subject, detail="snooze: unknown")
+        return
     target = (inp.condition_id, inp.subject)
     st.snoozes = {k: until for k, until in st.snoozes.items() if until > st.now and k != target}
     if inp.until > st.now:
@@ -1018,18 +1051,21 @@ def _on_scene_return(st: _Step, inp: SceneReturn) -> None:
 # --------------------------------------------------------------------------- conditions (§5.5)
 
 
-def _sync_condition(st: _Step, condition_id: str) -> bool:
+def _sync_condition(st: _Step, condition_id: str, idents: Optional[list[KeyId]] = None) -> bool:
     """Bring the recorded version of one condition in line with ``conditions``.
 
     Updated: every key of the condition closes with a gen bump (a held state emits ``cleared``,
-    cause ``condition_changed``). Removed: its keys and snoozes are deleted, with no decision.
-    Returns True when anything changed. O(1) when nothing did.
+    cause ``condition_changed``). Removed: its keys, recorded version and snoozes are deleted,
+    with no decision. Returns True when anything changed. O(1) when nothing did; otherwise
+    O(K), unless the caller passes the condition's key ids (``idents``, sorted).
     """
     cond = st.conditions.get(condition_id)
     recorded = st.versions.get(condition_id)
     if (cond is None and recorded is None) or (cond is not None and recorded == cond.version):
         return False
-    for ident in sorted(i for i in st.keys if i[0] == condition_id):
+    if idents is None:
+        idents = sorted(i for i in st.keys if i[0] == condition_id)
+    for ident in idents:
         key = st.keys[ident]
         if cond is None:
             st.trace("condition_removed", condition_id, key.subject, occurrence_id=key.occurrence_id)
@@ -1043,7 +1079,8 @@ def _sync_condition(st: _Step, condition_id: str) -> bool:
         st.put(_close(st, key, bump=True))
     if cond is None:
         st.versions.pop(condition_id, None)
-        st.snoozes = {k: until for k, until in st.snoozes.items() if k[0] != condition_id}
+        if any(k[0] == condition_id for k in st.snoozes):
+            st.snoozes = {k: until for k, until in st.snoozes.items() if k[0] != condition_id}
     else:
         st.versions[condition_id] = cond.version
     return True
@@ -1058,15 +1095,20 @@ def _on_condition_changed(st: _Step, inp: ConditionChanged) -> None:
 
 
 def _on_epoch(st: _Step, inp: EpochStarted) -> None:
-    """Set the epoch, sync every condition with keys, then per key in sorted order: advance,
-    apply restart or reconnect handling, and re-emit every live deadline as a timer."""
+    """Set the epoch, sync every condition that has a recorded version or a key (so removed
+    conditions are purged), then per key in sorted order: advance, apply restart or reconnect
+    handling, and re-emit every live deadline as a timer. O(K log K + C log C): keys are grouped
+    by condition once, not scanned once per changed condition."""
     if inp.stream_epoch <= st.epoch:
         st.trace("epoch_ignored", "*", detail=f"{inp.stream_epoch} <= {st.epoch}")
         return
     st.epoch = inp.stream_epoch
     st.trace("epoch_started", "*", detail=f"{inp.stream_epoch} restart={inp.restart}")
-    for cid in sorted({c for c, _ in st.keys}):
-        _sync_condition(st, cid)
+    by_condition: dict[str, list[KeyId]] = {}
+    for ident in sorted(st.keys):
+        by_condition.setdefault(ident[0], []).append(ident)
+    for cid in sorted(set(st.versions) | set(by_condition)):
+        _sync_condition(st, cid, by_condition.get(cid, []))
     for ident in sorted(st.keys):
         cond = st.conditions[ident[0]]
         key = _advance(st, st.keys[ident], cond)

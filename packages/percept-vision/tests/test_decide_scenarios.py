@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from dataclasses import asdict, dataclass, field, fields, replace
 
 import pytest
@@ -71,11 +72,13 @@ def run_script(impl, script: Script, *, round_trip_at=None):
 
 
 def check_matches_reference(impl, script: Script, live_outputs=None) -> None:
-    """The implementation must produce exactly the reference model's decisions and effects.
-    With ``live_outputs``, the replay must also reproduce what the live run produced."""
-    _, expected = run_script(reference_model, script)
-    _, actual = run_script(impl, script)
+    """The implementation must produce exactly the reference model's decisions and effects,
+    and end in the same snapshot. With ``live_outputs``, the replay must also reproduce what
+    the live run produced."""
+    final_expected, expected = run_script(reference_model, script)
+    final_actual, actual = run_script(impl, script)
     assert actual == expected
+    assert impl.to_dict(final_actual) == reference_model.to_dict(final_expected)
     if live_outputs is not None:
         assert live_outputs == expected
 
@@ -103,6 +106,7 @@ class Stream:
         self.impl = impl
         self.stream_id = stream_id
         self.conditions = {c.id: c for c in conditions}
+        self.retired: dict[str, Condition] = {}     # removed conditions, for tagging late requests
         self.state = impl.new_state(stream_id, created_at=created_at, max_keys=max_keys)
         self.script = Script(stream_id, created_at, max_keys)
         self.epoch = 0
@@ -129,7 +133,7 @@ class Stream:
         """Tag a judge request the way the runtime does at dispatch time."""
         self._requests += 1
         return dict(condition_id=condition_id, subject=subject, request_id=f"r-{self._requests}",
-                    stream_epoch=self.epoch, condition_version=self.conditions[condition_id].version,
+                    stream_epoch=self.epoch, condition_version=self._condition(condition_id).version,
                     occurrence_gen=self.impl.gen_for(self.state, condition_id, subject), purpose=purpose)
 
     def reply(self, request: dict, answer: str, confidence: float = 0.9, *, at: float,
@@ -157,12 +161,22 @@ class Stream:
         evidence = request.interval or (at - 0.5, at)
         return self.reply(tags, answer, confidence, at=at, evidence=evidence, failure=failure)
 
+    def _condition(self, condition_id: str) -> Condition:
+        return self.conditions.get(condition_id) or self.retired[condition_id]
+
     def fire(self, condition_id: str, kind: str, *, at: float, subject: str = "scene"):
         return self.feed(self.impl.TimerFired(condition_id, subject, kind), at=at)
 
     def update(self, condition: Condition, *, at: float):
         self.conditions = {**self.conditions, condition.id: condition}
         return self.feed(self.impl.ConditionChanged(condition.id), at=at)
+
+    def remove(self, condition_id: str, *, at: float | None = None):
+        """Remove a condition. With ``at``, announce it; without, the reducer finds out by
+        version sync on the next input that names it (or at the next epoch start)."""
+        self.retired[condition_id] = self.conditions[condition_id]
+        self.conditions = {k: c for k, c in self.conditions.items() if k != condition_id}
+        return None if at is None else self.feed(self.impl.ConditionChanged(condition_id), at=at)
 
     # reading
 
@@ -714,6 +728,13 @@ def test_cooldown_suppresses_a_second_met_and_records_a_trace(impl):
     assert any(e.event == "suppressed" and "cooldown" in e.detail for e in _traces(r))
 
 
+def test_cooldown_ends_exactly_at_cooldown_s(impl):
+    s = Stream(impl, door(clear_after_no=1, cooldown_s=100.0))
+    s.observe("door", "yes", at=10.0)
+    s.observe("door", "no", at=20.0)
+    assert types(s.observe("door", "yes", at=110.0)) == ["met"]      # 100 s elapsed: not cooling down
+
+
 def test_a_met_suppressed_by_cooldown_is_delivered_at_the_first_yes_after_it_lifts(impl):
     s = Stream(impl, door(clear_after_no=1, cooldown_s=300.0))
     s.observe("door", "yes", at=10.0)
@@ -906,6 +927,134 @@ def test_every_phase_has_a_defined_outcome_for_every_answer(impl, phase):
             assert len(fates(r)) == 1
 
 
+# --------------------------------------------------------------------------- expiry after a deferred met
+
+
+def test_expired_after_a_deferred_met_carries_the_delivered_mets_confidence(impl):
+    s = Stream(impl, door(clear_after_no=1, cooldown_s=100.0, max_open_s=500.0))
+    assert types(s.observe("door", "yes", 0.9, at=10.0)) == ["met"]
+    s.observe("door", "no", at=20.0)
+    assert s.observe("door", "yes", 0.7, at=30.0).decisions == ()      # held; met held back by cooldown
+    [met] = s.observe("door", "yes", 0.95, at=120.0).decisions
+    assert met.cause == "deferred" and met.confidence == 0.95
+    [expired] = s.fire("door", "max_open", at=600.0).decisions
+    assert expired.type == "expired" and expired.confidence == 0.95    # the met the agent received
+
+
+# --------------------------------------------------------------------------- condition removal
+
+
+def test_removing_a_condition_deletes_its_keys_without_a_decision(impl):
+    s = Stream(impl, door(emit_cleared=True), fall(), Condition("kettle", "The kettle boils", confirm=2))
+    s.observe("door", "yes", at=10.0)                 # holding
+    [verify] = effects(s.observe("fall", "yes", at=10.0), impl.RequestVerify)
+    s.observe("kettle", "yes", at=10.0)               # confirming
+    in_flight = s.dispatch("door")
+    s.feed(impl.Snooze("door", until=1_000.0), at=11.0)
+
+    r = s.remove("door", at=12.0)
+    assert r.decisions == ()                          # a removed condition says nothing more
+    assert effects(r, impl.CancelTimer) == [impl.CancelTimer("door", "scene", "recheck")]
+    assert "condition_removed" in trace_events(r)
+    snapshot = impl.to_dict(s.state)
+    assert "door" not in snapshot["versions"] and snapshot["snoozes"] == []
+    assert [k["condition_id"] for k in snapshot["keys"]] == ["fall", "kettle"]
+    assert impl.gen_for(s.state, "door") == 0
+
+    r = s.remove("fall", at=13.0)
+    assert r.decisions == ()
+    assert effects(r, impl.CancelVerify) == [
+        impl.CancelVerify("fall", "scene", verify.occurrence_id, verify.occurrence_gen)]
+
+    late = s.reply(in_flight, "yes", at=14.0)
+    assert late.decisions == () and stale_details(late) == ["unknown_condition"]
+
+    s.remove("kettle")                                # unannounced: found by version sync
+    r = s.feed(impl.SceneReturn("kettle"), at=15.0)
+    assert "condition_removed" in trace_events(r) and effects(r, impl.CancelTimer)
+    assert impl.to_dict(s.state)["keys"] == [] and impl.to_dict(s.state)["versions"] == {}
+
+
+def test_conditions_that_vanished_unannounced_are_purged_at_epoch_start(impl):
+    conditions = [Condition(f"c{i}", f"thing {i}") for i in range(300)]
+    s = Stream(impl, *conditions)
+    assert len(impl.to_dict(s.state)["versions"]) == 300
+    for c in conditions:
+        s.remove(c.id)                                # never announced
+    s.feed(impl.EpochStarted(1, restart=False), at=10.0)
+    assert impl.to_dict(s.state)["versions"] == {}
+
+
+def test_a_snooze_for_an_unknown_condition_is_not_recorded(impl):
+    s = Stream(impl, door())
+    r = s.feed(impl.Snooze("ghost", until=100.0), at=1.0)
+    assert impl.to_dict(s.state)["snoozes"] == []
+    assert "control_ignored" in trace_events(r)
+
+
+# --------------------------------------------------------------------------- snapshots
+
+
+def test_a_snapshot_carries_its_format(impl):
+    assert impl.to_dict(impl.new_state("cam-1", created_at=0.0))["format"] == 1
+
+
+def _valid_snapshot(impl) -> dict:
+    s = Stream(impl, door(), register=False)
+    s.observe("door", "yes", at=10.0)
+    s.feed(impl.Snooze("door", until=100.0), at=11.0)
+    return json.loads(s.snapshot())
+
+
+@pytest.mark.parametrize("corrupt", [
+    "empty", "unknown_key_field", "bad_snoozes", "keys_none", "bogus_phase", "future_format", "no_format",
+])
+def test_a_malformed_snapshot_raises_value_error(impl, corrupt):
+    data = _valid_snapshot(impl)
+    impl.from_dict(data)                              # the uncorrupted snapshot loads
+    if corrupt == "empty":
+        data = {}
+    elif corrupt == "unknown_key_field":
+        data["keys"][0]["surprise"] = 1
+    elif corrupt == "bad_snoozes":
+        data["snoozes"] = [["door", 100.0]]
+    elif corrupt == "keys_none":
+        data["keys"] = None
+    elif corrupt == "bogus_phase":
+        data["keys"][0]["phase"] = "bogus"
+    elif corrupt == "future_format":
+        data["format"] = 2
+    else:
+        del data["format"]
+    with pytest.raises(ValueError):
+        impl.from_dict(data)
+
+
+# --------------------------------------------------------------------------- restart cost
+
+
+def test_an_epoch_start_with_thousands_of_changed_conditions_is_fast(impl):
+    """Keys are grouped by condition once: O(K), not O(conditions x keys)."""
+    if impl is reference_model:
+        pytest.skip("the reference model optimises for reading, not speed")
+    n = 4_000
+    s = Stream(impl, door(), register=False)
+    s.observe("door", "yes", at=10.0)
+    data = impl.to_dict(s.state)                      # one held key, copied to every condition
+    [held] = data["keys"]
+    data["max_keys"] = n
+    data["versions"] = {f"c{i:04d}": 1 for i in range(n)}
+    data["keys"] = [{**held, "condition_id": f"c{i:04d}", "occurrence_id": f"cam-1/c{i:04d}/0-{i}"}
+                    for i in range(n)]
+    state = impl.from_dict(data)
+    conditions = {f"c{i:04d}": Condition(f"c{i:04d}", "x", version=2) for i in range(n)}  # all changed
+    started = time.perf_counter()
+    result = impl.step(state, impl.EpochStarted(1, restart=True), 20.0, conditions)
+    elapsed = time.perf_counter() - started
+    assert len(result.decisions) == 0 and all(k["phase"] == "idle" for k in impl.to_dict(result.state)["keys"])
+    assert elapsed < 1.0, f"epoch start took {elapsed:.2f}s for {n} conditions and keys"
+
+
 # --------------------------------------------------------------------------- properties
 #
 # One generator of random runs, driven two ways: by Hypothesis (which shrinks a failure to a
@@ -918,7 +1067,7 @@ VERIFY_GAPS = (0.0, 0.5, 3.0)
 LAGS = (0.0, 0.5, 3.0, 8.0)        # judge latency: evidence ends this long before arrival
 # Mostly judge answers, so occurrences live long enough to be verified, held and cleared.
 INPUT_MIX = (["detect"] * 14 + ["verify"] * 6 + ["timer"] * 3
-             + ["resolve", "false_alarm", "scene_return", "epoch", "update", "snooze"])
+             + ["resolve", "false_alarm", "scene_return", "epoch", "update", "snooze", "remove"])
 FLAVOURS = {"roomy": (64, ("scene", "p1")), "crowded": (1, ("scene", "p1", "p2"))}
 LATER = 1e7   # after every deadline any generated run can set
 
@@ -946,9 +1095,11 @@ def _random_run(impl, choose, *, steps=None):
     seen_ids: list[str] = []
     for _ in range(steps if steps is not None else choose(range(1, 41))):
         what = choose(INPUT_MIX)
+        if "c" not in s.conditions and choose([True, False, False]):
+            what = "update"    # a removed condition comes back soon, so lifecycles still run deep
         # verification replies come back quickly; everything else may arrive at any gap
         now += choose(VERIFY_GAPS if what == "verify" else GAPS)
-        cond = s.conditions["c"]
+        cond = s._condition("c")
         subject = choose(subjects)
         if what in ("detect", "verify"):
             verifying = [x for x in subjects if s.phase("c", x) == "verifying"]
@@ -981,7 +1132,17 @@ def _random_run(impl, choose, *, steps=None):
         elif what == "epoch":
             inp = impl.EpochStarted(s.epoch + 1, restart=choose([True, False]))
         elif what == "update":
+            # an update, or a re-add after a removal
             s.conditions = {"c": replace(cond, version=cond.version + 1)}
+            s.retired.pop("c", None)
+            inp = impl.ConditionChanged("c")
+        elif what == "remove":
+            if "c" not in s.conditions:
+                continue
+            announce = choose([True, False])
+            s.remove("c")
+            if not announce:
+                continue      # the next input naming it (or an epoch start) syncs the removal
             inp = impl.ConditionChanged("c")
         else:
             inp = impl.Snooze("c", until=now + choose([-1.0, 5.0, 50.0]))

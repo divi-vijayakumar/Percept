@@ -308,6 +308,9 @@ def decision_view(state: StreamDecideState) -> dict:
 # --------------------------------------------------------------------------- serialisation
 
 
+SNAPSHOT_FORMAT = 1
+
+
 def to_dict(state: StreamDecideState) -> dict:
     def key_dict(key: Key) -> dict:
         data = asdict(key)
@@ -316,6 +319,7 @@ def to_dict(state: StreamDecideState) -> dict:
         return data
 
     return {
+        "format": SNAPSHOT_FORMAT,
         "stream_id": state.stream_id,
         "stream_epoch": state.stream_epoch,
         "incarnation": state.incarnation,
@@ -329,9 +333,21 @@ def to_dict(state: StreamDecideState) -> dict:
 
 
 def from_dict(data: Mapping) -> StreamDecideState:
+    """The inverse of ``to_dict``. Anything else raises ValueError."""
+    try:
+        return _from_dict(data)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"malformed decide snapshot: {exc!r}") from exc
+
+
+def _from_dict(data: Mapping) -> StreamDecideState:
+    if data.get("format") != SNAPSHOT_FORMAT:
+        raise ValueError(f"unsupported snapshot format {data.get('format')!r}")
     keys = {}
     for raw in data["keys"]:
         raw = dict(raw)
+        if raw.get("phase") not in STATE_PHASES + EVENT_PHASES:
+            raise ValueError(f"unknown phase {raw.get('phase')!r}")
         raw["interval"] = None if raw["interval"] is None else tuple(raw["interval"])
         raw["request_ids"] = tuple(raw["request_ids"])
         raw["cost"] = Usage(**raw["cost"])
@@ -378,7 +394,7 @@ def step(state: StreamDecideState, inp: Input, now: float, conditions: Mapping[s
     elif isinstance(inp, FalseAlarm):
         _on_false_alarm(s, inp, now, conditions, out)
     elif isinstance(inp, Snooze):
-        _on_snooze(s, inp, now, out)
+        _on_snooze(s, inp, now, conditions, out)
     elif isinstance(inp, SceneReturn):
         _on_scene_return(s, inp, now, conditions, out)
     elif isinstance(inp, ConditionChanged):
@@ -646,7 +662,6 @@ def _accept(s, key, cond, confidence, reason, now, out) -> None:
         key.phase = "reported"
         key.rearm_until = now + cond.rearm_s
         out.effects.append(ScheduleTimer(cond.id, key.subject, "rearm", key.rearm_until))
-    key.met_confidence = confidence
     emitted = _emit(s, key, cond, "met", None, reason, confidence, key.window_start, now, out)
     if not emitted and cond.kind == "state":
         key.met_pending = True    # delivered at the first confident yes after the suppression lifts
@@ -729,6 +744,7 @@ def _emit(s, key, cond, type_, cause, reason, confidence, t_observed, now, out) 
     if type_ == "met":
         key.met_emitted = True
         key.last_met = now
+        key.met_confidence = confidence     # what `expired` reports: the met the agent received
     if type_ == "uncertain":
         key.last_uncertain = now
     out.decisions.append(_decision(s, key, type_, cause, reason, confidence, t_observed, now))
@@ -896,7 +912,11 @@ def _on_false_alarm(s, inp: FalseAlarm, now, conditions, out) -> None:
     _on_resolve(s, inp.occurrence_id, "false_alarm", reason, now, conditions, out)
 
 
-def _on_snooze(s, inp: Snooze, now, out) -> None:
+def _on_snooze(s, inp: Snooze, now, conditions, out) -> None:
+    _sync_version(s, inp.condition_id, now, conditions, out)
+    if inp.condition_id not in conditions:
+        out.trace(now, "control_ignored", inp.condition_id, inp.subject, detail="snooze: unknown")
+        return
     s.snoozes = {k: u for k, u in s.snoozes.items() if u > now and k != (inp.condition_id, inp.subject)}
     if inp.until > now:
         s.snoozes[(inp.condition_id, inp.subject)] = inp.until
@@ -963,7 +983,8 @@ def _on_epoch(s, inp: EpochStarted, now, conditions, out) -> None:
         return
     s.stream_epoch = inp.stream_epoch
     out.trace(now, "epoch_started", "*", detail=f"{inp.stream_epoch} restart={inp.restart}")
-    for cid in sorted({c for c, _ in s.keys}):
+    # every condition with a recorded version or a key, so removed conditions are purged
+    for cid in sorted(set(s.versions) | {c for c, _ in s.keys}):
         _sync_version(s, cid, now, conditions, out)
     for (cid, subject) in sorted(s.keys):
         key = s.keys[(cid, subject)]
