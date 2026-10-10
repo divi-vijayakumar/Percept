@@ -30,7 +30,8 @@ from percept.contracts import (
 )
 
 MAX_REASON = 160
-CHARS_PER_TOKEN_UPPER = 3     # conservative: real tokenisers average closer to 4 chars per token
+CHARS_PER_TOKEN_UPPER = 3     # ASCII text; real tokenisers average closer to 4 chars per token
+                              # (non-ASCII characters are counted as one token each)
 PROMPT_OVERHEAD_TOKENS = 64   # message framing a provider adds around the texts
 
 
@@ -74,14 +75,14 @@ SYSTEM = (
     "Do not guess: answer \"unknown\" when the images do not show enough to decide.\n"
     "Reply with JSON only, matching exactly this schema:\n"
     '{"results": [{"id": "<condition id>", "answer": "yes" | "no" | "unknown", '
-    '"confidence": <number from 0 to 1>, "reason": "<at most 160 characters>"}]}\n'
+    '"confidence": <0 to 1: how sure you are of your answer>, "reason": "<at most 160 characters>"}]}\n'
     "Include exactly one result for every listed condition id, and no other ids."
 )
 
 EVENT_RULE = "answer yes only if the event itself is visible in these images, not merely its end state"
 STATE_RULE = "answer yes if this is true in the images"
-VERIFY_NOTE = ("This is a second look at an earlier detection. Answer yes only on clear evidence; "
-               "otherwise answer no or unknown.")
+VERIFY_NOTE = ("Be strict: answer yes only if the images clearly show it, no only if they clearly "
+               "show it did not happen, otherwise unknown.")
 
 
 def _images_line(request: JudgeRequest) -> str:
@@ -93,15 +94,21 @@ def _images_line(request: JudgeRequest) -> str:
             f"They cover {t1 - t0:.1f} s, from wall-clock time {t0:.3f} to {t1:.3f}.")
 
 
+def _quote(text: str) -> str:
+    return json.dumps(text, ensure_ascii=False)
+
+
 def _item_block(item: JudgeItem) -> str:
+    # Counter-examples are sent as their notes only; ``CounterExample.thumbnail_jpeg`` is not
+    # sent yet, and so is not counted by ``worst_case_tokens`` either.
     c = item.condition
-    lines = [f"- id: {json.dumps(c.id)}",
-             f"  condition: {json.dumps(c.text)}",
+    lines = [f"- id: {_quote(c.id)}",
+             f"  condition: {_quote(c.text)}",
              f"  kind: {c.kind} ({EVENT_RULE if c.kind == 'event' else STATE_RULE})"]
     if item.subject != "scene":
-        lines.append(f"  about: {json.dumps(item.subject)}")
-    lines += [f"  FALSE case, answer no: {json.dumps(s)}" for s in c.not_when]
-    lines += [f"  previously mistaken; this is NOT it: {json.dumps(ce.note)}"
+        lines.append(f"  about: {_quote(item.subject)}")
+    lines += [f"  FALSE case, answer no: {_quote(s)}" for s in c.not_when]
+    lines += [f"  previously mistaken; this is NOT it: {_quote(ce.note)}"
               for ce in item.counter_examples if ce.note.strip()]
     return "\n".join(lines)
 
@@ -157,7 +164,7 @@ def extract_json(text: str) -> dict | None:
     while start != -1 and tries < 64:
         try:
             value, _ = decoder.raw_decode(text, start)
-        except ValueError:
+        except (ValueError, RecursionError):  # deep nesting overflows the decoder
             value = None
         if isinstance(value, dict) and "results" in value:
             return value
@@ -225,17 +232,34 @@ def cost_of(price: PriceModel, tokens_in: int, tokens_out: int) -> float:
     return (tokens_in * price.usd_per_mtok_in + tokens_out * price.usd_per_mtok_out) / 1_000_000
 
 
+def _text_tokens(text: str) -> int:
+    ascii_chars = sum(1 for ch in text if ord(ch) < 128)
+    return math.ceil(ascii_chars / CHARS_PER_TOKEN_UPPER) + (len(text) - ascii_chars)
+
+
 def worst_case_tokens(request: JudgeRequest, price: PriceModel) -> tuple[int, int]:
-    """Upper estimate of (tokens in, tokens out) for one attempt at ``request``."""
+    """Upper estimate of (tokens in, tokens out) for one attempt at ``request``.
+
+    Counter-example thumbnails are not sent, so they are not counted.
+    """
     prompt = build_prompt(request)
-    text_tokens = math.ceil((len(prompt.system) + len(prompt.user)) / CHARS_PER_TOKEN_UPPER)
+    text_tokens = _text_tokens(prompt.system) + _text_tokens(prompt.user)
     tokens_in = len(request.images) * price.tokens_per_image + text_tokens + PROMPT_OVERHEAD_TOKENS
     return tokens_in, request.max_output_tokens
 
 
-def worst_case_cost(request: JudgeRequest, price: PriceModel, *, attempts: int = 1) -> float:
-    """The dollar amount to reserve before sending ``request``, for up to ``attempts`` attempts."""
-    return attempts * cost_of(price, *worst_case_tokens(request, price))
+def worst_case_cost(request: JudgeRequest, price: PriceModel, *, retries: int = 1) -> float:
+    """The dollar amount to reserve before sending ``request``.
+
+    ``retries`` mirrors ``policy.call``: up to ``retries + 1`` attempts may be billed, and a
+    timed-out attempt is billed without reporting its tokens, so every attempt is reserved.
+    """
+    return attempts_for(retries) * cost_of(price, *worst_case_tokens(request, price))
+
+
+def attempts_for(retries: int) -> int:
+    """The most provider requests one ``policy.call`` with ``retries`` can make."""
+    return retries + 1
 
 
 def attribute_usage(result: JudgeResult) -> tuple[Usage, ...]:

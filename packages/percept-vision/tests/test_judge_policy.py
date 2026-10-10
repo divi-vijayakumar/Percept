@@ -9,7 +9,7 @@ from PIL import Image
 
 from percept.contracts import Condition, JudgeItem, JudgeRequest, PriceModel
 from percept.judges import policy
-from percept.judges.base import RawReply, RefusalError, RetryableError, cost_of
+from percept.judges.base import RawReply, RefusalError, RetryableError, attribute_usage, cost_of
 from percept.judges.encode import to_jpeg
 from percept.judges.fake import VirtualClock
 
@@ -104,6 +104,12 @@ def test_no_retry_past_the_deadline():
     assert kinds(result) == ["unavailable"] * 2 and len(provider.calls) == 1
 
 
+def test_retry_skipped_for_the_deadline_says_so():
+    result = run(Provider(RetryableError("429", retry_after_s=30.0)))
+    assert result.observations[0].reason.startswith("no time to retry before the deadline")
+    assert run(Provider(RetryableError("503"))).observations[0].reason.startswith("retries exhausted")
+
+
 def test_provider_retry_after_is_honoured():
     provider = Provider(RetryableError("429", retry_after_s=2.0), RawReply(OK))
     assert kinds(run(provider)) == [None, None] and provider.clock() == 2.0
@@ -148,6 +154,28 @@ def test_deadline_override():
 
 def test_bad_reply_object_is_unavailable():
     assert kinds(run(Provider(None))) == ["unavailable"] * 2
+
+
+def test_deeply_nested_reply_does_not_raise():
+    result = run(Provider(RawReply('{"results":' + "[" * 100_000)))
+    assert kinds(result) == ["malformed"] * 2
+
+
+def test_a_parser_crash_is_malformed(monkeypatch):
+    def boom(*_):
+        raise RecursionError("deep")
+    monkeypatch.setattr(policy, "parse_reply", boom)
+    result = run(Provider(RawReply(OK)))
+    assert kinds(result) == ["malformed"] * 2 and result.usage[0].failure == "malformed"
+
+
+def test_unbatched_sub_requests_have_their_own_ids():
+    provider = Provider(RawReply(OK, 10, 4))
+    result = run(provider, batch=False)
+    assert [c[3].request_id for c in provider.calls] == ["r-1/a", "r-1/b"]
+    assert [o.request_id for o in result.observations] == ["r-1/a", "r-1/b"]
+    assert [ru.request_id for ru in result.usage] == ["r-1/a", "r-1/b"]
+    assert [s.tokens_in for s in attribute_usage(result)] == [10, 10]
 
 
 def test_malformed_reply_marks_request_failure():

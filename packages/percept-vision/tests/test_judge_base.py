@@ -17,6 +17,7 @@ from percept.contracts import (
 )
 from percept.judges.base import (
     EVENT_RULE,
+    VERIFY_NOTE,
     attribute_usage,
     build_prompt,
     cost_of,
@@ -24,6 +25,7 @@ from percept.judges.base import (
     failed_observations,
     parse_reply,
     worst_case_cost,
+    worst_case_tokens,
 )
 
 PRICE = PriceModel(usd_per_mtok_in=0.3, usd_per_mtok_out=2.5, tokens_per_image=258)
@@ -83,9 +85,20 @@ def test_prompt_orders_images_with_interval():
     assert "1 image" in build_prompt(make_request(n_images=1)).user
 
 
-def test_prompt_verify_is_stricter():
-    assert "second look" in build_prompt(make_request(purpose="verify")).user
-    assert "second look" not in build_prompt(REQ).user
+def test_prompt_verify_is_strict_without_anchoring():
+    user = build_prompt(make_request(purpose="verify")).user
+    assert VERIFY_NOTE in user and "earlier" not in user
+    assert VERIFY_NOTE not in build_prompt(REQ).user
+
+
+def test_prompt_defines_confidence_as_certainty_of_the_answer():
+    assert "how sure you are of your answer" in build_prompt(REQ).system
+
+
+def test_prompt_keeps_non_ascii_text_readable():
+    req = JudgeRequest("r", "c", 0, (JudgeItem(Condition("door", "ドアが開いている")),),
+                       (np.zeros((4, 4, 3), np.uint8),), (0.0, 0.0))
+    assert "ドアが開いている" in build_prompt(req).user
 
 
 # --------------------------------------------------------------------------- parse
@@ -113,6 +126,13 @@ def test_parse_tolerates_wrapping(text):
 @pytest.mark.parametrize("text", ["", "   ", "no idea", "{}", '{"results": 3}', "[1, 2]", '{"results": [}'])
 def test_unusable_reply_is_all_malformed(text):
     assert failures(text) == ["malformed", "malformed"]
+
+
+@pytest.mark.parametrize("depth", [1500, 100_000])
+def test_deeply_nested_reply_is_malformed_not_a_crash(depth):
+    assert failures('{"results":' + "[" * depth) == ["malformed", "malformed"]
+    assert failures('{"results": [' + "[" * depth + "]" * depth + "]}") in (
+        ["missing", "missing"], ["malformed", "malformed"])
 
 
 def test_non_string_reply_is_malformed():
@@ -189,7 +209,18 @@ def test_worst_case_cost_covers_a_typical_reply():
     typical_out = len(GOOD) // 4
     assert worst_case_cost(req, PRICE) >= cost_of(PRICE, typical_in, typical_out)
     assert worst_case_cost(req, PRICE) >= cost_of(PRICE, typical_in, req.max_output_tokens)
-    assert worst_case_cost(req, PRICE, attempts=2) == pytest.approx(2 * worst_case_cost(req, PRICE))
+    one = worst_case_cost(req, PRICE, retries=0)
+    assert worst_case_cost(req, PRICE) == pytest.approx(2 * one)  # default mirrors policy.call(retries=1)
+    assert worst_case_cost(req, PRICE, retries=2) == pytest.approx(3 * one)
+
+
+def test_worst_case_counts_non_ascii_as_one_token_per_character():
+    def tokens(text):
+        req = JudgeRequest("r", "c", 0, (JudgeItem(Condition("x", text)),), (np.zeros((4, 4, 3), np.uint8),),
+                           (0.0, 0.0))
+        return worst_case_tokens(req, PRICE)[0]
+    assert tokens("火" * 300) - tokens("a") >= 299
+    assert tokens("a" * 301) - tokens("a") <= 100
 
 
 # --------------------------------------------------------------------------- usage

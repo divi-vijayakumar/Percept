@@ -60,17 +60,22 @@ async def call(
     """Judge ``request`` through ``send`` within ``deadline_s`` (default: the request's).
 
     With ``batch=False`` each item is sent as its own single-item request, one after another,
-    under the same overall deadline; items not sent before it passes fail as ``timeout``.
+    under the same overall deadline; items not sent before it passes fail as ``timeout``. Each
+    sub-request has ``request_id`` ``"<parent id>/<condition id>"`` (condition ids never contain
+    ``/``), so its observations and usage stay attributable to the request that was sent.
     Returns one observation per item in request order and one ``RequestUsage`` per request sent.
     """
     deadline_s = request.deadline_s if deadline_s is None else deadline_s
     start = clock()
+    # Encoding runs synchronously on the event loop; whether to move it to a thread is left to
+    # the runtime that calls this.
     try:
         images = tuple(to_jpeg(image, max_side=max_side) for image in request.images)
     except Exception as exc:  # noqa: BLE001 - a bad frame is an outage of this request, not a crash
         return JudgeResult(failed_observations(request, "unavailable", judge_name, _describe(exc)), ())
 
-    parts = [request] if batch or len(request.items) == 1 else [replace(request, items=(i,)) for i in request.items]
+    parts = [request] if batch or len(request.items) == 1 else [
+        replace(request, request_id=f"{request.request_id}/{i.condition.id}", items=(i,)) for i in request.items]
     observations: list[Observation] = []
     usage: list[RequestUsage] = []
     for part in parts:
@@ -92,16 +97,20 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
     prompt = build_prompt(request)
     start = clock()
     attempts = tokens_in = tokens_out = 0
+    out_of_time = False  # a retry was skipped because it could not finish before the deadline
 
     async def attempt() -> RawReply:
-        nonlocal attempts, tokens_in, tokens_out
+        nonlocal attempts, tokens_in, tokens_out, out_of_time
         while True:
             attempts += 1
             try:
                 reply = await send(prompt, images, request.max_output_tokens, request)
             except RetryableError as exc:
                 delay = exc.retry_after_s if exc.retry_after_s is not None else BACKOFF_S * (1 + rng())
-                if attempts > retries or clock() - start + delay >= deadline_s:
+                if attempts > retries:
+                    raise
+                if clock() - start + delay >= deadline_s:
+                    out_of_time = True
                     raise
                 await sleep(delay)
                 continue
@@ -118,14 +127,18 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
     except (asyncio.TimeoutError, TimeoutError):
         failure, reason = "timeout", f"no reply within {deadline_s:.1f} s"
     except RetryableError as exc:
-        failure, reason = "unavailable", "retries exhausted: " + _describe(exc)
+        cause = "no time to retry before the deadline" if out_of_time else "retries exhausted"
+        failure, reason = "unavailable", f"{cause}: {_describe(exc)}"
     except RefusalError as exc:
         failure, reason = "refused", _describe(exc)
     except Exception as exc:  # noqa: BLE001 - failures are reported, never raised
         failure, reason = "unavailable", _describe(exc)
 
     if failure is None:
-        observations = parse_reply(reply.text, request, judge_name)
+        try:
+            observations = parse_reply(reply.text, request, judge_name)
+        except Exception as exc:  # noqa: BLE001 - "never raises" must not depend on the parser
+            observations = failed_observations(request, "malformed", judge_name, _describe(exc))
         kinds = {o.failure for o in observations}
         request_failure = kinds.pop() if len(kinds) == 1 else None
     else:

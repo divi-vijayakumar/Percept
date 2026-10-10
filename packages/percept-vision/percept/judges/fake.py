@@ -65,7 +65,8 @@ class FakeJudge:
         self.latency_s = latency_s
         self.retries = retries
         self.clock = clock or VirtualClock()
-        self.sent: list[JudgeRequest] = []  # every provider request, retries included
+        # Every provider request, retries included: (prompt, jpeg images, max_output_tokens, request).
+        self.sent: list[tuple[Prompt, tuple[bytes, ...], int, JudgeRequest]] = []
         self._script = script if callable(script) else (lambda _request: script)
 
     async def judge(self, request: JudgeRequest) -> JudgeResult:
@@ -75,7 +76,7 @@ class FakeJudge:
 
     async def _send(self, prompt: Prompt, images: tuple[bytes, ...], max_output_tokens: int,
                     request: JudgeRequest) -> RawReply:
-        self.sent.append(request)
+        self.sent.append((prompt, images, max_output_tokens, request))
         reply: Any = self._script(request)
         await self.clock.sleep(self.latency_s)
         if isinstance(reply, BaseException):
