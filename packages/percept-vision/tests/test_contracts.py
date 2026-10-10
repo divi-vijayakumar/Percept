@@ -346,3 +346,21 @@ def test_protocols_accept_structural_implementations():
     assert isinstance(S(), Source) and isinstance(T(), Trigger) and isinstance(J(), Judge)
     assert isinstance(D(), Delivery) and isinstance(St(), Store)
     assert RequestUsage("r", "fake", Usage()).failure is None
+
+
+# --- D5 contract additions
+
+
+def test_decision_cause_round_trips_and_defaults_to_none():
+    assert decision().cause is None
+    d = decision(type="cleared", cause="no")
+    assert Decision.from_dict(json.loads(json.dumps(d.to_dict()))).cause == "no"
+    older = decision().to_dict()
+    del older["cause"]                      # a 1.0 payload written before `cause` existed
+    assert Decision.from_dict(older).cause is None
+
+
+def test_unverified_health_and_capacity_fate_exist():
+    from percept.contracts import FATES, HEALTH_KINDS
+    assert "unverified" in HEALTH_KINDS and "dropped_capacity" in FATES
+    Health("unverified", "cam", 1.0, condition_id="fall", subject="scene")

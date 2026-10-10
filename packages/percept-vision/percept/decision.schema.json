@@ -20,7 +20,8 @@
     "trace_id",
     "request_ids",
     "evidence",
-    "keyframe_jpeg_b64"
+    "keyframe_jpeg_b64",
+    "cause"
   ],
   "properties": {
     "contract_version": {
@@ -151,6 +152,13 @@
         "null"
       ],
       "description": "Durable keyframe, JPEG, at most 40 KB before encoding."
+    },
+    "cause": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Machine-readable cause (for example no, timeout, restart, false_alarm). `reason` is human-readable text."
     }
   }
 }

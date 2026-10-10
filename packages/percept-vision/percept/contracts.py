@@ -32,6 +32,7 @@ Fate = Literal[
     "dropped_budget",   # waited past its priority deadline
     "dropped_quality",  # frame vetoed as corrupt or blurry
     "stale",            # result arrived for an older epoch, version or generation
+    "dropped_capacity", # refused: every decision slot on the stream holds an open occurrence
 ]
 BlindKind = Literal["link_down", "degraded_video", "scene_reset", "budget_exhausted", "judge_down", "paused"]
 HealthKind = Literal[
@@ -44,6 +45,7 @@ HealthKind = Literal[
     "scene_reset",
     "capacity",
     "store_lag",
+    "unverified",       # an event candidate closed without a verified answer
 ]
 
 # A zone is a polygon in normalised image coordinates: (x, y) with 0 <= x, y <= 1.
@@ -91,9 +93,12 @@ class Frame:
     decodes). Judges convert to whatever their provider expects.
 
     ``seq`` and ``t`` are monotonic within one ``stream_epoch``; the epoch increases on every
-    reconnect and restart, so values from different epochs are never compared. ``t`` is
-    seconds on the process's monotonic clock; ``t_wall`` is Unix time for anything that is
-    persisted or shown to a person.
+    reconnect and restart, and ``seq`` restarts at 0 in each epoch, so values from different
+    epochs are never compared. ``t`` is the stream clock in seconds: for live sources it follows
+    the process's monotonic clock; for files it is the media timeline anchored when the file was
+    opened, and may run ahead of the real clock while decoding is faster than real time. Compare
+    ``t`` only with another frame's ``t``. ``t_wall`` is Unix time for anything that is persisted
+    or shown to a person.
     """
 
     stream_id: str
@@ -388,6 +393,7 @@ class Decision:
     request_ids: tuple[str, ...] = ()
     evidence: tuple[EvidenceRef, ...] = ()
     keyframe: bytes | None = field(default=None, repr=False)
+    cause: str | None = None                # machine-readable cause, e.g. "no", "timeout", "restart"
 
     def __post_init__(self) -> None:
         _require(all((self.decision_id, self.occurrence_id, self.condition_id, self.stream_id,
@@ -422,6 +428,7 @@ class Decision:
                 {f.name: getattr(e, f.name) for f in fields(EvidenceRef)} for e in self.evidence
             ],
             "keyframe_jpeg_b64": None if self.keyframe is None else base64.b64encode(self.keyframe).decode("ascii"),
+            "cause": self.cause,
         }
 
     @classmethod
@@ -453,6 +460,7 @@ class Decision:
             request_ids=tuple(data.get("request_ids", ())),
             evidence=tuple(EvidenceRef(**e) for e in data.get("evidence", ())),
             keyframe=None if keyframe is None else base64.b64decode(keyframe),
+            cause=data.get("cause"),
         )
 
 
@@ -501,7 +509,13 @@ Due = Mapping[str, str]  # condition_id -> reason the trigger fired
 
 @runtime_checkable
 class Source(Protocol):
-    """Brings frames. Must keep ``seq``/``t`` monotonic and bump ``stream_epoch`` on reconnect."""
+    """Brings frames.
+
+    Keeps ``seq``/``t`` monotonic within an epoch, restarts ``seq`` at 0 and bumps
+    ``stream_epoch`` on every reconnect, and reports outages as ``Health`` (``link_down`` /
+    ``link_up``) rather than raising out of ``frames()``. A source may also provide
+    ``async aclose()``; the runtime calls it at shutdown when present.
+    """
 
     stream_id: str
 
@@ -523,7 +537,12 @@ class Trigger(Protocol):
 
 @runtime_checkable
 class Judge(Protocol):
-    """Decides what is true. Never raises: failures come back as failed observations."""
+    """Decides what is true. Never raises: failures come back as failed observations.
+
+    A judge may also set ``max_attempts``: the most provider requests one ``judge()`` call can
+    make, retries and cascade hops included. The budget reserves that many attempts before
+    dispatch; a judge without it is assumed to make at most two.
+    """
 
     name: str
     can_batch: bool
