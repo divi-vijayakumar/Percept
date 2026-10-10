@@ -25,6 +25,7 @@ from percept.contracts import (
     Usage,
 )
 from percept import judges
+from percept.triggers import every, on_change
 
 __version__ = "1.0.0.dev0"
 
@@ -47,5 +48,7 @@ __all__ = [
     "Store",
     "Trigger",
     "Usage",
+    "every",
     "judges",
+    "on_change",
 ]
