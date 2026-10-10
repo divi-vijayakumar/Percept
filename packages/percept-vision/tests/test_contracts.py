@@ -308,6 +308,12 @@ def test_blind_interval_validates():
         BlindInterval("nap", "cam", 10.0)
 
 
+def test_blind_interval_names_its_condition_when_it_concerns_one():
+    assert BlindInterval("link_down", "cam", 10.0).condition_id is None    # additive: old calls unchanged
+    gap = BlindInterval("paused", "cam", 10.0, 12.0, "paused by the application", "door")
+    assert (gap.condition_id, gap.detail) == ("door", "paused by the application")
+
+
 def test_condition_trigger_must_be_a_trigger():
     class T:
         def step(self, frame, conditions, state, now): return {}, state

@@ -485,7 +485,8 @@ class Health:
 class BlindInterval:
     """A span of wall-clock time when Percept could not see or could not judge.
 
-    ``t_end_wall`` is None while the interval is still open.
+    ``t_end_wall`` is None while the interval is still open. ``condition_id`` is set when the
+    gap concerns one condition only (``paused``); ``detail`` is free text.
     """
 
     kind: BlindKind
@@ -493,6 +494,7 @@ class BlindInterval:
     t_start_wall: float
     t_end_wall: float | None = None
     detail: str = ""
+    condition_id: str | None = None
 
     def __post_init__(self) -> None:
         _require(self.kind in BLIND_KINDS, f"unknown blind interval kind {self.kind!r}")
