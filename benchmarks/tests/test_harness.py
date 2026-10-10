@@ -240,13 +240,51 @@ def test_dry_run_end_to_end(tmp_path):
     assert manifest["harness"]["clip_frames"] == arms.CLIP_FRAMES and not manifest["publishable"]
     table = json.loads((out / "metrics.json").read_text())
     assert table["percept"]["requests"] > 0 and table["percept"]["recall"] is not None
-    assert table["percept"]["frames_capped"] == 0
+    p = table["percept"]
+    assert p["unintended_loss_total"] == 0 and p["unintended_loss"]["handoff_dropped"] == 0
+    assert set(p["intentional_sampling"]) == {"harness_fps", "monitor_fps_cap"}
+    for key in ("budget_drops", "trigger_never_fired", "verify_rejected", "unverified", "uncertain", "watched_s",
+                "cases_skipped", "cost_per_hour", "latency_p95_s", "false_per_hour"):
+        assert key in p
+    label = "percept (product defaults; rearm standardised to 30 s)"
+    assert p["label"] == label and config["percept"]["label"] == label
+    assert config["percept"]["changed_from_product_defaults"]["condition.rearm_s"]["product_default"] == 120
     text = (out / "report.md").read_text()
-    for heading in ("Dry run", "Publishable: no", "## Every arm", "recall ceiling", "## Misses by stage",
-                    "## Footprint", "## Where `percept` loses", "## Where `percept-matched` loses",
+    for heading in ("Dry run", "Diagnostic, not publishable", "Publishable: no", "## Every arm", "recall ceiling",
+                    "## Losses and verification", "## Misses by stage", "Actual spend $", f"| {label} |",
+                    "## Footprint", f"## Where {label} loses", "## Where percept-matched (max_requests_per_min 12; "
+                    "rearm standardised to 30 s) loses",
                     "Identical evidence: yes", "only 1.0x results are publishable", "2 reserved per request"):
         assert heading in text
     assert (out / "traces" / "percept" / "synthetic-0.jsonl").exists()
+
+
+def _meva_run(**arm):
+    manifest = {"judge": {"spec": "gemini:m"}, "dataset": "meva", "speed": 1.0, "aborted": False}
+    s = dict(skipped=[], footprint={"max_push_lag_s": 0.1}, intentional_sampling={}, unintended_loss={},
+             unintended_loss_total=0)
+    s.update(arm)
+    return manifest, {"percept": s}
+
+
+def test_intentional_sampling_is_publishable_unintended_loss_is_not():
+    heavy = {"harness_fps": 900_000, "monitor_fps_cap": 50_000}
+    assert run.not_publishable(*_meva_run(intentional_sampling=heavy)) == []
+    why = run.not_publishable(*_meva_run(intentional_sampling=heavy, unintended_loss={"handoff_dropped": 3},
+                                         unintended_loss_total=3))
+    assert len(why) == 1 and "unintended_loss" in why[0]
+    assert run.not_publishable(*_meva_run(footprint={"max_push_lag_s": 2.5}))       # the lag limit still holds
+
+
+def test_loss_accounting_adds_up_per_arm():
+    case = VideoCase("x", "t", (Segment("u.mp4", 0, 60),), (CondSpec("a", "a"),), ())
+    r = [watched("percept", "x", 60, intentional_sampling={"harness_fps": 1500, "monitor_fps_cap": 0},
+                 unintended_loss={"decode_gaps": 2, "handoff_dropped": 1, "late_frames": 0},
+                 budget_dropped=4, unverified=1, uncertain=2)]
+    s = metrics.score(r * 2, {"x": case}, tol=1.0)
+    assert s["intentional_sampling"] == {"harness_fps": 3000, "monitor_fps_cap": 0}
+    assert s["unintended_loss_total"] == 6 and s["budget_drops"] == 8 and s["unverified"] == 2
+    assert s["watched_s"] == 120 and s["cases_skipped"] == 0
 
 
 def test_meva_activity_lines_parse():
@@ -274,3 +312,5 @@ def test_dry_run_reports_an_abort(tmp_path):
     assert manifest["spent_usd"] <= 0.0005 and manifest["skipped"]
     table = json.loads((out / "metrics.json").read_text())
     assert table["chunk10"]["cases"] == 0 and table["chunk10"]["source_hours"] == 0
+    assert table["chunk10"]["cases_skipped"] == 2
+    assert sum(s["cost_usd"] for s in table.values()) == pytest.approx(manifest["spent_usd"])   # partial spend kept

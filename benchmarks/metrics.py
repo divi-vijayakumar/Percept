@@ -27,6 +27,12 @@ a look said yes but no decision matched (``decide_suppressed``); looks answered,
 (``judge_said_no``); only failed looks (``judge_failed``); no answered look and the budget
 dropped one (``budget_dropped``: approximate for Percept, whose trace counts drops per minute);
 nothing looked (``trigger_never_fired``).
+
+Frames. ``intentional_sampling`` counts frames the configured sampling skipped (the harness's
+``--fps`` sampling of the source, the Monitor's processing fps cap): expected, not a defect.
+``unintended_loss`` counts frames lost because decoding, a queue or processing couldn't keep up
+(decode gaps, frames replaced in the push handoff, frames pushed more than ``MAX_LAG_S`` behind
+real time). They are reported separately; only unintended loss disqualifies a run.
 """
 
 from __future__ import annotations
@@ -108,8 +114,11 @@ def score(results: list, cases: dict, tol: float) -> dict:
     latencies, stages, false_absent = [], Counter(), 0
     seconds = cost = 0.0
     unsupported, skipped, conditions, watched = [], [], 0, []
+    sampling, loss = Counter(), Counter()
     for r in results:
         cost += r.cost_usd
+        sampling.update(r.intentional_sampling)
+        loss.update(r.unintended_loss)
         if r.error or not r.digest or r.seconds <= 0:
             skipped.append({"case_id": r.case_id, "reason": r.error or "not run: the spend cap was reached"})
             continue
@@ -139,7 +148,8 @@ def score(results: list, cases: dict, tol: float) -> dict:
                           for o in m["missed"])
     hours = seconds / 3600.0
     return {
-        "cases": len(watched), "conditions": conditions, "source_hours": round(hours, 4),
+        "cases": len(watched), "cases_skipped": len(skipped), "conditions": conditions,
+        "watched_s": round(seconds, 1), "source_hours": round(hours, 4),
         "occurrences": occ_n, "decisions": pred_n, "matched": tp, "missed": occ_n - tp,
         "duplicates": dup_n, "false_events": false_n, "false_on_absent_conditions": false_absent,
         "recall": tp / occ_n if occ_n else None,
@@ -152,7 +162,13 @@ def score(results: list, cases: dict, tol: float) -> dict:
         "cost_per_true_event": cost / tp if tp else None,
         "requests": sum(r.requests for r in results),
         "uncertain": sum(r.uncertain for r in results),
-        "frames_capped": sum(r.frames_capped for r in results),
+        "unverified": sum(r.unverified for r in results),
+        "budget_drops": sum(r.budget_dropped for r in results),
+        "trigger_never_fired": stages.get("trigger_never_fired", 0),
+        "verify_rejected": stages.get("verify_rejected", 0),
+        "intentional_sampling": dict(sorted(sampling.items())),
+        "unintended_loss": dict(sorted(loss.items())),
+        "unintended_loss_total": sum(loss.values()),
         "misses_by_stage": {s: stages.get(s, 0) for s in STAGES},
         "unsupported": unsupported, "skipped": skipped,
         "aborted": any(r.aborted for r in results),

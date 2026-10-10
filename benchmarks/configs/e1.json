@@ -6,8 +6,8 @@
   "varies": ["scheduling and decision only"],
   "published_dataset": "MEVA only; Perception Test runs are diagnostics, never a published comparison",
   "rows": {
-    "percept": "Monitor defaults: 6 attempts a minute per stream, 2 reserved per request",
-    "percept-matched": "max_requests_per_min 12, the request rate of chunk5"
+    "percept": "product defaults (6 attempts a minute per stream, 2 reserved per request) except rearm_s, standardised to 30 s (product default 120 s)",
+    "percept-matched": "max_requests_per_min 12 (the request rate of chunk5) and rearm_s 30 s; otherwise product defaults"
   },
   "dataset": "meva",
   "arms": "percept,percept-matched,chunk5,chunk10,chunk30,detector_debounce,detector_then_vlm",

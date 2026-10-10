@@ -121,12 +121,21 @@ def merge_overlapping(occs: list[Occurrence]) -> list[Occurrence]:
 class Feed:
     """Frames of a case as ``(t, image)``: ``t`` on the case timeline, ``image`` uint8 BGR with
     its longest side at most ``max_side``, sampled to ``fps``. ``digest`` covers every frame
-    yielded so far."""
+    yielded so far.
+
+    Frame accounting: ``sampled_out`` counts decoded source frames the ``fps`` sampling skipped
+    (intentional); ``decode_gaps`` counts sample slots lost because the decoder returned nothing
+    for more than ``GAP_S`` (a hole in the stream, a failed read, or a file shorter than its
+    segment): unintended loss."""
+
+    GAP_S = 1.0
 
     def __init__(self, case: VideoCase, fps: float = 5.0, max_side: int = 640, note=None) -> None:
         self.case, self.fps, self.max_side, self.note = case, fps, max_side, note   # note(t, image) per frame
         self._h = hashlib.sha256()
         self.frames = 0
+        self.sampled_out = 0
+        self.decode_gaps = 0
 
     @property
     def digest(self) -> str:
@@ -146,13 +155,16 @@ class Feed:
         cap = cv2.VideoCapture(seg.path)
         try:
             cap.set(cv2.CAP_PROP_POS_MSEC, seg.start * 1000.0)
-            step, due = 1.0 / self.fps, 0.0
+            step, due, last = 1.0 / self.fps, 0.0, 0.0
             while cap.grab():                       # decode every frame, convert only the sampled ones
                 t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0 - seg.start
+                if not seg.hold and 0.0 <= t < seg.end - seg.start:
+                    self._gap(t - last)
+                    last = max(last, t)
                 if seg.hold or t + 1e-6 >= due:
                     ok, image = cap.retrieve()
                     if not ok:
-                        return
+                        break
                 if seg.hold:
                     still = self._fit(image)
                     rng = np.random.default_rng(int(seg.start * 1000))   # sensor noise, deterministic
@@ -165,8 +177,16 @@ class Feed:
                 if t + 1e-6 >= due:
                     due += step
                     yield max(t, 0.0), self._fit(image)
+                elif t >= 0.0:
+                    self.sampled_out += 1
+            if not seg.hold:                        # the stream ended (or failed) before the segment did
+                self._gap(seg.end - seg.start - last)
         finally:
             cap.release()
+
+    def _gap(self, dt: float) -> None:
+        if dt > self.GAP_S:
+            self.decode_gaps += int(dt * self.fps)
 
     def __iter__(self) -> Iterator[tuple[float, np.ndarray]]:
         offset = 0.0

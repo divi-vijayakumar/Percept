@@ -1,7 +1,9 @@
 """The arms: ways to turn the same footage and condition text into decisions.
 
-* ``percept``: a ``Monitor`` with its defaults (change trigger, confirm/verify, request budget of
-  6 attempts a minute, 2 reserved per request), fed in real time through a ``PushSource``.
+* ``percept``: a ``Monitor`` with the product defaults (change trigger, confirm/verify, request
+  budget of 6 attempts a minute, 2 reserved per request) EXCEPT the rearm, which a run may
+  standardise (E1: 30 s, the baselines' cooldown; the product default ``rearm_s`` is 120 s), fed
+  in real time through a ``PushSource``.
 * ``percept-matched``: the same with ``max_requests_per_min`` raised (``--percept-budget``,
   default 12: the request rate of ``chunk5``), so budget is not the only difference.
   Both use only Percept's public API.
@@ -38,6 +40,7 @@ from benchmarks.cases import Feed, VideoCase
 CLIP_FRAMES, CLIP_S = 4, 4.0        # the evidence format Percept uses for events, shared by every arm
 MIN_CONFIDENCE = 0.6                # Percept's default, applied by the baselines too
 COOLDOWN_S = 30.0
+MAX_LAG_S = 1.0                     # a pushed frame later than this behind real time counts as lost
 
 
 @dataclass
@@ -74,7 +77,12 @@ class ArmResult:
     aborted: bool = False
     cooldown_s: float = 0.0     # how long one decision suppresses the next for its condition
     seconds: float = 0.0        # footage actually watched (less than the case when aborted)
-    frames_capped: int = 0      # frames the Monitor skipped (must be 0 for a publishable run)
+    # Frame accounting. Intentional: the configured sampling skipped it. Unintended: decoding,
+    # a queue or processing couldn't keep up. Only unintended loss disqualifies a run.
+    intentional_sampling: dict = field(default_factory=dict)  # harness_fps, monitor_fps_cap
+    unintended_loss: dict = field(default_factory=dict)       # decode_gaps, handoff_dropped, late_frames
+    budget_dropped: int = 0     # looks the request budget dropped (exact count)
+    unverified: int = 0         # event candidates closed without a verified answer
     error: str = ""             # the case failed: recorded, scored as skipped
 
 
@@ -82,6 +90,8 @@ def _finish(result: ArmResult, feed: Feed, complete: bool) -> ArmResult:
     result.digest = feed.digest
     result.seconds = feed.case.duration if complete else feed.frames / feed.fps
     result.aborted = result.aborted or not complete
+    result.intentional_sampling["harness_fps"] = feed.sampled_out
+    result.unintended_loss["decode_gaps"] = feed.decode_gaps
     return result
 
 
@@ -255,14 +265,14 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
     source = PushSource(case.case_id, preroll=preroll)
     feed, anchor, complete = _feed(case, fps, timelines), time.time() + 0.2, False
     timelines.set(case.case_id, anchor, speed)
-    peak_preroll, lag = 0, 0.0
+    peak_preroll, lag, late = 0, 0.0, 0
     budget = {} if max_requests_per_min is None else {"max_requests_per_min": max_requests_per_min}
     monitor = Monitor(judge, conditions, store=MemoryStore(), trace=trace_path, **budget)
     async with monitor:
         decisions = monitor.watch(source, ack="auto", fps=None)
 
         async def play() -> None:
-            nonlocal peak_preroll, lag, complete
+            nonlocal peak_preroll, lag, late, complete
             try:
                 async for t, image in frames_of(feed):
                     if judge.tripped.is_set():
@@ -271,7 +281,8 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
                     await asyncio.sleep(max(0.0, wall - time.time()))
                     if judge.tripped.is_set():                  # the cap closed the monitor meanwhile
                         break
-                    lag = max(lag, time.time() - wall)          # how far pacing fell behind real time
+                    behind = time.time() - wall                 # how far pacing fell behind real time
+                    lag, late = max(lag, behind), late + (behind > MAX_LAG_S)
                     source.push(image, t_wall=wall)
                     peak_preroll = max(peak_preroll, len(preroll))
                 else:
@@ -297,7 +308,9 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
         stopper.cancel()
         s = monitor.stats()["streams"].get(case.case_id, {})
         result.cost_usd, result.requests = s.get("cost_usd", 0.0), s.get("requests", 0)
-        result.frames_capped = s.get("frames_capped", 0)
+        result.intentional_sampling["monitor_fps_cap"] = s.get("frames_capped", 0)
+        result.unintended_loss.update(handoff_dropped=source.dropped, late_frames=late)
+        result.budget_dropped = s.get("fates", {}).get("dropped_budget", 0)
     _finish(result, feed, complete and not judge.tripped.is_set())
     if stats is not None:
         stats["preroll_frames"] = max(stats.get("preroll_frames", 0), peak_preroll)
@@ -317,6 +330,8 @@ def _read_trace(result: ArmResult, path: Path, media) -> None:
             # Approximate: the trace counts drops per minute, so the drop is somewhere in that minute.
             t0 = media(rec["bucket_wall"])
             result.budget_drops.append((rec["condition_id"], t0, t0 + 60.0 * (media(1.0) - media(0.0))))
+        elif rec["kind"] == "fate" and rec.get("event") == "unverified":
+            result.unverified += 1
 
 
 def _rusage() -> tuple[float, float]:
