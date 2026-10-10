@@ -7,6 +7,7 @@ import pytest
 
 from percept.contracts import (
     CONTRACT_VERSION,
+    BlindInterval,
     Condition,
     Decision,
     Delivery,
@@ -31,7 +32,7 @@ SQUARE = ((0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9))
 
 def obs(**kw):
     base = dict(condition_id="fall", subject="scene", answer="yes", confidence=0.8, reason="r",
-                request_id="r-1", stream_epoch=0, condition_version=1, occurrence_gen=0,
+                request_id="r-1", stream_id="cam-1", stream_epoch=0, condition_version=1, occurrence_gen=0,
                 evidence_t=(1.0, 2.0), judge="fake")
     return Observation(**{**base, **kw})
 
@@ -98,10 +99,29 @@ def test_frame_validates_and_ignores_image_in_equality():
     a = Frame("cam-1", 0, 5, 1.0, 1000.0, np.zeros((36, 48), np.uint8))
     b = Frame("cam-1", 0, 5, 1.0, 1000.0, np.ones((36, 48), np.uint8))
     assert a == b
+    Frame("cam-1", 0, 5, 1.0, 1000.0, np.zeros((36, 48, 3), np.uint8))
+
+
+@pytest.mark.parametrize("args", [
+    ("", 0, 5, 1.0, 1000.0, np.zeros((2, 2), np.uint8)),
+    ("cam", 0, 5, 1.0, 1000.0, np.zeros(4, np.uint8)),
+    ("cam", 0, 5, 1.0, 1000.0, np.zeros((2, 2), np.float32)),
+    ("cam", 0, 5, 1.0, 1000.0, np.zeros((2, 2, 4), np.uint8)),
+    ("cam", -1, 5, 1.0, 1000.0, np.zeros((2, 2), np.uint8)),
+    ("cam", 0, 5.5, 1.0, 1000.0, np.zeros((2, 2), np.uint8)),
+])
+def test_frame_rejects_bad_images_and_counters(args):
     with pytest.raises(ValueError):
-        Frame("", 0, 5, 1.0, 1000.0, np.zeros((2, 2)))
+        Frame(*args)
+
+
+def test_evidence_ref_validates():
     with pytest.raises(ValueError):
-        Frame("cam", 0, 5, 1.0, 1000.0, np.zeros(4))
+        EvidenceRef("", 0, 0, 1.0)
+    with pytest.raises(ValueError):
+        EvidenceRef("cam", -1, 0, 1.0)
+    with pytest.raises(ValueError):
+        EvidenceRef("cam", 0, 0, float("nan"))
 
 
 # --- Observation
@@ -113,7 +133,11 @@ def test_failed_observation_must_answer_unknown():
         obs(answer="no", failure="timeout")
 
 
-@pytest.mark.parametrize("kw", [dict(answer="maybe"), dict(confidence=1.1), dict(failure="oops", answer="unknown")])
+@pytest.mark.parametrize("kw", [
+    dict(answer="maybe"), dict(confidence=1.1), dict(failure="oops", answer="unknown"),
+    dict(stream_id=""), dict(request_id=""), dict(occurrence_gen=-1), dict(stream_epoch=1.5),
+    dict(evidence_t=(5.0, 1.0)), dict(purpose="guess"),
+])
 def test_observation_rejects_invalid(kw):
     with pytest.raises(ValueError):
         obs(**kw)
@@ -122,11 +146,30 @@ def test_observation_rejects_invalid(kw):
 # --- Usage and judging
 
 
-def test_usage_adds_and_rejects_negatives():
+def test_usage_adds_and_rejects_bad_counts():
     total = Usage(1, 10, 2, 0.001, 0.5) + Usage(2, 20, 4, 0.002, 0.7)
-    assert total == Usage(3, 30, 6, 0.003, 1.2)
+    assert (total.attempts, total.tokens_in, total.tokens_out) == (3, 30, 6)
+    assert total.cost_usd == pytest.approx(0.003) and total.latency_s == pytest.approx(1.2)
+    for bad in (dict(attempts=-1), dict(attempts=2.0), dict(tokens_in=1.5), dict(tokens_out=True)):
+        with pytest.raises(ValueError):
+            Usage(**bad)
+
+
+@pytest.mark.parametrize("n", [1, 2, 3, 7])
+def test_usage_split_is_deterministic_and_sums_exactly(n):
+    whole = Usage(attempts=2, tokens_in=1001, tokens_out=40, cost_usd=0.0013, latency_s=2.2)
+    parts = whole.split(n)
+    assert len(parts) == n and parts == whole.split(n)
+    assert sum(p.attempts for p in parts) == 2
+    assert sum(p.tokens_in for p in parts) == 1001
+    assert sum(p.tokens_out for p in parts) == 40
+    assert sum(p.cost_usd for p in parts) == pytest.approx(0.0013)
+    assert parts[0].tokens_in >= parts[-1].tokens_in
+
+
+def test_usage_split_rejects_zero():
     with pytest.raises(ValueError):
-        Usage(attempts=-1)
+        Usage().split(0)
 
 
 def test_judge_request_validates_items():
@@ -154,6 +197,30 @@ def test_decision_round_trips_through_json():
     again = Decision.from_dict(json.loads(json.dumps(d.to_dict())))
     assert again == d
     assert again.keyframe == d.keyframe
+
+
+def test_decision_from_dict_raises_value_error_on_malformed_input():
+    data = decision().to_dict()
+    del data["trace_id"]
+    with pytest.raises(ValueError, match="malformed"):
+        Decision.from_dict(data)
+    data = decision().to_dict()
+    data["cost"]["surprise"] = 1
+    with pytest.raises(ValueError, match="malformed"):
+        Decision.from_dict(data)
+
+
+def test_decision_readers_ignore_new_top_level_fields():
+    data = decision().to_dict()
+    data["contract_version"] = "1.4"
+    data["added_in_1_4"] = "x"
+    assert Decision.from_dict(data) == decision()
+
+
+def test_decision_requires_non_empty_ids():
+    for name in ("condition_id", "stream_id", "subject", "trace_id"):
+        with pytest.raises(ValueError):
+            decision(**{name: ""})
 
 
 def test_decision_rejects_unknown_type_and_large_keyframe():
@@ -209,6 +276,13 @@ def test_decision_matches_the_published_schema():
     assert schema["properties"]["contract_version"]["pattern"] == "^" + CONTRACT_VERSION.split(".")[0] + "\\."
 
 
+def test_schema_allows_new_top_level_fields_but_not_nested_ones():
+    schema = json.loads(resources.files("percept").joinpath("decision.schema.json").read_text())
+    assert "additionalProperties" not in schema
+    assert schema["properties"]["cost"]["additionalProperties"] is False
+    assert schema["properties"]["evidence"]["items"]["additionalProperties"] is False
+
+
 def test_schema_lists_every_field_to_dict_writes():
     schema = json.loads(resources.files("percept").joinpath("decision.schema.json").read_text())
     assert set(schema["properties"]) == set(decision().to_dict())
@@ -219,9 +293,28 @@ def test_schema_lists_every_field_to_dict_writes():
 
 
 def test_health_kinds_are_closed():
-    Health("budget_exhausted", "cam", 1.0)
+    h = Health("verify_deferred", "cam", 1.0, condition_id="fall", subject="scene")
+    assert h.condition_id == "fall"
     with pytest.raises(ValueError):
         Health("on_fire", "cam", 1.0)
+
+
+def test_blind_interval_validates():
+    assert BlindInterval("link_down", "cam", 10.0).t_end_wall is None
+    BlindInterval("scene_reset", "cam", 10.0, 12.0)
+    with pytest.raises(ValueError):
+        BlindInterval("link_down", "cam", 10.0, 9.0)
+    with pytest.raises(ValueError):
+        BlindInterval("nap", "cam", 10.0)
+
+
+def test_condition_trigger_must_be_a_trigger():
+    class T:
+        def step(self, frame, conditions, state, now): return {}, state
+
+    Condition("c", "x", trigger=T())
+    with pytest.raises(ValueError, match="Trigger"):
+        Condition("c", "x", trigger="nonsense")
 
 
 # --- Protocols are structural
@@ -233,7 +326,7 @@ def test_protocols_accept_structural_implementations():
         def frames(self): ...
 
     class T:
-        def step(self, frame, state, now): return {}, state
+        def step(self, frame, conditions, state, now): return {}, state
 
     class J:
         name = "fake"

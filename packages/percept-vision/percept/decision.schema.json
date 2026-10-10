@@ -2,53 +2,155 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/divi-vijayakumar/Percept/decision.schema.json",
   "title": "Percept Decision",
-  "description": "One decision Percept delivers to an agent. Contract version 1.x.",
+  "description": "One decision Percept delivers to an agent. Contract version 1.x: new top-level fields may be added within 1.x and readers ignore fields they don't know; nested objects don't change shape.",
   "type": "object",
-  "additionalProperties": false,
-  "required": ["contract_version", "decision_id", "occurrence_id", "type", "condition_id", "stream_id",
-               "subject", "t_observed", "t_decided", "confidence", "reason", "cost", "trace_id",
-               "request_ids", "evidence", "keyframe_jpeg_b64"],
+  "required": [
+    "contract_version",
+    "decision_id",
+    "occurrence_id",
+    "type",
+    "condition_id",
+    "stream_id",
+    "subject",
+    "t_observed",
+    "t_decided",
+    "confidence",
+    "reason",
+    "cost",
+    "trace_id",
+    "request_ids",
+    "evidence",
+    "keyframe_jpeg_b64"
+  ],
   "properties": {
-    "contract_version": {"type": "string", "pattern": "^1\\."},
-    "decision_id": {"type": "string", "minLength": 1, "description": "Stable across redelivery; use as an idempotency key."},
-    "occurrence_id": {"type": "string", "minLength": 1, "description": "Groups every decision about one real occurrence."},
-    "type": {"enum": ["met", "cleared", "uncertain", "expired"]},
-    "condition_id": {"type": "string"},
-    "stream_id": {"type": "string"},
-    "subject": {"type": "string"},
-    "t_observed": {"type": "number", "description": "Unix time of the evidence that decided it."},
-    "t_decided": {"type": "number", "description": "Unix time the decision was made."},
-    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-    "reason": {"type": "string"},
+    "contract_version": {
+      "type": "string",
+      "pattern": "^1\\."
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable across redelivery; use as an idempotency key."
+    },
+    "occurrence_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Groups every decision about one real occurrence."
+    },
+    "type": {
+      "enum": [
+        "met",
+        "cleared",
+        "uncertain",
+        "expired"
+      ]
+    },
+    "condition_id": {
+      "type": "string"
+    },
+    "stream_id": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "string"
+    },
+    "t_observed": {
+      "type": "number",
+      "description": "Unix time of the evidence that decided it."
+    },
+    "t_decided": {
+      "type": "number",
+      "description": "Unix time the decision was made."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reason": {
+      "type": "string"
+    },
     "cost": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["attempts", "tokens_in", "tokens_out", "cost_usd", "latency_s"],
+      "required": [
+        "attempts",
+        "tokens_in",
+        "tokens_out",
+        "cost_usd",
+        "latency_s"
+      ],
       "properties": {
-        "attempts": {"type": "integer", "minimum": 0},
-        "tokens_in": {"type": "integer", "minimum": 0},
-        "tokens_out": {"type": "integer", "minimum": 0},
-        "cost_usd": {"type": "number", "minimum": 0},
-        "latency_s": {"type": "number", "minimum": 0}
+        "attempts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens_in": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens_out": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "latency_s": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     },
-    "trace_id": {"type": "string"},
-    "request_ids": {"type": "array", "items": {"type": "string"}},
+    "trace_id": {
+      "type": "string"
+    },
+    "request_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "evidence": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["stream_id", "stream_epoch", "seq", "t_wall", "ephemeral"],
+        "required": [
+          "stream_id",
+          "stream_epoch",
+          "seq",
+          "t_wall",
+          "ephemeral"
+        ],
         "properties": {
-          "stream_id": {"type": "string"},
-          "stream_epoch": {"type": "integer", "minimum": 0},
-          "seq": {"type": "integer", "minimum": 0},
-          "t_wall": {"type": "number"},
-          "ephemeral": {"type": "boolean"}
+          "stream_id": {
+            "type": "string"
+          },
+          "stream_epoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "t_wall": {
+            "type": "number"
+          },
+          "ephemeral": {
+            "type": "boolean"
+          }
         }
       }
     },
-    "keyframe_jpeg_b64": {"type": ["string", "null"], "description": "Durable keyframe, JPEG, at most 40 KB before encoding."}
+    "keyframe_jpeg_b64": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Durable keyframe, JPEG, at most 40 KB before encoding."
+    }
   }
 }
