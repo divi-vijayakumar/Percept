@@ -31,6 +31,7 @@ from percept.contracts import Condition, Decision, Fate, Health, Observation, Us
 
 SCENE = "scene"
 DEFAULT_MAX_KEYS = 64
+MAX_REQUEST_IDS = 16          # request ids kept per pending decision (the most recent ones)
 
 TimerKind = Literal["window", "verify", "recheck", "max_open", "rearm"]
 TIMER_KINDS: tuple[str, ...] = ("window", "verify", "recheck", "max_open", "rearm")
@@ -78,10 +79,9 @@ class FalseAlarm:
 
 @dataclass(frozen=True)
 class Snooze:
-    """Suppress new-occurrence decisions (met, uncertain) until ``until`` (wall clock).
-
-    ``subject=None`` snoozes every subject of the condition.
-    """
+    """Suppress met and uncertain until ``until`` (wall clock); replaces any earlier snooze
+    for the same (condition, subject). ``until <= now`` cancels it. ``subject=None`` is every
+    subject of the condition."""
 
     condition_id: str
     until: float
@@ -140,8 +140,10 @@ class RequestVerify:
     """Judge this condition again with ``purpose="verify"``.
 
     ``mode="original"`` re-judges the evidence ``interval`` from ``stream_epoch``;
-    ``mode="fresh"`` judges a new frame (``interval`` is None). The runtime may retry until
-    ``deadline``; the reducer resolves the candidate itself when the deadline passes.
+    ``mode="fresh"`` judges a new frame (``interval`` is None). The observation that answers it
+    carries this request's ``stream_epoch``, ``occurrence_gen`` and ``condition_version``. The
+    runtime may retry until ``deadline``; the reducer resolves the candidate itself when the
+    deadline passes.
     """
 
     condition_id: str
@@ -153,6 +155,18 @@ class RequestVerify:
     interval: Optional[tuple[float, float]]
     stream_epoch: int
     deadline: float
+
+
+@dataclass(frozen=True)
+class CancelVerify:
+    """Drop a queued or in-flight verification: its occurrence stopped verifying for a reason
+    other than a verify answer (resolve, false alarm, scene return, condition change, deadline,
+    restart). An answer that still arrives is rejected as stale."""
+
+    condition_id: str
+    subject: str
+    occurrence_id: str
+    occurrence_gen: int
 
 
 @dataclass(frozen=True)
@@ -193,7 +207,8 @@ class Trace:
     detail: str = ""
 
 
-Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, RequestRecheck, EmitHealth, StoreCounterExample, Trace]
+Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, CancelVerify, RequestRecheck, EmitHealth,
+               StoreCounterExample, Trace]
 
 
 # --------------------------------------------------------------------------- state
@@ -201,7 +216,7 @@ Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, RequestRecheck, EmitHe
 
 @dataclass
 class Key:
-    """Decide state for one (condition_id, subject) on one stream."""
+    """Decide state for one (condition_id, subject) on one stream. Every time is wall clock."""
 
     condition_id: str
     subject: str
@@ -210,9 +225,10 @@ class Key:
     # the open occurrence (all reset when the key returns to idle)
     occurrence_id: Optional[str] = None
     decisions: int = 0                          # decisions emitted for this occurrence
-    yes_count: int = 0
-    window_end: Optional[float] = None          # confirming / candidate
-    t_first_yes: Optional[float] = None         # evidence end of the first counted yes
+    yes_count: int = 0                          # confident yes answers counted in the window
+    window_start: Optional[float] = None        # evidence time of the earliest counted yes
+    window_last: Optional[float] = None         # evidence time of the latest counted yes
+    window_close_at: Optional[float] = None     # arrival time at which an unfinished window gives up
     interval: Optional[tuple[float, float]] = None   # hull of the counted yes evidence
     interval_epoch: Optional[int] = None
     yes_confidence: float = 0.0                 # confidence of the latest counted yes
@@ -220,14 +236,16 @@ class Key:
     no_count: int = 0                           # holding: consecutive confident no's
     held_since: Optional[float] = None
     expires_at: Optional[float] = None          # holding with max_open_s, until it passes
-    expired: bool = False
+    expired: bool = False                       # expiry happened: no deferred met any more
     next_recheck: Optional[float] = None
     rearm_until: Optional[float] = None
     met_emitted: bool = False
+    met_pending: bool = False                   # a state's met was suppressed; deliver it later
     met_confidence: float = 0.0
     # survives the return to idle
     last_met: Optional[float] = None
-    unknown_noticed: bool = False
+    last_uncertain: Optional[float] = None
+    closed_evidence_end: Optional[float] = None  # evidence floor for detect answers
     # bookkeeping: never consulted by a lifecycle transition (last_touched only picks
     # which idle key to evict under capacity pressure)
     cost: Usage = field(default_factory=Usage)
@@ -235,7 +253,7 @@ class Key:
     last_touched: float = 0.0
 
 
-ACCOUNTING_FIELDS = ("cost", "request_ids", "last_touched")
+BOOKKEEPING_FIELDS = ("cost", "request_ids", "last_touched")
 
 
 @dataclass
@@ -279,10 +297,10 @@ def phase_of(state: StreamDecideState, condition_id: str, subject: str = SCENE) 
 
 
 def decision_view(state: StreamDecideState) -> dict:
-    """The state without accounting fields: what 'unchanged' means in the spec."""
+    """The state without bookkeeping fields: what 'unchanged' means in the spec."""
     data = to_dict(state)
     for key in data["keys"]:
-        for name in ACCOUNTING_FIELDS:
+        for name in BOOKKEEPING_FIELDS:
             key.pop(name)
     return data
 
@@ -356,7 +374,7 @@ def step(state: StreamDecideState, inp: Input, now: float, conditions: Mapping[s
     elif isinstance(inp, TimerFired):
         _on_timer(s, inp, now, conditions, out)
     elif isinstance(inp, Resolve):
-        _on_resolve(s, inp.occurrence_id, "resolved", now, conditions, out)
+        _on_resolve(s, inp.occurrence_id, "resolve", "resolved by the application", now, conditions, out)
     elif isinstance(inp, FalseAlarm):
         _on_false_alarm(s, inp, now, conditions, out)
     elif isinstance(inp, Snooze):
@@ -403,6 +421,10 @@ def _stale_reason(s: StreamDecideState, key: Optional[Key], cond: Condition, o: 
         return "generation"
     if o.purpose == "verify" and (key is None or key.phase != "verifying"):
         return "purpose"
+    if o.purpose == "detect" and key is not None and key.closed_evidence_end is not None \
+            and o.evidence_t[1] <= key.closed_evidence_end:
+        # judged on evidence from before an occurrence was declared over
+        return "evidence"
     return None
 
 
@@ -439,7 +461,6 @@ def _on_observed(s: StreamDecideState, inp: Observed, now: float, conditions: Ma
         out.trace(now, "weak_answer", cid, subject, fate="judged_weak", occurrence_id=occ)
         return
     if answer in ("yes", "no") and key is not None:
-        key.unknown_noticed = False
         key.last_touched = now
 
     if o.purpose == "verify":
@@ -453,38 +474,40 @@ def _on_observed(s: StreamDecideState, inp: Observed, now: float, conditions: Ma
 def _on_state_answer(s, key, cond, inp, answer, now, out) -> None:
     o = inp.observation
     phase = "idle" if key is None else key.phase
-    fate = "judged_weak" if answer == "unknown" else "judged"
-    if phase == "idle":
+    occ = None if key is None else key.occurrence_id
+    if answer == "unknown":
+        # The model can't tell: no information, in every phase.
+        out.trace(now, f"unknown_while_{phase}", cond.id, o.subject, fate="judged_weak", occurrence_id=occ)
+    elif phase == "idle":
         if answer == "yes":
             _open_with_yes(s, key, cond, inp, now, out)
-        elif answer == "unknown":
-            _notice_unknown(s, key, cond, inp, now, out)
         else:
-            out.trace(now, "no_while_idle", cond.id, o.subject, fate=fate)
+            out.trace(now, "no_while_idle", cond.id, o.subject, fate="judged")
     elif phase == "confirming":
         if answer == "yes":
             _count_yes(s, key, cond, o, now, out)
-        elif answer == "no":
-            out.trace(now, "flicker", cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id,
+        elif o.evidence_t[1] >= key.window_start:
+            out.trace(now, "flicker", cond.id, o.subject, fate="judged", occurrence_id=occ,
                       detail="confident no while confirming")
             _to_idle(key, out, now)
         else:
-            out.trace(now, "unknown_while_confirming", cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id)
+            out.trace(now, "older_than_window", cond.id, o.subject, fate="judged", occurrence_id=occ)
     elif phase == "verifying":
-        out.trace(now, "awaiting_verification", cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id)
+        out.trace(now, "awaiting_verification", cond.id, o.subject, fate="judged", occurrence_id=occ)
     elif phase == "holding":
         if answer == "yes":
             key.no_count = 0
-            out.trace(now, "held", cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id)
-        elif answer == "no":
+            out.trace(now, "held", cond.id, o.subject, fate="judged", occurrence_id=occ)
+            if key.met_pending and not key.expired:
+                _deliver_deferred_met(s, key, cond, o, now, out)
+        else:
             key.no_count += 1
-            out.trace(now, "no_while_holding", cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id,
+            out.trace(now, "no_while_holding", cond.id, o.subject, fate="judged", occurrence_id=occ,
                       detail=f"{key.no_count}/{cond.clear_after_no}")
             if key.no_count >= cond.clear_after_no:
-                _emit(s, key, cond, "cleared", "no", o.confidence, o.evidence_t[1], now, out)
+                _emit(s, key, cond, "cleared", "no", o.reason, o.confidence, o.evidence_t[1], now, out)
+                _raise_floor(key, o.evidence_t[1])
                 _to_idle(key, out, now)
-        else:
-            out.trace(now, "unknown_while_holding", cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id)
     else:
         raise AssertionError(phase)
 
@@ -492,26 +515,26 @@ def _on_state_answer(s, key, cond, inp, answer, now, out) -> None:
 def _on_event_answer(s, key, cond, inp, answer, now, out) -> None:
     o = inp.observation
     phase = "idle" if key is None else key.phase
-    fate = "judged_weak" if answer == "unknown" else "judged"
-    if phase == "idle":
+    occ = None if key is None else key.occurrence_id
+    if answer == "unknown":
+        out.trace(now, f"unknown_while_{phase}", cond.id, o.subject, fate="judged_weak", occurrence_id=occ)
+    elif phase == "idle":
         if answer == "yes":
             _open_with_yes(s, key, cond, inp, now, out)
-        elif answer == "unknown":
-            _notice_unknown(s, key, cond, inp, now, out)
         else:
-            out.trace(now, "no_while_idle", cond.id, o.subject, fate=fate)
+            out.trace(now, "no_while_idle", cond.id, o.subject, fate="judged")
     elif phase == "candidate":
         if answer == "yes":
             _count_yes(s, key, cond, o, now, out)
         else:
             # A later "no" is not evidence against an event: the moment may simply have passed.
-            out.trace(now, "ignored_while_candidate", cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id)
+            out.trace(now, "ignored_while_candidate", cond.id, o.subject, fate="judged", occurrence_id=occ)
     elif phase == "verifying":
         # Only the verification of the original interval decides; later detections don't.
-        out.trace(now, "awaiting_verification", cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id)
+        out.trace(now, "awaiting_verification", cond.id, o.subject, fate="judged", occurrence_id=occ)
     elif phase == "reported":
         event = "repeat_absorbed" if answer == "yes" else "ignored_while_reported"
-        out.trace(now, event, cond.id, o.subject, fate=fate, occurrence_id=key.occurrence_id)
+        out.trace(now, event, cond.id, o.subject, fate="judged", occurrence_id=occ)
     else:
         raise AssertionError(phase)
 
@@ -524,10 +547,11 @@ def _on_verify_answer(s, key, cond, inp, answer, now, out) -> None:
         _accept(s, key, cond, o.confidence, o.reason, now, out)
     elif answer == "no":
         out.trace(now, "verify_rejected", cond.id, o.subject, fate="judged", occurrence_id=occ)
-        _to_idle(key, out, now)
+        _raise_floor(key, key.interval[1] if cond.verify_mode == "original" else o.evidence_t[1])
+        _to_idle(key, out, now, verify_answered=True)
     else:  # the model, looking at the evidence again, can't tell
         out.trace(now, "verify_unknown", cond.id, o.subject, fate="judged_weak", occurrence_id=occ)
-        _unverified(s, key, cond, "model_unknown", now, out)
+        _unverified(s, key, cond, "unverified", now, out, verify_answered=True)
 
 
 def _open_with_yes(s, key, cond, inp, now, out) -> None:
@@ -535,41 +559,51 @@ def _open_with_yes(s, key, cond, inp, now, out) -> None:
     if key is None:
         key = _ensure_key(s, cond.id, o.subject, now, out)
         if key is None:
-            out.trace(now, "capacity_refused", cond.id, o.subject, fate="judged")
+            out.trace(now, "capacity_refused", cond.id, o.subject, fate="dropped_capacity")
             return
-    key.unknown_noticed = False
     key.last_touched = now
     key.occurrence_id = f"{s.stream_id}/{cond.id}/{s.incarnation}-{s.next_occurrence}"
     s.next_occurrence += 1
-    key.gen = s.next_gen          # a new occurrence: results tagged for the idle period are stale
-    s.next_gen += 1
+    key.gen = _bump(s)            # a new occurrence: results tagged for the idle period are stale
     key.decisions = 0
     key.yes_count = 0
     _charge(key, inp)
-    out.trace(now, "opened", cond.id, o.subject, fate="judged", occurrence_id=key.occurrence_id)
+    out.trace(now, "opened", cond.id, o.subject, occurrence_id=key.occurrence_id)
     if cond.confirm > 1:
         key.phase = "confirming" if cond.kind == "state" else "candidate"
-        key.window_end = now + cond.confirm_window_s
-        out.effects.append(ScheduleTimer(cond.id, o.subject, "window", key.window_end))
     _count_yes(s, key, cond, o, now, out)
 
 
 def _count_yes(s, key, cond, o, now, out) -> None:
-    key.yes_count += 1
-    key.yes_confidence = o.confidence
-    if key.t_first_yes is None:
-        key.t_first_yes = o.evidence_t[1]
-        key.interval = o.evidence_t
-        key.interval_epoch = o.stream_epoch
-    else:
+    """Count a confident yes into the confirm window. The window is on evidence time: every
+    counted yes lies within ``confirm_window_s`` of every other. Emits the observation's fate."""
+    e = o.evidence_t[1]
+    occ = key.occurrence_id
+    if key.yes_count == 0:
+        _start_window(key, o)
+        event = "counted"
+    elif max(key.window_last, e) - min(key.window_start, e) <= cond.confirm_window_s:
+        key.yes_count += 1
+        key.window_start = min(key.window_start, e)
+        key.window_last = max(key.window_last, e)
         key.interval = (min(key.interval[0], o.evidence_t[0]), max(key.interval[1], o.evidence_t[1]))
-    if key.yes_count > 1:
-        out.trace(now, "confirming", cond.id, o.subject, fate="judged", occurrence_id=key.occurrence_id,
-                  detail=f"{key.yes_count}/{cond.confirm}")
-    if key.yes_count < cond.confirm:
+        event = "counted"
+    elif e > key.window_last:
+        _start_window(key, o)     # the earlier yeses were a flicker; this one starts again
+        event = "window_restarted"
+    else:
+        out.trace(now, "older_than_window", cond.id, o.subject, fate="judged", occurrence_id=occ)
         return
-    if key.window_end is not None:
-        key.window_end = None
+    key.yes_confidence = o.confidence
+    out.trace(now, event, cond.id, o.subject, fate="judged", occurrence_id=occ,
+              detail=f"{key.yes_count}/{cond.confirm}")
+    if key.yes_count < cond.confirm:
+        # An unfinished window gives up once a yes inside it can no longer arrive.
+        key.window_close_at = key.window_start + cond.confirm_window_s + cond.candidate_deadline_s
+        out.effects.append(ScheduleTimer(cond.id, o.subject, "window", key.window_close_at))
+        return
+    if key.window_close_at is not None:
+        key.window_close_at = None
         out.effects.append(CancelTimer(cond.id, o.subject, "window"))
     fast = cond.fast_path_confidence is not None and o.confidence >= cond.fast_path_confidence
     mode = cond.verify_mode
@@ -579,12 +613,19 @@ def _count_yes(s, key, cond, o, now, out) -> None:
     key.phase = "verifying"
     key.verify_deadline = now + cond.candidate_deadline_s
     out.effects.append(RequestVerify(
-        condition_id=cond.id, subject=o.subject, occurrence_id=key.occurrence_id, occurrence_gen=key.gen,
+        condition_id=cond.id, subject=o.subject, occurrence_id=occ, occurrence_gen=key.gen,
         condition_version=cond.version, mode=mode,
         interval=key.interval if mode == "original" else None,
         stream_epoch=key.interval_epoch if mode == "original" else s.stream_epoch,
         deadline=key.verify_deadline))
     out.effects.append(ScheduleTimer(cond.id, o.subject, "verify", key.verify_deadline))
+
+
+def _start_window(key: Key, o: Observation) -> None:
+    key.yes_count = 1
+    key.window_start = key.window_last = o.evidence_t[1]
+    key.interval = o.evidence_t
+    key.interval_epoch = o.stream_epoch
 
 
 def _accept(s, key, cond, confidence, reason, now, out) -> None:
@@ -606,41 +647,36 @@ def _accept(s, key, cond, confidence, reason, now, out) -> None:
         key.rearm_until = now + cond.rearm_s
         out.effects.append(ScheduleTimer(cond.id, key.subject, "rearm", key.rearm_until))
     key.met_confidence = confidence
-    _emit(s, key, cond, "met", reason, confidence, key.t_first_yes, now, out)
+    emitted = _emit(s, key, cond, "met", None, reason, confidence, key.window_start, now, out)
+    if not emitted and cond.kind == "state":
+        key.met_pending = True    # delivered at the first confident yes after the suppression lifts
 
 
-def _unverified(s, key, cond, cause, now, out) -> None:
-    if cond.on_unverified == "uncertain":
-        _emit(s, key, cond, "uncertain", "unverified", key.yes_confidence, key.t_first_yes, now, out)
-    else:
-        out.effects.append(EmitHealth(Health(
-            kind="verify_deferred", stream_id=s.stream_id, t_wall=now, detail=f"unverified: {cause}",
-            condition_id=cond.id, subject=key.subject)))
+def _deliver_deferred_met(s, key, cond, o, now, out) -> None:
+    if _emit(s, key, cond, "met", "deferred", o.reason, o.confidence, key.window_start, now, out):
+        key.met_pending = False
+
+
+def _unverified(s, key, cond, cause, now, out, *, verify_answered: bool) -> None:
+    """A candidate closes without a verified answer. Only a candidate that a confident yes
+    supported is reported; it keeps its occurrence id."""
+    if key.yes_count >= 1:
+        if cond.on_unverified == "uncertain":
+            _emit(s, key, cond, "uncertain", cause, _UNVERIFIED_REASONS[cause], key.yes_confidence,
+                  key.window_start, now, out)
+        else:
+            out.effects.append(EmitHealth(Health(
+                kind="unverified", stream_id=s.stream_id, t_wall=now, detail=_UNVERIFIED_REASONS[cause],
+                condition_id=cond.id, subject=key.subject)))
     out.trace(now, "unverified", cond.id, key.subject, occurrence_id=key.occurrence_id, detail=cause)
-    _to_idle(key, out, now)
+    _to_idle(key, out, now, verify_answered=verify_answered)
 
 
-def _notice_unknown(s, key, cond, inp, now, out) -> None:
-    """Idle, and the model says it can't tell: one uncertain per run of unknowns."""
-    o = inp.observation
-    if key is None:
-        key = _ensure_key(s, cond.id, o.subject, now, out)
-        if key is None:
-            out.trace(now, "capacity_refused", cond.id, o.subject, fate="judged_weak")
-            return
-    if key.unknown_noticed:
-        out.trace(now, "unknown_repeat", cond.id, o.subject, fate="judged_weak")
-        return
-    key.unknown_noticed = True
-    key.last_touched = now
-    occurrence_id = f"{s.stream_id}/{cond.id}/{s.incarnation}-{s.next_occurrence}"
-    s.next_occurrence += 1
-    out.trace(now, "model_unknown", cond.id, o.subject, fate="judged_weak", occurrence_id=occurrence_id)
-    if _snoozed(s, cond.id, o.subject, now):
-        out.trace(now, "suppressed", cond.id, o.subject, occurrence_id=occurrence_id, detail="uncertain: snoozed")
-        return
-    out.decisions.append(_decision(s, occurrence_id, 1, "uncertain", cond.id, o.subject, o.evidence_t[1], now,
-                                   o.confidence, "model_unknown", inp.usage, (o.request_id,)))
+_UNVERIFIED_REASONS = {
+    "timeout": "a possible occurrence could not be verified before its deadline",
+    "unverified": "the verifier could not tell from the original evidence",
+    "restart": "verification was interrupted by a restart",
+}
 
 
 # --------------------------------------------------------------------------- emission
@@ -650,43 +686,59 @@ def _snoozed(s: StreamDecideState, condition_id: str, subject: str, now: float) 
     return any(now < s.snoozes.get((condition_id, who), float("-inf")) for who in (subject, None))
 
 
-def _decision(s, occurrence_id, index, type_, condition_id, subject, t_observed, now, confidence, reason,
-              cost, request_ids) -> Decision:
+def _in_cooldown(cond: Condition, since: Optional[float], now: float) -> bool:
+    # Clamped: a wall clock that steps backwards counts as no time elapsed, and a zero
+    # cooldown never suppresses anything.
+    return cond.cooldown_s > 0 and since is not None and max(0.0, now - since) < cond.cooldown_s
+
+
+def _last_alert(key: Key) -> Optional[float]:
+    times = [t for t in (key.last_met, key.last_uncertain) if t is not None]
+    return max(times) if times else None
+
+
+def _decision(s, key, type_, cause, reason, confidence, t_observed, now) -> Decision:
+    key.decisions += 1
+    request_ids, cost = key.request_ids, key.cost
+    key.cost, key.request_ids = Usage(), ()
     return Decision(
-        decision_id=f"{occurrence_id}/{index}", occurrence_id=occurrence_id, type=type_,
-        condition_id=condition_id, stream_id=s.stream_id, subject=subject,
+        decision_id=f"{key.occurrence_id}/{key.decisions}", occurrence_id=key.occurrence_id, type=type_,
+        condition_id=key.condition_id, stream_id=s.stream_id, subject=key.subject,
         t_observed=now if t_observed is None else t_observed, t_decided=now, confidence=confidence,
-        reason=reason, cost=cost, trace_id=occurrence_id, request_ids=request_ids)
+        reason=reason, cost=cost, trace_id=key.occurrence_id, request_ids=request_ids, cause=cause)
 
 
-def _emit(s, key, cond, type_, reason, confidence, t_observed, now, out) -> None:
-    occ = key.occurrence_id
+def _emit(s, key, cond, type_, cause, reason, confidence, t_observed, now, out) -> bool:
+    """Emit a decision for the key's occurrence unless a rule suppresses it. Returns True if
+    it was emitted."""
     why_not = None
     if type_ in ("met", "uncertain") and _snoozed(s, cond.id, key.subject, now):
         why_not = "snoozed"
-    elif type_ == "met" and key.last_met is not None and now - key.last_met < cond.cooldown_s:
+    elif type_ == "met" and _in_cooldown(cond, key.last_met, now):
+        why_not = "cooldown"
+    elif type_ == "uncertain" and _in_cooldown(cond, _last_alert(key), now):
         why_not = "cooldown"
     elif type_ in ("cleared", "expired") and not key.met_emitted:
         why_not = "met_not_emitted"
     elif type_ == "cleared" and (cond.kind == "event" or not cond.emit_cleared):
         why_not = "emit_cleared_off"
     if why_not is not None:
-        out.trace(now, "suppressed", cond.id, key.subject, occurrence_id=occ, detail=f"{type_}: {why_not}")
-        return
+        out.trace(now, "suppressed", cond.id, key.subject, occurrence_id=key.occurrence_id,
+                  detail=f"{type_}: {why_not}")
+        return False
     if type_ == "met":
         key.met_emitted = True
         key.last_met = now
-    key.decisions += 1
-    out.decisions.append(_decision(s, occ, key.decisions, type_, cond.id, key.subject, t_observed, now,
-                                   confidence, reason, key.cost, key.request_ids))
-    key.cost = Usage()
-    key.request_ids = ()
+    if type_ == "uncertain":
+        key.last_uncertain = now
+    out.decisions.append(_decision(s, key, type_, cause, reason, confidence, t_observed, now))
+    return True
 
 
 def _charge(key: Key, inp: Observed) -> None:
     key.cost = key.cost + inp.usage
     if inp.observation.request_id not in key.request_ids:
-        key.request_ids = key.request_ids + (inp.observation.request_id,)
+        key.request_ids = (key.request_ids + (inp.observation.request_id,))[-MAX_REQUEST_IDS:]
 
 
 # --------------------------------------------------------------------------- keys, time, idle
@@ -694,18 +746,27 @@ def _charge(key: Key, inp: Observed) -> None:
 
 def _timers_of(key: Key) -> dict[str, float]:
     """The live deadlines of a key, by timer kind. Each one has exactly one timer."""
-    deadlines = {"window": key.window_end, "verify": key.verify_deadline, "recheck": key.next_recheck,
+    deadlines = {"window": key.window_close_at, "verify": key.verify_deadline, "recheck": key.next_recheck,
                  "max_open": key.expires_at, "rearm": key.rearm_until}
     return {kind: at for kind, at in deadlines.items() if at is not None}
 
 
-def _to_idle(key: Key, out: _Out, now: float, *, bump_to: Optional[int] = None) -> None:
-    """Close whatever is open: cancel its timers and reset everything but the gen (unless
-    bumped), the time of the last met and the accounting clock."""
+def _raise_floor(key: Key, evidence_end: float) -> None:
+    if key.closed_evidence_end is None or evidence_end > key.closed_evidence_end:
+        key.closed_evidence_end = evidence_end
+
+
+def _to_idle(key: Key, out: _Out, now: float, *, bump_to: Optional[int] = None,
+             verify_answered: bool = False) -> None:
+    """Close whatever is open: cancel its timers (and its verification, unless a verify answer
+    closed it), and reset everything except the gen (unless bumped) and what survives idle."""
+    if key.phase == "verifying" and not verify_answered:
+        out.effects.append(CancelVerify(key.condition_id, key.subject, key.occurrence_id, key.gen))
     for kind in _timers_of(key):
         out.effects.append(CancelTimer(key.condition_id, key.subject, kind))
     fresh = Key(key.condition_id, key.subject, gen=key.gen if bump_to is None else bump_to,
-                last_met=key.last_met, last_touched=now)
+                last_met=key.last_met, last_uncertain=key.last_uncertain,
+                closed_evidence_end=key.closed_evidence_end, last_touched=now)
     key.__dict__.update(fresh.__dict__)
 
 
@@ -718,26 +779,29 @@ def _bump(s: StreamDecideState) -> int:
 def _advance(s, key, cond, now, out) -> None:
     """Apply every deadline that has passed. Deadlines are data, so a late or lost timer
     can't change the outcome: the next input that touches the key applies them."""
-    if key.phase in ("confirming", "candidate") and now >= key.window_end:
+    if key.phase in ("confirming", "candidate") and now >= key.window_close_at:
         out.trace(now, "flicker", cond.id, key.subject, occurrence_id=key.occurrence_id,
                   detail="confirm window ended")
         _to_idle(key, out, now)
     if key.phase == "verifying" and now >= key.verify_deadline:
-        _unverified(s, key, cond, "deadline", now, out)
+        _unverified(s, key, cond, "timeout", now, out, verify_answered=False)
     if key.phase == "reported" and now >= key.rearm_until:
         out.trace(now, "rearmed", cond.id, key.subject, occurrence_id=key.occurrence_id)
+        _raise_floor(key, key.rearm_until)
         _to_idle(key, out, now)
     if key.phase == "holding" and key.expires_at is not None and now >= key.expires_at:
         key.expires_at = None
         key.expired = True
-        _emit(s, key, cond, "expired", "max_open", key.met_confidence, None, now, out)
+        key.met_pending = False   # never deliver a met for an occurrence that has expired
+        _emit(s, key, cond, "expired", "max_open", "still true after max_open_s", key.met_confidence,
+              None, now, out)
 
 
 def _pinned(key: Key, cond: Optional[Condition], now: float) -> bool:
     """Open keys, and idle keys still inside their cooldown, are never evicted."""
     if key.phase != "idle":
         return True
-    return cond is not None and key.last_met is not None and now - key.last_met < cond.cooldown_s
+    return cond is not None and _in_cooldown(cond, _last_alert(key), now)
 
 
 def _ensure_key(s, condition_id, subject, now, out) -> Optional[Key]:
@@ -789,28 +853,27 @@ def _find_open(s: StreamDecideState, occurrence_id: str) -> Optional[Key]:
     return None
 
 
-def _close_externally(s, key, cond, reason, now, out) -> None:
+def _close_externally(s, key, cond, cause, reason, now, out) -> None:
     """Resolve, false alarm, scene return: the world was declared changed. Bumps the gen."""
     if cond.kind == "state" and key.phase == "holding":
-        _emit(s, key, cond, "cleared", reason, 1.0, None, now, out)
-    out.trace(now, "closed", cond.id, key.subject, occurrence_id=key.occurrence_id, detail=reason)
+        _emit(s, key, cond, "cleared", cause, reason, 1.0, None, now, out)
+    out.trace(now, "closed", cond.id, key.subject, occurrence_id=key.occurrence_id, detail=cause)
     _to_idle(key, out, now, bump_to=_bump(s))
 
 
-def _on_resolve(s, occurrence_id, reason, now, conditions, out) -> None:
+def _on_resolve(s, occurrence_id, cause, reason, now, conditions, out) -> None:
     key = _find_open(s, occurrence_id)
     if key is not None:
         _sync_version(s, key.condition_id, now, conditions, out)   # may close or remove it
         key = _find_open(s, occurrence_id)
     if key is not None:
-        cond = conditions[key.condition_id]
-        _advance(s, key, cond, now, out)                            # may close it
+        _advance(s, key, conditions[key.condition_id], now, out)  # may close it
         key = _find_open(s, occurrence_id)
     if key is None:
         out.trace(now, "control_ignored", _condition_of(s, occurrence_id) or "?",
-                  occurrence_id=occurrence_id, detail=f"{reason}: not open")
+                  occurrence_id=occurrence_id, detail=f"{cause}: not open")
         return
-    _close_externally(s, key, conditions[key.condition_id], reason, now, out)
+    _close_externally(s, key, conditions[key.condition_id], cause, reason, now, out)
 
 
 def _condition_of(s: StreamDecideState, occurrence_id: str) -> Optional[str]:
@@ -829,14 +892,17 @@ def _on_false_alarm(s, inp: FalseAlarm, now, conditions, out) -> None:
         out.trace(now, "control_ignored", cid or "?", occurrence_id=inp.occurrence_id, detail="false_alarm: unknown")
         return
     out.effects.append(StoreCounterExample(cid, inp.occurrence_id, inp.note))
-    _on_resolve(s, inp.occurrence_id, "false_alarm", now, conditions, out)
+    reason = "marked a false alarm" + (f": {inp.note}" if inp.note else "")
+    _on_resolve(s, inp.occurrence_id, "false_alarm", reason, now, conditions, out)
 
 
 def _on_snooze(s, inp: Snooze, now, out) -> None:
-    s.snoozes = {k: u for k, u in s.snoozes.items() if u > now}
+    s.snoozes = {k: u for k, u in s.snoozes.items() if u > now and k != (inp.condition_id, inp.subject)}
     if inp.until > now:
         s.snoozes[(inp.condition_id, inp.subject)] = inp.until
-    out.trace(now, "snoozed", inp.condition_id, inp.subject, detail=f"until {inp.until}")
+        out.trace(now, "snoozed", inp.condition_id, inp.subject, detail=f"until {inp.until}")
+    else:
+        out.trace(now, "snooze_cancelled", inp.condition_id, inp.subject)
 
 
 def _on_scene_return(s, inp: SceneReturn, now, conditions, out) -> None:
@@ -855,7 +921,7 @@ def _on_scene_return(s, inp: SceneReturn, now, conditions, out) -> None:
         if cond.kind == "event":
             out.trace(now, "scene_return_ignored", cid, subject, occurrence_id=key.occurrence_id)
             continue
-        _close_externally(s, key, cond, "scene_return", now, out)
+        _close_externally(s, key, cond, "scene_return", "the scene returned to its baseline", now, out)
 
 
 def _sync_version(s, condition_id, now, conditions, out) -> bool:
@@ -879,7 +945,7 @@ def _sync_version(s, condition_id, now, conditions, out) -> bool:
             del s.keys[(cid, subject)]
             continue
         if key.phase == "holding":
-            _emit(s, key, cond, "cleared", "condition_changed", 1.0, None, now, out)
+            _emit(s, key, cond, "cleared", "condition_changed", "the condition was changed", 1.0, None, now, out)
         out.trace(now, "condition_changed", cid, subject, occurrence_id=key.occurrence_id,
                   detail=f"version {recorded} -> {cond.version}")
         _to_idle(key, out, now, bump_to=_bump(s))
@@ -903,16 +969,15 @@ def _on_epoch(s, inp: EpochStarted, now, conditions, out) -> None:
         key = s.keys[(cid, subject)]
         cond = conditions[cid]
         _advance(s, key, cond, now, out)
-        if key.phase == "verifying":
-            if cond.verify_mode == "fresh":
-                # a fresh frame from the new epoch is as good as one from the old
-                out.effects.append(RequestVerify(
-                    condition_id=cid, subject=subject, occurrence_id=key.occurrence_id, occurrence_gen=key.gen,
-                    condition_version=cond.version, mode="fresh", interval=None,
-                    stream_epoch=s.stream_epoch, deadline=key.verify_deadline))
-            elif inp.restart:
-                # the original evidence and the request in flight died with the process
-                _unverified(s, key, cond, "restart", now, out)
+        if key.phase == "verifying" and cond.verify_mode == "fresh":
+            # a fresh frame from the new epoch is as good as one from the old
+            out.effects.append(RequestVerify(
+                condition_id=cid, subject=subject, occurrence_id=key.occurrence_id, occurrence_gen=key.gen,
+                condition_version=cond.version, mode="fresh", interval=None,
+                stream_epoch=s.stream_epoch, deadline=key.verify_deadline))
+        elif inp.restart and key.phase in ("candidate", "verifying"):
+            # the original evidence (and any request in flight) died with the process
+            _unverified(s, key, cond, "restart", now, out, verify_answered=False)
         if key.phase == "holding":
             out.effects.append(RequestRecheck(cid, subject, key.occurrence_id, key.gen, cond.version))
             key.next_recheck = now + cond.recheck_every_s

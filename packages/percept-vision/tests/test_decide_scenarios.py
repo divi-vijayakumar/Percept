@@ -5,13 +5,16 @@ stories readable; the reducer only ever compares and adds them.
 
 Every test runs against each implementation in ``IMPLEMENTATIONS``. Today that is the
 reference model; the real reducer joins the list when it exists, and must pass unchanged.
+On top of each scenario's own assertions, every stream a scenario drives is replayed through
+the reference model at teardown and must produce exactly the same decisions and effects
+(``check_matches_reference``).
 """
 
 from __future__ import annotations
 
 import json
 import random
-from dataclasses import replace
+from dataclasses import asdict, dataclass, field, fields, replace
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -24,6 +27,69 @@ IMPLEMENTATIONS = [reference_model]
 
 pytestmark = pytest.mark.parametrize("impl", IMPLEMENTATIONS, ids=lambda m: m.__name__)
 
+# One observation's share of a request's usage, in every scenario unless a test says otherwise.
+SHARE = Usage(attempts=1, tokens_in=100, tokens_out=10, cost_usd=0.25, latency_s=0.5)
+
+
+# --------------------------------------------------------------------------- scripts and the differential check
+
+
+@dataclass
+class Script:
+    """An implementation-neutral record of one stream: how it was created and every input."""
+
+    stream_id: str
+    created_at: float
+    max_keys: int
+    steps: list = field(default_factory=list)   # (input class name, fields, now, conditions)
+
+
+def _neutral(inp) -> tuple[str, dict]:
+    return type(inp).__name__, {f.name: getattr(inp, f.name) for f in fields(inp)}
+
+
+def _rebuild(impl, name: str, kwargs: dict):
+    return getattr(impl, name)(**kwargs)
+
+
+def _outputs(result) -> tuple:
+    return result.decisions, [(type(e).__name__, asdict(e)) for e in result.effects]
+
+
+def run_script(impl, script: Script, *, round_trip_at=None):
+    """Replay a script through ``impl``. Returns (final state, outputs per step)."""
+    state = impl.new_state(script.stream_id, created_at=script.created_at, max_keys=script.max_keys)
+    outputs = []
+    for i, (name, kwargs, now, conditions) in enumerate(script.steps):
+        if i == round_trip_at:
+            state = impl.from_dict(json.loads(json.dumps(impl.to_dict(state))))
+        result = impl.step(state, _rebuild(impl, name, kwargs), now, conditions)
+        state = result.state
+        outputs.append(_outputs(result))
+    return state, outputs
+
+
+def check_matches_reference(impl, script: Script, live_outputs=None) -> None:
+    """The implementation must produce exactly the reference model's decisions and effects.
+    With ``live_outputs``, the replay must also reproduce what the live run produced."""
+    _, expected = run_script(reference_model, script)
+    _, actual = run_script(impl, script)
+    assert actual == expected
+    if live_outputs is not None:
+        assert live_outputs == expected
+
+
+_STREAMS: list = []
+
+
+@pytest.fixture(autouse=True)
+def _differential_check():
+    _STREAMS.clear()
+    yield
+    streams, _STREAMS[:] = list(_STREAMS), []
+    for s in streams:
+        check_matches_reference(s.impl, s.script, [_outputs(r) for r in s.results])
+
 
 # --------------------------------------------------------------------------- harness
 
@@ -32,14 +98,18 @@ class Stream:
     """One stream's reducer state, driven the way the runtime will drive it."""
 
     def __init__(self, impl, *conditions: Condition, stream_id: str = "cam-1", max_keys: int = 64,
-                 created_at: float = 0.0):
+                 created_at: float = 0.0, register: bool = True):
         self.impl = impl
         self.stream_id = stream_id
         self.conditions = {c.id: c for c in conditions}
         self.state = impl.new_state(stream_id, created_at=created_at, max_keys=max_keys)
+        self.script = Script(stream_id, created_at, max_keys)
         self.epoch = 0
         self.results = []
         self._requests = 0
+        self._verifies = 0
+        if register:
+            _STREAMS.append(self)
         for c in conditions:
             self.feed(impl.ConditionChanged(c.id), at=0.0)
 
@@ -47,6 +117,7 @@ class Stream:
 
     def feed(self, inp, *, at: float):
         result = self.impl.step(self.state, inp, at, self.conditions)
+        self.script.steps.append((*_neutral(inp), at, self.conditions))
         self.state = result.state
         self.results.append(result)
         if isinstance(inp, self.impl.EpochStarted) and inp.stream_epoch > self.epoch:
@@ -61,7 +132,7 @@ class Stream:
                     occurrence_gen=self.impl.gen_for(self.state, condition_id, subject), purpose=purpose)
 
     def reply(self, request: dict, answer: str, confidence: float = 0.9, *, at: float,
-              evidence: tuple[float, float] | None = None, failure: str | None = None, usage: Usage = Usage()):
+              evidence: tuple[float, float] | None = None, failure: str | None = None, usage: Usage = SHARE):
         if failure is not None:
             answer, confidence = "unknown", 0.0
         o = Observation(answer=answer, confidence=confidence, reason=f"model says {answer}",
@@ -77,8 +148,9 @@ class Stream:
 
     def verify_reply(self, request, answer: str, confidence: float = 0.9, *, at: float,
                      failure: str | None = None):
-        """Answer a RequestVerify effect with an observation judged on its own evidence."""
-        tags = dict(condition_id=request.condition_id, subject=request.subject, request_id=f"v-{at}",
+        """Answer a RequestVerify effect. The observation carries the request's own tags."""
+        self._verifies += 1
+        tags = dict(condition_id=request.condition_id, subject=request.subject, request_id=f"v-{self._verifies}",
                     stream_epoch=request.stream_epoch, condition_version=request.condition_version,
                     occurrence_gen=request.occurrence_gen, purpose="verify")
         evidence = request.interval or (at - 0.5, at)
@@ -124,6 +196,15 @@ def trace_events(result) -> list[str]:
     return [e.event for e in _traces(result)]
 
 
+def stale_details(result) -> list[str]:
+    return [e.detail for e in _traces(result) if e.fate == "stale"]
+
+
+def opened(result) -> str:
+    [occurrence] = [e.occurrence_id for e in _traces(result) if e.event == "opened"]
+    return occurrence
+
+
 def door(**kw) -> Condition:
     return Condition("door", "The door is open", kind="state", **kw)
 
@@ -139,6 +220,7 @@ def test_state_first_confident_yes_with_confirm_1_is_met_in_the_same_step(impl):
     s = Stream(impl, door())
     r = s.observe("door", "yes", 0.8, at=10.0)
     assert types(r) == ["met"]
+    assert r.decisions[0].cause is None and r.decisions[0].reason == "model says yes"
     assert s.phase("door") == "holding"
     assert effects(r, impl.ScheduleTimer) == [impl.ScheduleTimer("door", "scene", "recheck", 70.0)]
 
@@ -153,22 +235,38 @@ def test_event_first_confident_yes_requests_verification_of_that_interval_in_the
     assert verify.deadline == 40.0 and verify.occurrence_gen == impl.gen_for(s.state, "fall", "scene")
 
 
+# --------------------------------------------------------------------------- confirm windows (evidence time)
+
+
 def test_confirm_2_within_the_window_is_met(impl):
     s = Stream(impl, door(confirm=2, confirm_window_s=20.0))
-    assert types(s.observe("door", "yes", at=10.0)) == []
+    assert types(s.observe("door", "yes", at=11.0, evidence=(9.0, 10.0))) == []
     assert s.phase("door") == "confirming"
-    assert types(s.observe("door", "yes", at=25.0)) == ["met"]
+    assert types(s.observe("door", "yes", at=26.0, evidence=(24.0, 25.0))) == ["met"]
+
+
+def test_the_window_is_measured_on_evidence_time_not_arrival(impl):
+    s = Stream(impl, door(confirm=2, confirm_window_s=20.0))
+    s.observe("door", "yes", at=11.0, evidence=(9.0, 10.0))
+    # Judged on frames from inside the window, delivered well after it.
+    assert types(s.observe("door", "yes", at=40.0, evidence=(24.0, 25.0))) == ["met"]
 
 
 def test_confirm_2_second_yes_after_the_window_restarts_the_window(impl):
     s = Stream(impl, door(confirm=2, confirm_window_s=20.0))
-    first = s.observe("door", "yes", at=10.0)
-    late = s.observe("door", "yes", at=31.0)          # the window ended at 30
-    assert types(late) == []
-    assert "flicker" in trace_events(late)
-    assert s.phase("door") == "confirming"            # the late yes opened a new window
-    assert late.decisions == () and first.decisions == ()
-    assert types(s.observe("door", "yes", at=45.0)) == ["met"]
+    s.observe("door", "yes", at=11.0, evidence=(9.0, 10.0))
+    late = s.observe("door", "yes", at=32.0, evidence=(30.0, 31.0))    # the window ended at 30
+    assert types(late) == [] and "window_restarted" in trace_events(late)
+    assert s.phase("door") == "confirming"
+    assert types(s.observe("door", "yes", at=46.0, evidence=(44.0, 45.0))) == ["met"]
+
+
+def test_an_unfinished_window_gives_up_once_no_yes_inside_it_can_arrive(impl):
+    s = Stream(impl, door(confirm=2, confirm_window_s=20.0, candidate_deadline_s=30.0))
+    r = s.observe("door", "yes", at=11.0, evidence=(9.0, 10.0))
+    assert impl.ScheduleTimer("door", "scene", "window", 60.0) in effects(r, impl.ScheduleTimer)
+    s.fire("door", "window", at=60.0)
+    assert s.phase("door") == "idle"
 
 
 def test_a_confident_no_while_confirming_returns_a_state_to_idle(impl):
@@ -200,6 +298,15 @@ def test_fall_then_the_person_lies_still_verification_of_the_original_interval_w
     assert types(later) == [] and s.phase("fall") == "reported"
 
 
+def test_a_met_carries_the_cost_and_request_ids_of_everything_that_led_to_it(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0), impl.RequestVerify)
+    s.observe("fall", "no", at=10.5)                  # absorbed, but it was paid for
+    [met] = s.verify_reply(verify, "yes", at=11.0).decisions
+    assert met.request_ids == ("r-1", "r-2", "v-1")
+    assert met.cost == SHARE + SHARE + SHARE
+
+
 def test_an_event_with_confirm_2_verifies_the_span_of_both_yeses_and_ignores_a_no_between(impl):
     s = Stream(impl, fall(confirm=2))
     s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0))
@@ -216,29 +323,34 @@ def test_a_confident_no_on_the_original_interval_rejects_the_candidate(impl):
     [verify] = effects(s.observe("fall", "yes", at=10.0), impl.RequestVerify)
     r = s.verify_reply(verify, "no", 0.9, at=11.0)
     assert types(r) == [] and "verify_rejected" in trace_events(r)
+    assert effects(r, impl.CancelVerify) == []         # the verification answered; nothing to cancel
     assert s.phase("fall") == "idle"
 
 
 def test_two_verification_timeouts_record_no_negative_then_the_deadline_is_uncertain(impl):
     s = Stream(impl, fall(candidate_deadline_s=30.0))
-    [verify] = effects(s.observe("fall", "yes", 0.8, at=10.0), impl.RequestVerify)
+    first = s.observe("fall", "yes", 0.8, at=10.0)
+    [verify] = effects(first, impl.RequestVerify)
     for t in (18.0, 26.0):
         r = s.verify_reply(verify, "unknown", at=t, failure="timeout")
         assert types(r) == [] and fates(r) == ["failed"]
         assert s.phase("fall") == "verifying"
     r = s.fire("fall", "verify", at=40.0)
-    assert types(r) == ["uncertain"]
-    assert r.decisions[0].reason == "unverified"
+    [uncertain] = r.decisions
+    assert uncertain.type == "uncertain" and uncertain.cause == "timeout"
+    assert uncertain.occurrence_id == opened(first) and uncertain.confidence == 0.8
+    assert uncertain.request_ids == ("r-1", "v-1", "v-2")   # failed attempts were paid for too
+    assert len(effects(r, impl.CancelVerify)) == 1
     assert s.phase("fall") == "idle"
 
 
-def test_unverified_with_on_unverified_health_emits_only_a_health_effect(impl):
+def test_unverified_with_on_unverified_health_emits_only_an_unverified_health_effect(impl):
     s = Stream(impl, fall(candidate_deadline_s=30.0, on_unverified="health"))
     s.observe("fall", "yes", at=10.0)
     r = s.fire("fall", "verify", at=40.0)
     assert r.decisions == ()
     [health] = effects(r, impl.EmitHealth)
-    assert health.health.condition_id == "fall" and "unverified" in health.health.detail
+    assert health.health.kind == "unverified" and health.health.condition_id == "fall"
 
 
 def test_the_deadline_applies_even_if_its_timer_never_fires(impl):
@@ -253,7 +365,8 @@ def test_the_verifier_answering_unknown_resolves_the_candidate_as_unverified(imp
     s = Stream(impl, fall())
     [verify] = effects(s.observe("fall", "yes", at=10.0), impl.RequestVerify)
     r = s.verify_reply(verify, "unknown", 0.9, at=11.0)
-    assert types(r) == ["uncertain"] and s.phase("fall") == "idle"
+    assert types(r) == ["uncertain"] and r.decisions[0].cause == "unverified"
+    assert s.phase("fall") == "idle"
 
 
 def test_a_weak_verification_answer_is_no_information(impl):
@@ -282,6 +395,23 @@ def test_a_state_with_fresh_verification_holds_only_after_the_fresh_frame_agrees
     assert s.phase("door") == "holding"
 
 
+@pytest.mark.parametrize("how", ["resolve", "false_alarm", "condition_update"])
+def test_closing_a_verifying_occurrence_cancels_its_verification(impl, how):
+    s = Stream(impl, fall())
+    first = s.observe("fall", "yes", at=10.0)
+    [verify] = effects(first, impl.RequestVerify)
+    if how == "resolve":
+        r = s.feed(impl.Resolve(opened(first)), at=11.0)
+    elif how == "false_alarm":
+        r = s.feed(impl.FalseAlarm(opened(first)), at=11.0)
+    else:
+        r = s.update(replace(s.conditions["fall"], version=2), at=11.0)
+    assert effects(r, impl.CancelVerify) == [
+        impl.CancelVerify("fall", "scene", verify.occurrence_id, verify.occurrence_gen)]
+    late = s.verify_reply(verify, "yes", at=12.0)
+    assert late.decisions == () and fates(late) == ["stale"]
+
+
 # --------------------------------------------------------------------------- confidence
 
 
@@ -307,13 +437,13 @@ def test_a_weak_yes_in_idle_does_nothing(impl):
         assert impl.decision_view(s.state) == before
 
 
-def test_model_unknown_in_idle_is_uncertain_once_per_run_of_unknowns(impl):
-    s = Stream(impl, door())
-    assert types(s.observe("door", "unknown", at=10.0)) == ["uncertain"]
-    assert types(s.observe("door", "unknown", at=60.0)) == []        # same run
-    s.observe("door", "no", at=70.0)                                  # a confident answer ends it
-    r = s.observe("door", "unknown", at=80.0)
-    assert types(r) == ["uncertain"] and r.decisions[0].reason == "model_unknown"
+def test_model_unknown_in_idle_changes_nothing(impl):
+    for condition in (door(), fall()):
+        s = Stream(impl, condition)
+        before = impl.decision_view(s.state)
+        r = s.observe(condition.id, "unknown", 0.95, at=10.0)
+        assert r.decisions == () and fates(r) == ["judged_weak"]
+        assert impl.decision_view(s.state) == before
 
 
 # --------------------------------------------------------------------------- staleness
@@ -335,20 +465,67 @@ def test_a_condition_update_makes_observations_for_the_old_version_stale(impl):
     s.observe("door", "yes", at=10.0)
     in_flight = s.dispatch("door")
     r = s.update(replace(s.conditions["door"], text="The front door is open", version=2), at=20.0)
-    assert types(r) == ["cleared"] and r.decisions[0].reason == "condition_changed"
+    assert types(r) == ["cleared"] and r.decisions[0].cause == "condition_changed"
     assert s.phase("door") == "idle"
     late = s.reply(in_flight, "yes", at=21.0)
-    assert late.decisions == () and fates(late) == ["stale"]
+    assert late.decisions == () and stale_details(late) == ["version"]
     assert types(s.observe("door", "yes", at=22.0)) == ["met"]     # judged against version 2
 
 
 def test_a_verify_answer_when_nothing_is_being_verified_is_stale(impl):
     s = Stream(impl, door())
     r = s.reply(s.dispatch("door", purpose="verify"), "yes", at=10.0)
-    assert r.decisions == () and fates(r) == ["stale"] and s.phase("door") == "idle"
+    assert r.decisions == () and stale_details(r) == ["purpose"] and s.phase("door") == "idle"
 
 
-# --------------------------------------------------------------------------- restart
+# --------------------------------------------------------------------------- the evidence floor
+
+
+def test_a_late_recheck_yes_after_a_clear_does_not_start_a_new_occurrence(impl):
+    s = Stream(impl, door(clear_after_no=2))
+    s.observe("door", "yes", at=10.0, evidence=(9.0, 9.5))
+    recheck = s.dispatch("door")                      # leaves at 40 on frames up to 40
+    s.observe("door", "no", at=41.5, evidence=(40.5, 41.0))
+    s.observe("door", "no", at=42.5, evidence=(41.5, 42.0))      # cleared: over as of 42
+    assert s.phase("door") == "idle"
+    late = s.reply(recheck, "yes", at=50.0, evidence=(39.5, 40.0))
+    assert late.decisions == () and stale_details(late) == ["evidence"]
+    assert s.phase("door") == "idle"
+    assert types(s.observe("door", "yes", at=56.0, evidence=(55.0, 55.5))) == ["met"]
+
+
+def test_a_late_detect_yes_after_rearm_ends_does_not_start_a_new_occurrence(impl):
+    s = Stream(impl, fall(verify="off", rearm_s=120.0))
+    s.observe("fall", "yes", at=10.0)                 # rearm until 130
+    in_flight = s.dispatch("fall")
+    late = s.reply(in_flight, "yes", at=131.0, evidence=(124.0, 125.0))
+    assert late.decisions == () and stale_details(late) == ["evidence"]
+    assert s.phase("fall") == "idle"
+    assert types(s.observe("fall", "yes", at=136.0, evidence=(134.0, 135.0))) == ["met"]
+
+
+def test_a_late_detect_yes_after_verify_rejected_does_not_start_a_new_candidate(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 10.0)), impl.RequestVerify)
+    in_flight = s.dispatch("fall")                    # judged on frames up to 9.8
+    s.verify_reply(verify, "no", at=11.0)
+    late = s.reply(in_flight, "yes", at=12.0, evidence=(9.0, 9.8))
+    assert stale_details(late) == ["evidence"] and s.phase("fall") == "idle"
+    assert effects(late, impl.RequestVerify) == []
+    assert s.phase("fall") == "idle"
+    s.observe("fall", "yes", at=14.0, evidence=(12.0, 13.0))
+    assert s.phase("fall") == "verifying"             # newer evidence opens a new candidate
+
+
+def test_a_window_end_or_unverified_close_sets_no_floor(impl):
+    s = Stream(impl, fall(candidate_deadline_s=30.0))
+    s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0))
+    s.fire("fall", "verify", at=40.0)                 # unverified
+    s.observe("fall", "yes", at=41.0, evidence=(8.5, 9.5))   # older evidence is still accepted
+    assert s.phase("fall") == "verifying"
+
+
+# --------------------------------------------------------------------------- restart and reconnect
 
 
 def test_restart_with_a_held_state_keeps_it_held_and_rechecks_without_a_duplicate_met(impl):
@@ -366,16 +543,30 @@ def test_restart_with_a_held_state_keeps_it_held_and_rechecks_without_a_duplicat
     assert impl.ScheduleTimer("door", "scene", "recheck", 560.0) in effects(r, impl.ScheduleTimer)
 
     old = s.reply(in_flight, "yes", at=501.0)
-    assert old.decisions == () and fates(old) == ["stale"]
+    assert old.decisions == () and stale_details(old) == ["epoch"]
     assert s.reply(s.dispatch("door"), "yes", at=502.0).decisions == ()   # still the same occurrence
 
 
-def test_restart_resolves_an_event_being_verified_as_unverified(impl):
+def test_restart_resolves_an_event_being_verified_as_uncertain_with_the_same_occurrence(impl):
     s = Stream(impl, fall())
-    s.observe("fall", "yes", at=10.0)
+    first = s.observe("fall", "yes", at=10.0)
     s.restore(s.snapshot())
     r = s.feed(impl.EpochStarted(1, restart=True), at=12.0)
-    assert types(r) == ["uncertain"] and s.phase("fall") == "idle"
+    [uncertain] = r.decisions
+    assert uncertain.type == "uncertain" and uncertain.cause == "restart"
+    assert uncertain.occurrence_id == opened(first) and uncertain.decision_id == opened(first) + "/1"
+    assert s.phase("fall") == "idle"
+
+
+def test_restart_resolves_an_event_candidate_supported_by_a_yes(impl):
+    s = Stream(impl, fall(confirm=2))
+    first = s.observe("fall", "yes", at=10.0)
+    assert s.phase("fall") == "candidate"
+    s.restore(s.snapshot())
+    r = s.feed(impl.EpochStarted(1, restart=True), at=12.0)
+    assert types(r) == ["uncertain"] and r.decisions[0].cause == "restart"
+    assert r.decisions[0].occurrence_id == opened(first)
+    assert s.phase("fall") == "idle"
 
 
 def test_a_reconnect_keeps_verifying_the_original_interval(impl):
@@ -384,6 +575,19 @@ def test_a_reconnect_keeps_verifying_the_original_interval(impl):
     s.feed(impl.EpochStarted(1, restart=False), at=11.0)
     assert s.phase("fall") == "verifying"
     assert types(s.verify_reply(verify, "yes", at=12.0)) == ["met"]   # its evidence is from epoch 0
+
+
+def test_an_epoch_start_reschedules_every_live_timer(impl):
+    s = Stream(impl, door(max_open_s=500.0), Condition("kettle", "The kettle boils", confirm=2),
+               fall(), Condition("wave", "Someone waves", kind="event", verify="off"))
+    s.observe("door", "yes", at=10.0)                 # holding: recheck, max_open
+    s.observe("kettle", "yes", at=10.0)               # confirming: window
+    s.observe("fall", "yes", at=10.0)                 # verifying: verify
+    s.observe("wave", "yes", at=10.0)                 # reported: rearm
+    r = s.feed(impl.EpochStarted(1, restart=False), at=11.0)
+    scheduled = {(e.condition_id, e.kind) for e in effects(r, impl.ScheduleTimer)}
+    assert scheduled == {("door", "recheck"), ("door", "max_open"), ("kettle", "window"),
+                         ("fall", "verify"), ("wave", "rearm")}
 
 
 # --------------------------------------------------------------------------- holding and clearing
@@ -397,6 +601,7 @@ def test_max_open_s_emits_expired_not_cleared_and_never_a_repeat_met(impl):
     assert s.observe("door", "yes", at=41.0).decisions == ()
     r = s.fire("door", "max_open", at=110.0)
     assert types(r) == ["expired"] and r.decisions[0].occurrence_id == occurrence
+    assert r.decisions[0].cause == "max_open"
     assert s.phase("door") == "holding"
     assert s.observe("door", "yes", at=120.0).decisions == ()
     assert s.fire("door", "max_open", at=300.0).decisions == ()         # once only
@@ -416,7 +621,20 @@ def test_a_state_clears_after_clear_after_no_confident_nos(impl, emit_cleared):
     assert s.phase("door") == "idle"
     assert types(r) == (["cleared"] if emit_cleared else [])
     if emit_cleared:
-        assert r.decisions[0].reason == "no"
+        cleared = r.decisions[0]
+        assert cleared.cause == "no" and cleared.reason == "model says no"
+        assert cleared.request_ids == ("r-2", "r-3", "r-4", "r-5", "r-6", "r-7")
+        assert cleared.cost == SHARE + SHARE + SHARE + SHARE + SHARE + SHARE
+
+
+def test_request_ids_kept_for_one_decision_are_capped(impl):
+    s = Stream(impl, door(clear_after_no=1, emit_cleared=True))
+    s.observe("door", "yes", at=1.0)
+    for t in range(2, 32):
+        s.observe("door", "yes", at=float(t))
+    [cleared] = s.observe("door", "no", at=40.0).decisions
+    assert len(cleared.request_ids) == impl.MAX_REQUEST_IDS
+    assert cleared.request_ids[-1] == "r-32"
 
 
 @pytest.mark.parametrize("emit_cleared", [True, False])
@@ -429,7 +647,7 @@ def test_false_alarm_closes_the_occurrence_and_stores_a_counter_example(impl, em
         impl.StoreCounterExample("door", occurrence, "a shadow, not the door")]
     assert types(r) == (["cleared"] if emit_cleared else [])
     if emit_cleared:
-        assert r.decisions[0].reason == "false_alarm" and r.decisions[0].occurrence_id == occurrence
+        assert r.decisions[0].cause == "false_alarm" and r.decisions[0].occurrence_id == occurrence
     assert s.phase("door") == "idle"
     assert s.reply(in_flight, "yes", at=21.0).decisions == ()          # stale
 
@@ -446,8 +664,15 @@ def test_scene_return_clears_a_held_state(impl):
     s = Stream(impl, door(emit_cleared=True))
     s.observe("door", "yes", at=10.0)
     r = s.feed(impl.SceneReturn("door"), at=20.0)
-    assert types(r) == ["cleared"] and r.decisions[0].reason == "scene_return"
+    assert types(r) == ["cleared"] and r.decisions[0].cause == "scene_return"
     assert s.phase("door") == "idle"
+
+
+def test_resolve_clears_a_held_state_with_cause_resolve(impl):
+    s = Stream(impl, door(emit_cleared=True))
+    occurrence = s.observe("door", "yes", at=10.0).decisions[0].occurrence_id
+    r = s.feed(impl.Resolve(occurrence), at=20.0)
+    assert types(r) == ["cleared"] and r.decisions[0].cause == "resolve"
 
 
 # --------------------------------------------------------------------------- events rearm
@@ -476,7 +701,7 @@ def test_another_subject_is_not_absorbed_by_a_reported_event(impl):
     assert types(s.observe("fall", "yes", at=11.0, subject="person-2")) == ["met"]
 
 
-# --------------------------------------------------------------------------- emission control
+# --------------------------------------------------------------------------- cooldown, snooze, deferred met
 
 
 def test_cooldown_suppresses_a_second_met_and_records_a_trace(impl):
@@ -485,17 +710,93 @@ def test_cooldown_suppresses_a_second_met_and_records_a_trace(impl):
     s.observe("door", "no", at=20.0)
     r = s.observe("door", "yes", at=30.0)
     assert r.decisions == () and s.phase("door") == "holding"
-    assert any(e.event == "suppressed" and "cooldown" in e.detail for e in effects(r, impl.Trace))
-    s.observe("door", "no", at=40.0)
-    assert types(s.observe("door", "yes", at=320.0)) == ["met"]
+    assert any(e.event == "suppressed" and "cooldown" in e.detail for e in _traces(r))
 
 
-def test_snooze_suppresses_new_occurrences_until_it_ends(impl):
-    s = Stream(impl, door(clear_after_no=1))
+def test_a_met_suppressed_by_cooldown_is_delivered_at_the_first_yes_after_it_lifts(impl):
+    s = Stream(impl, door(clear_after_no=1, cooldown_s=300.0))
+    s.observe("door", "yes", at=10.0)
+    s.observe("door", "no", at=20.0)
+    second = s.observe("door", "yes", at=30.0, evidence=(29.0, 29.5))   # held, met suppressed
+    assert s.observe("door", "yes", at=100.0).decisions == ()           # still cooling down
+    [met] = s.observe("door", "yes", 0.95, at=320.0).decisions
+    assert met.type == "met" and met.cause == "deferred"
+    assert met.occurrence_id == opened(second) and met.t_observed == 29.5 and met.confidence == 0.95
+    assert s.observe("door", "yes", at=400.0).decisions == ()           # delivered once
+
+
+def test_a_met_suppressed_by_snooze_is_delivered_after_the_snooze_ends(impl):
+    s = Stream(impl, door())
     s.feed(impl.Snooze("door", until=100.0), at=5.0)
     assert s.observe("door", "yes", at=10.0).decisions == ()
-    s.observe("door", "no", at=20.0)
-    assert types(s.observe("door", "yes", at=110.0)) == ["met"]
+    assert s.observe("door", "yes", at=50.0).decisions == ()
+    r = s.observe("door", "yes", at=110.0)
+    assert types(r) == ["met"] and r.decisions[0].cause == "deferred"
+
+
+def test_a_suppressed_met_is_never_delivered_for_an_occurrence_that_cleared(impl):
+    s = Stream(impl, door(clear_after_no=1, emit_cleared=True))
+    s.feed(impl.Snooze("door", until=100.0), at=5.0)
+    s.observe("door", "yes", at=10.0)
+    r = s.observe("door", "no", at=20.0)
+    assert r.decisions == ()                           # the agent never heard of it
+    [met] = s.observe("door", "yes", at=110.0).decisions
+    assert met.cause is None and met.decision_id.endswith("/1")      # a new occurrence
+
+
+def test_a_suppressed_met_is_never_delivered_after_expiry(impl):
+    s = Stream(impl, door(max_open_s=50.0))
+    s.feed(impl.Snooze("door", until=100.0), at=5.0)
+    s.observe("door", "yes", at=10.0)
+    assert s.fire("door", "max_open", at=60.0).decisions == ()
+    assert s.observe("door", "yes", at=110.0).decisions == ()
+
+
+def test_a_suppressed_event_met_stays_silent(impl):
+    s = Stream(impl, fall(verify="off"))
+    s.feed(impl.Snooze("fall", until=100.0), at=5.0)
+    assert s.observe("fall", "yes", at=10.0).decisions == ()
+    assert s.observe("fall", "yes", at=110.0).decisions == ()        # absorbed, never deferred
+
+
+def test_snooze_replaces_and_a_past_until_cancels(impl):
+    s = Stream(impl, door(clear_after_no=1))
+    s.feed(impl.Snooze("door", until=100.0), at=1.0)
+    s.feed(impl.Snooze("door", until=20.0), at=2.0)   # replaces: ends at 20
+    assert types(s.observe("door", "yes", at=30.0)) == ["met"]
+    s.observe("door", "no", at=31.0)
+    s.feed(impl.Snooze("door", until=500.0), at=32.0)
+    s.feed(impl.Snooze("door", until=10.0), at=33.0)  # in the past: cancels
+    assert types(s.observe("door", "yes", at=34.0)) == ["met"]
+
+
+# These close with Resolve, which sets no evidence floor, so only the cooldown is exercised.
+
+
+def test_a_backwards_clock_step_never_suppresses_with_zero_cooldown(impl):
+    s = Stream(impl, door())
+    occurrence = s.observe("door", "yes", at=100.0).decisions[0].occurrence_id
+    s.feed(impl.Resolve(occurrence), at=101.0)
+    assert types(s.observe("door", "yes", at=50.0, evidence=(49.0, 49.5))) == ["met"]
+
+
+def test_a_backwards_clock_step_counts_as_no_time_elapsed_for_cooldown(impl):
+    s = Stream(impl, door(cooldown_s=10.0))
+    occurrence = s.observe("door", "yes", at=100.0).decisions[0].occurrence_id
+    s.feed(impl.Resolve(occurrence), at=101.0)
+    r = s.observe("door", "yes", at=50.0, evidence=(49.0, 49.5))
+    assert r.decisions == () and s.phase("door") == "holding"
+    assert any(e.event == "suppressed" and "cooldown" in e.detail for e in _traces(r))
+
+
+def test_cooldown_also_applies_to_unverified_but_never_holds_back_a_met(impl):
+    s = Stream(impl, fall(cooldown_s=100.0, candidate_deadline_s=30.0))
+    s.observe("fall", "yes", at=10.0)
+    assert types(s.fire("fall", "verify", at=40.0)) == ["uncertain"]
+    s.observe("fall", "yes", at=50.0)
+    assert s.fire("fall", "verify", at=80.0).decisions == ()           # within the cooldown
+    [verify] = effects(s.observe("fall", "yes", at=90.0), impl.RequestVerify)
+    assert types(s.verify_reply(verify, "yes", at=91.0)) == ["met"]
 
 
 # --------------------------------------------------------------------------- capacity
@@ -506,7 +807,7 @@ def test_capacity_never_evicts_an_active_occurrence_and_refuses_a_new_subject(im
     s.observe("door", "yes", at=10.0, subject="p1")
     s.observe("door", "yes", at=11.0, subject="p2")
     r = s.observe("door", "yes", at=12.0, subject="p3")
-    assert r.decisions == ()
+    assert r.decisions == () and fates(r) == ["dropped_capacity"]
     [health] = effects(r, impl.EmitHealth)
     assert health.health.kind == "capacity" and health.health.subject == "p3"
     assert (s.phase("door", "p1"), s.phase("door", "p2"), s.phase("door", "p3")) == ("holding", "holding", "idle")
@@ -527,7 +828,6 @@ def _story(impl) -> list:
     s.observe("door", "no", at=70.0)
     s.observe("fall", "yes", at=71.0)
     s.observe("door", "yes", at=80.0)
-    s.observe("door", "unknown", at=81.0, subject="p9")
     return [d for r in s.results for d in r.decisions]
 
 
@@ -535,7 +835,7 @@ def test_decision_ids_are_stable_and_unique(impl):
     first, again = _story(impl), _story(impl)
     assert [d.decision_id for d in first] == [d.decision_id for d in again]
     ids = [d.decision_id for d in first]
-    assert len(ids) == len(set(ids)) == 6
+    assert len(ids) == len(set(ids)) == 5
     assert all(d.decision_id.startswith(d.occurrence_id + "/") for d in first)
 
 
@@ -560,7 +860,6 @@ def test_occurrence_ids_are_never_reused_after_a_snapshot_round_trip(impl):
 
 
 def _drive_to(impl, phase: str) -> tuple[Stream, Condition]:
-    kind, name = phase.split(":")
     setups = {
         "state:idle": (door(), 0),
         "state:confirming": (door(confirm=2), 1),
@@ -575,7 +874,7 @@ def _drive_to(impl, phase: str) -> tuple[Stream, Condition]:
     s = Stream(impl, condition)
     for _ in range(yeses):
         s.observe(condition.id, "yes", at=10.0)
-    assert s.phase(condition.id) == name
+    assert s.phase(condition.id) == phase.split(":")[1]
     return s, condition
 
 
@@ -593,7 +892,7 @@ def test_a_failed_observation_never_changes_state(impl, phase, failure):
     assert r.decisions == ()
     assert fates(r) == ["failed"]
     assert impl.decision_view(s.state) == before
-    assert [e for e in r.effects if not isinstance(e, impl.Trace)] == []
+    assert [e for e in r.effects if type(e).__name__ != "Trace"] == []
 
 
 @pytest.mark.parametrize("phase", ALL_PHASES)
@@ -613,12 +912,13 @@ def test_every_phase_has_a_defined_outcome_for_every_answer(impl, phase):
 # verify -> report -> rearm, far more often than Hypothesis's biased draws do).
 
 
-SUBJECTS = ("scene", "p1")
 GAPS = (0.0, 0.5, 3.0, 12.0, 25.0, 45.0, 130.0)
 VERIFY_GAPS = (0.0, 0.5, 3.0)
+LAGS = (0.0, 0.5, 3.0, 8.0)        # judge latency: evidence ends this long before arrival
 # Mostly judge answers, so occurrences live long enough to be verified, held and cleared.
 INPUT_MIX = (["detect"] * 14 + ["verify"] * 6 + ["timer"] * 3
              + ["resolve", "false_alarm", "scene_return", "epoch", "update", "snooze"])
+FLAVOURS = {"roomy": (64, ("scene", "p1")), "crowded": (1, ("scene", "p1", "p2"))}
 LATER = 1e7   # after every deadline any generated run can set
 
 
@@ -637,9 +937,10 @@ def _random_condition(choose) -> Condition:
 
 
 def _random_run(impl, choose, *, steps=None):
-    """Drive a stream with random inputs. Returns the stream and [(input, now, conditions)]."""
-    s = Stream(impl, _random_condition(choose))
-    script = []
+    """Drive a stream with random inputs. Returns the (unregistered) stream."""
+    max_keys, subjects = FLAVOURS[choose(sorted(FLAVOURS))]
+    s = Stream(impl, _random_condition(choose), max_keys=max_keys, register=False)
+    s.subjects = subjects
     now = 1.0
     seen_ids: list[str] = []
     for _ in range(steps if steps is not None else choose(range(1, 41))):
@@ -647,9 +948,9 @@ def _random_run(impl, choose, *, steps=None):
         # verification replies come back quickly; everything else may arrive at any gap
         now += choose(VERIFY_GAPS if what == "verify" else GAPS)
         cond = s.conditions["c"]
-        subject = choose(SUBJECTS)
+        subject = choose(subjects)
         if what in ("detect", "verify"):
-            verifying = [x for x in SUBJECTS if s.phase("c", x) == "verifying"]
+            verifying = [x for x in subjects if s.phase("c", x) == "verifying"]
             if what == "verify" and verifying:
                 subject = choose(verifying)
             tags = s.dispatch("c", subject, purpose=what)
@@ -661,11 +962,12 @@ def _random_run(impl, choose, *, steps=None):
             answer = choose(["yes", "yes", "no", "no", "unknown"])
             confidence = choose([0.3, 0.7, 0.97])
             failure = choose([None, None, None, "timeout"])
+            lag = choose(LAGS)
             if failure:
                 answer, confidence = "unknown", 0.0
             o = Observation(answer=answer, confidence=confidence, reason="r", stream_id=s.stream_id,
-                            evidence_t=(now - 1.0, now), judge="fake", failure=failure, **tags)
-            inp = impl.Observed(o, Usage(attempts=1))
+                            evidence_t=(now - lag - 1.0, now - lag), judge="fake", failure=failure, **tags)
+            inp = impl.Observed(o, SHARE)
         elif what == "timer":
             inp = impl.TimerFired("c", subject, choose(impl.TIMER_KINDS))
         elif what in ("resolve", "false_alarm"):
@@ -681,64 +983,51 @@ def _random_run(impl, choose, *, steps=None):
             s.conditions = {"c": replace(cond, version=cond.version + 1)}
             inp = impl.ConditionChanged("c")
         else:
-            inp = impl.Snooze("c", until=now + choose([5.0, 50.0]))
-        script.append((inp, now, s.conditions))
+            inp = impl.Snooze("c", until=now + choose([-1.0, 5.0, 50.0]))
         result = s.feed(inp, at=now)
         seen_ids += [d.occurrence_id for d in result.decisions]
-    return s, script
-
-
-def _replay(impl, script, *, round_trip_at=None):
-    state = impl.new_state("cam-1", created_at=0.0)
-    outputs = []
-    for i, (inp, now, conds) in enumerate(script):
-        if i == round_trip_at:
-            state = impl.from_dict(json.loads(json.dumps(impl.to_dict(state))))
-        r = impl.step(state, inp, now, conds)
-        state = r.state
-        outputs.append((r.decisions, r.effects))
-    return state, outputs
+    return s
 
 
 # The invariants, each checked on one random run.
 
 
-def check_no_occurrence_is_met_twice(impl, s, script):
+def check_no_occurrence_is_met_twice(impl, s):
     mets = [d.occurrence_id for r in s.results for d in r.decisions if d.type == "met"]
     assert len(mets) == len(set(mets))
     ids = [d.decision_id for r in s.results for d in r.decisions]
     assert len(ids) == len(set(ids))
 
 
-def check_every_observation_has_exactly_one_fate(impl, s, script):
-    for (inp, _, _), result in zip(script, s.results[len(s.results) - len(script):]):
-        assert len(fates(result)) == (1 if isinstance(inp, impl.Observed) else 0)
+def check_every_observation_has_exactly_one_fate(impl, s):
+    for (name, _, _, _), result in zip(s.script.steps, s.results):
+        assert len(fates(result)) == (1 if name == "Observed" else 0)
 
 
-def check_the_input_state_is_never_mutated(impl, s, script):
-    state = impl.new_state("cam-1", created_at=0.0)
-    for inp, now, conds in script:
+def check_the_input_state_is_never_mutated(impl, s):
+    state = impl.new_state(s.stream_id, created_at=0.0, max_keys=s.script.max_keys)
+    for name, kwargs, now, conds in s.script.steps:
         before = impl.to_dict(state)
-        after = impl.step(state, inp, now, conds).state
+        after = impl.step(state, _rebuild(impl, name, kwargs), now, conds).state
         assert impl.to_dict(state) == before
         state = after
 
 
-def check_a_snapshot_round_trip_changes_nothing(impl, s, script, where):
-    final, outputs = _replay(impl, script)
-    final_rt, outputs_rt = _replay(impl, script, round_trip_at=where)
+def check_a_snapshot_round_trip_changes_nothing(impl, s, where):
+    final, outputs = run_script(impl, s.script)
+    final_rt, outputs_rt = run_script(impl, s.script, round_trip_at=where)
     assert outputs_rt == outputs
     assert impl.to_dict(final_rt) == impl.to_dict(final)
 
 
-def check_failures_and_weak_answers_never_change_state(impl, s, script):
+def check_failures_and_weak_answers_never_change_state(impl, s):
     # Let every deadline pass first, so the only thing that could change state is the answer.
-    for subject in SUBJECTS:
+    for subject in s.subjects:
         for kind in impl.TIMER_KINDS:
             s.fire("c", kind, at=LATER, subject=subject)
-    for subject in SUBJECTS:
+    for subject in s.subjects:
         for answer, confidence, failure in (("unknown", 0.0, "timeout"), ("unknown", 0.0, "refused"),
-                                            ("yes", 0.1, None), ("no", 0.1, None)):
+                                            ("yes", 0.1, None), ("no", 0.1, None), ("unknown", 0.9, None)):
             for purpose in ("detect", "verify"):
                 before = impl.decision_view(s.state)
                 r = s.reply(s.dispatch("c", subject, purpose=purpose), answer, confidence, at=LATER,
@@ -747,7 +1036,12 @@ def check_failures_and_weak_answers_never_change_state(impl, s, script):
                 assert impl.decision_view(s.state) == before
 
 
-PROPERTY_SETTINGS = settings(max_examples=300, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+def check_the_live_run_matches_the_reference(impl, s):
+    check_matches_reference(impl, s.script, [_outputs(r) for r in s.results])
+
+
+PROPERTY_SETTINGS = settings(max_examples=300, deadline=None,
+                             suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture])
 
 
 def _hypothesis_choose(data):
@@ -757,41 +1051,48 @@ def _hypothesis_choose(data):
 @PROPERTY_SETTINGS
 @given(data=st.data())
 def test_property_no_occurrence_is_met_twice(impl, data):
-    check_no_occurrence_is_met_twice(impl, *_random_run(impl, _hypothesis_choose(data)))
+    check_no_occurrence_is_met_twice(impl, _random_run(impl, _hypothesis_choose(data)))
 
 
 @PROPERTY_SETTINGS
 @given(data=st.data())
 def test_property_failures_and_weak_answers_never_change_state(impl, data):
-    check_failures_and_weak_answers_never_change_state(impl, *_random_run(impl, _hypothesis_choose(data)))
+    check_failures_and_weak_answers_never_change_state(impl, _random_run(impl, _hypothesis_choose(data)))
 
 
 @PROPERTY_SETTINGS
 @given(data=st.data())
 def test_property_every_observation_has_exactly_one_fate(impl, data):
-    check_every_observation_has_exactly_one_fate(impl, *_random_run(impl, _hypothesis_choose(data)))
+    check_every_observation_has_exactly_one_fate(impl, _random_run(impl, _hypothesis_choose(data)))
 
 
 @PROPERTY_SETTINGS
 @given(data=st.data(), where=st.floats(0, 1))
 def test_property_a_snapshot_round_trip_at_any_point_changes_nothing(impl, data, where):
-    s, script = _random_run(impl, _hypothesis_choose(data))
-    check_a_snapshot_round_trip_changes_nothing(impl, s, script, int(where * len(script)))
+    s = _random_run(impl, _hypothesis_choose(data))
+    check_a_snapshot_round_trip_changes_nothing(impl, s, int(where * len(s.script.steps)))
 
 
 @PROPERTY_SETTINGS
 @given(data=st.data())
 def test_property_the_input_state_is_never_mutated(impl, data):
-    check_the_input_state_is_never_mutated(impl, *_random_run(impl, _hypothesis_choose(data)))
+    check_the_input_state_is_never_mutated(impl, _random_run(impl, _hypothesis_choose(data)))
+
+
+@PROPERTY_SETTINGS
+@given(data=st.data())
+def test_property_matches_the_reference_model(impl, data):
+    check_the_live_run_matches_the_reference(impl, _random_run(impl, _hypothesis_choose(data)))
 
 
 @pytest.mark.parametrize("seed", range(40))
 def test_random_walks_keep_every_invariant(impl, seed):
     rng = random.Random(seed)
     for _ in range(10):
-        s, script = _random_run(impl, rng.choice, steps=60)
-        check_no_occurrence_is_met_twice(impl, s, script)
-        check_every_observation_has_exactly_one_fate(impl, s, script)
-        check_the_input_state_is_never_mutated(impl, s, script)
-        check_a_snapshot_round_trip_changes_nothing(impl, s, script, rng.randrange(len(script) + 1))
-        check_failures_and_weak_answers_never_change_state(impl, s, script)
+        s = _random_run(impl, rng.choice, steps=60)
+        check_no_occurrence_is_met_twice(impl, s)
+        check_every_observation_has_exactly_one_fate(impl, s)
+        check_the_input_state_is_never_mutated(impl, s)
+        check_a_snapshot_round_trip_changes_nothing(impl, s, rng.randrange(len(s.script.steps) + 1))
+        check_the_live_run_matches_the_reference(impl, s)
+        check_failures_and_weak_answers_never_change_state(impl, s)
