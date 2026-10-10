@@ -17,8 +17,10 @@ decision per real occurrence of a plain-language condition.
   with `add_health_listener` (every `open_source` source and every `PushSource`), so a camera
   outage is a `link_down` blind interval and health event even when the app built the source with
   its own `on_frame` / `on_health`. Sources gain `add_health_listener` / `remove_health_listener`.
-  `watch(uri, ...)` accepts `open_source` options (`on_frame`, `on_health`, `capture_fps`,
-  `max_side`, `stall_timeout`, `backoff`, ...); its own `fps` stays the processing cap.
+  One place configures a source: `open_source()` owns capture (rate, size, reconnection) and the
+  source callbacks; `watch()` owns monitoring and delivery. To configure capture, write
+  `source = open_source(uri, on_frame=..., fps=5)` then `monitor.watch(source)`; `watch(uri)`
+  opens the source with its defaults.
 - **Push stream outages.** `PushSource.set_link(up, detail="")` and
   `Monitor.set_link(stream_id, up, detail="")` report an app-owned feed as down or up, with the
   same health and blind interval as a camera; a frame pushed while down marks it up again and

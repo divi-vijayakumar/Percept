@@ -1349,7 +1349,7 @@ def test_d1_an_app_owned_source_reports_its_outage_to_the_monitor_without_privat
     assert app_frames and [h.kind for h in app_health] == ["link_down", "link_up"]   # the app still hears it
 
 
-def test_d1_watch_a_uri_with_the_apps_own_source_options(monkeypatch):
+def test_d1_capture_is_configured_on_open_source_and_watch_reports_its_outages(monkeypatch):
     from percept import sources
 
     monkeypatch.setattr(sources, "_cv2", lambda: None)
@@ -1360,24 +1360,47 @@ def test_d1_watch_a_uri_with_the_apps_own_source_options(monkeypatch):
 
     async def main():
         async with percept.Monitor(FakeJudge({}), [door], store=mem()) as m:
-            m.watch("rtsp://user:pw@cam-2/live", on_frame=app_frames.append, on_health=app_health.append,
-                    capture_fps=50, max_side=32, stall_timeout=None, backoff=(0.05, 0.05))
+            # The canonical form: open_source owns capture, watch owns monitoring and delivery.
+            source = percept.open_source("rtsp://user:pw@cam-2/live", on_frame=app_frames.append,
+                                         on_health=app_health.append, fps=50, max_side=32,
+                                         stall_timeout=None, backoff=(0.05, 0.05))
+            m.watch(source)
+            with pytest.raises(TypeError):
+                m.watch(source, on_frame=print)           # watch() takes no source options
             await wait_for(lambda: [h.kind for h in app_health] == ["link_down", "link_up"])
             await asyncio.sleep(0.05)
-            (sid,) = m._streams
-            return m._streams[sid].source, m.coverage(sid), m.stats()
+            return source, m.coverage(source.stream_id), m.stats()
 
     src, cov, stats = run(main())
-    assert src.fps == 50 and src.max_side == 32 and src.backoff == (0.05, 0.05) and src.stall_timeout is None
+    assert src.stream_id == "rtsp://cam-2/live"                   # credentials never in the id
     assert app_frames and max(app_frames[-1].image.shape) <= 32
     assert len(link_intervals(cov)) == 1 and stats["health"]["link_down"] == 1
-    with pytest.raises(TypeError):
-        run(_watch_with_bad_option())
+    assert stats["streams"][src.stream_id]["frames"] > 0
 
 
-async def _watch_with_bad_option():
-    async with percept.Monitor(FakeJudge({}), [], store=mem()) as m:
-        m.watch(PushSource("p"), on_frame=print)          # source options apply to a URI only
+def test_d1_a_uri_watched_with_open_source_defaults_also_reports_outages(monkeypatch):
+    from percept import sources
+
+    monkeypatch.setattr(sources, "_cv2", lambda: None)
+    opener = outage_opener(down_for=1)
+    monkeypatch.setattr(sources, "Cv2Reader", lambda target, **kw: opener())
+    real = sources.CaptureSource.__init__
+
+    def quick_backoff(self, *a, **kw):                  # the defaults back off 2 s; keep the test short
+        kw["backoff"] = (0.05, 0.05)
+        real(self, *a, **kw)
+
+    monkeypatch.setattr(sources.CaptureSource, "__init__", quick_backoff)
+    door = Condition("door", "the door is open", trigger=Never())
+
+    async def main():
+        async with percept.Monitor(FakeJudge({}), [door], store=mem()) as m:
+            m.watch("rtsp://cam-3/live")
+            await wait_for(lambda: m.stats()["health"].get("link_up") == 1)
+            return m.coverage("rtsp://cam-3/live")
+
+    cov = run(main())
+    assert len(link_intervals(cov)) == 1
 
 
 def test_d1b_a_push_stream_outage_is_a_blind_interval_and_health():
@@ -1702,17 +1725,6 @@ def test_link_health_from_a_worker_thread_is_handled_on_the_loop():
 
     cov = run(main())
     assert threads == ["MainThread"] and len(link_intervals(cov)) == 1
-
-
-def test_source_options_on_an_already_watched_stream_raise():
-    async def main():
-        async with percept.Monitor(FakeJudge({}), [], store=mem()) as m:
-            m.push("cam", image())
-            m.watch("cam")
-            with pytest.raises(TypeError):
-                m.watch("cam", capture_fps=5)
-
-    run(main())
 
 
 def test_a_source_that_is_already_down_when_watched_reports_link_down():

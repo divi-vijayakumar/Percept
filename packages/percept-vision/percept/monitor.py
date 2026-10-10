@@ -120,10 +120,6 @@ OUTPUT_TOKENS_PER_ITEM = 80 # ... plus one full answer each (id, answer, confide
 MAX_OUTPUT_TOKENS = 4096    # ... up to this ceiling
 
 
-_SOURCE_OPTIONS = frozenset({"on_frame", "on_health", "capture_fps", "max_side", "stall_timeout", "backoff",
-                             "loop", "live", "backend", "epoch", "ffmpeg"})
-
-
 def _max_output_tokens(n_items: int, id_chars: int = 0) -> int:
     """The reply limit for a request judging ``n_items`` conditions whose ids total ``id_chars``
     characters: room for every schema-conformant answer (counted at 3 characters a token, like
@@ -1188,7 +1184,7 @@ class Monitor:
     # ----------------------------------------------------------------- streams
 
     def watch(self, source: Union[str, Source], *, stream_id: Optional[str] = None, ack: str = "auto",
-              max_unacked: int = 100, fps: Optional[float] = DEFAULT_FPS, **source_options: Any) -> Watch:
+              max_unacked: int = 100, fps: Optional[float] = DEFAULT_FPS) -> Watch:
         """Decisions for one stream, in order, as ``Delivery`` envelopes (``async for``).
 
         ``source`` is a URI (see ``percept.open_source``), a ``Source``, or the id of a stream
@@ -1201,11 +1197,12 @@ class Monitor:
         pre-roll are not slowed, and skipped frames are counted in ``coverage()``. It applies
         when the stream starts; ``push()`` starts streams at the default.
 
-        With a URI, ``source_options`` go to ``open_source`` when it opens the stream:
-        ``on_frame`` (every captured frame, for the app's own view or recording), ``on_health``,
-        ``capture_fps`` (``open_source``'s ``fps``: the capture rate, unlike ``fps`` above),
-        ``max_side``, ``stall_timeout``, ``backoff``, ``loop``, ``live``, ``backend``, ``epoch``
-        and ``ffmpeg``.
+        A URI is opened with ``open_source``'s defaults. To configure capture (its rate, frame
+        size, reconnection, or ``on_frame`` / ``on_health`` callbacks), open the source yourself
+        and watch it: ``open_source`` owns the source, ``watch`` owns monitoring and delivery::
+
+            source = percept.open_source(uri, on_frame=show, fps=5)
+            async for delivery in monitor.watch(source): ...
 
         Link health: the monitor subscribes to any source with ``add_health_listener`` (every
         source from ``open_source`` and every ``PushSource``, including ones the app built with
@@ -1214,21 +1211,11 @@ class Monitor:
         """
         if fps is not None and not fps > 0:
             raise ValueError("fps is positive or None")
-        unknown = set(source_options) - _SOURCE_OPTIONS
-        if unknown:
-            raise TypeError(f"watch() got unexpected source options {sorted(unknown)}")
-        if source_options and not isinstance(source, str):
-            raise TypeError("source options apply when watch() opens a URI; pass them to open_source instead")
         self._bind()
         if isinstance(source, str):
             stream = self._streams.get(stream_id or source)
-            if stream is not None and source_options:
-                raise TypeError(f"stream {stream.id!r} is already open: source options apply only when watch() opens it")
             if stream is None:
-                options = dict(source_options)
-                if "capture_fps" in options:
-                    options["fps"] = options.pop("capture_fps")
-                opened = open_source(source, stream_id=stream_id, preroll=PreRoll(), **options)
+                opened = open_source(source, stream_id=stream_id, preroll=PreRoll())
                 stream = self._streams.get(opened.stream_id) or self._add(opened, fps)
         elif isinstance(source, Source):
             if stream_id is not None and stream_id != source.stream_id:
