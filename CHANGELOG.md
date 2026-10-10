@@ -1,7 +1,15 @@
 # Changelog
 
-Notable changes to Percept. This is a **research preview** — the SDK's public surface may change between
-0.x releases.
+Notable changes to Percept.
+
+## 1.0.0 — unreleased
+
+Percept 1.0 is a rewrite around one job: a decision layer that turns a live video stream into one
+decision per real occurrence of a plain-language condition.
+
+- New, small public API (`Monitor`, `Condition`, `Decision`), replacing the 0.x surface.
+- The 0.x modules are removed from `main`. Releases `0.7.0` and the unreleased 0.8 previews came
+  from an experimental line that is preserved in the project history but not continued.
 
 ## 0.6.0 — Research preview (2026-06)
 

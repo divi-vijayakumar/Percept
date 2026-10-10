@@ -8,6 +8,7 @@ dist/
 .venv/
 venv/
 .env
+.env.*
 
 # Tooling caches
 .pytest_cache/
@@ -146,3 +147,19 @@ docs/*publish-readiness*.md
 docs/updated-percept-sdk-architecture.md
 docs/perception-event-individuation-research.md
 docs/benchmark-scorecard-runbook.md
+
+# Internal material: never tracked (see AGENTS.md)
+Product-Execution/
+Product-Execution
+codewiki
+.dispatch-board
+internal-docs/
+
+# Local datasets, run outputs and tools
+eval/
+.worktrees/
+.ski/
+.netlify/
+.pnpm-store/
+packages/percept-vision/build/
+packages/percept-vision/dist/

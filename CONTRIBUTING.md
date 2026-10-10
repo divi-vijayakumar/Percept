@@ -1,37 +1,29 @@
 # Contributing to Percept
 
-Percept is a research preview. Issues, discussion, and pull requests are welcome.
+Percept 1.0 is under active development. Issues and discussion are welcome; please open an issue
+before a large pull request.
 
 ## Setup
 
 ```bash
-git clone <repo> && cd Percept-sdk
-pip install -e "packages/percept-vision[dev]"   # core is pure stdlib; heavy deps are opt-in extras
-make test        # L1 unit suite — fakes only, no keys, fast
-make parity      # JS edge  <->  Python percept.harness, byte-for-byte
+git clone https://github.com/divi-vijayakumar/Percept && cd Percept
+python -m venv .venv && . .venv/bin/activate
+pip install -e "packages/percept-vision[dev]"
+make check      # guardrails + tests, offline, no API keys
 ```
 
-`pip install percept-vision` (no extras) runs offline with fake backends and no keys. Opt into a backend or
-runtime only when you need it: `percept-vision[gemini]`, `[claude]`, `[openrouter]`, `[runtime]`, `[pose]`, …
+## Rules the code follows
 
-## Test discipline (first-class)
-
-- **L1 (`make test`) is the gate** — deterministic, fakes only, no keys. Every change keeps it green.
-- **`percept/gate.py` is invariant** — the three-state firing gate is byte-for-byte stable. Add new state in
-  `ConcernContext` / agent hooks routed through `gate.evaluate`; never edit `gate.py`.
-- **The core stays pure stdlib** — vendor SDKs (Gemini/Claude/OpenRouter/Deepgram) live behind lazy-imported
-  backends + extras. A CI import-lint (`tests/test_core_no_vendor_imports.py`) enforces it.
-- **Every new factor is a hypothesis** — A/B it on the eval loop and keep-or-drop on the evidence.
+- **Functional core, imperative shell.** `contracts`, `decide`, `triggers`, `zones`, `clips`,
+  `judges.base` and `replay` are pure: no I/O, no threads, no hidden clock. CI enforces this.
+- **A small public surface.** At most 30 names in `percept.__all__`. CI enforces this.
+- **Every module is reachable** from `percept/__init__.py`. CI enforces this.
+- **Growth is reviewed.** Past 10,000 lines in `percept/`, a pull request needs the owner's
+  `size-approved` label.
+- **Failures are never answers.** A timeout, outage or malformed reply must never be treated as a
+  model saying "no".
 
 ## Pull requests
 
-- Keep the diff focused; match the surrounding code's style and comment density.
-- Include the test that proves the change; cite A/B numbers where relevant.
-- Run `make test` + `make parity` before opening.
-
-## Architecture
-
-Start with [`docs/tutorials/quickstart.md`](docs/tutorials/quickstart.md),
-[`docs/explanation/concepts.md`](docs/explanation/concepts.md), and
-[`docs/explanation/architecture.md`](docs/explanation/architecture.md) — or the
-[docs index](docs/README.md). `llms.txt` is the agent-readable SDK reference.
+- One focused change per pull request, with the tests that prove it.
+- `make check` passes locally.

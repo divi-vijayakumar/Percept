@@ -2,124 +2,55 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
-  l1-unit:
-    name: L1 unit (fakes, no keys)
+  test:
+    name: tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e "packages/percept-vision[dev]"
+      - run: make test
+
+  guardrails:
+    name: guardrails (exports, boundaries, reachability)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: make test
-        run: make test
+      - run: make guardrails
 
-  l1-js:
-    name: L1 unit — percept-edge (vitest)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: install + test-js
-        run: |
-          cd packages/percept-edge && npm ci
-          cd "$GITHUB_WORKSPACE" && make test-js
-
-  l1-parity:
-    name: L1 parity — edge<->harness conformance (byte-for-byte)
+  size-review:
+    # Growth past the line threshold is not an automatic failure: it requires the
+    # owner to add the `size-approved` label after reviewing why the code grew.
+    name: size review
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: make parity
-        run: make parity
-
-  benchmark-scorecard:
-    name: Benchmark scorecard (offline draft)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: benchmark artifact audit
-        run: make audit-benchmark
-      - name: public scorecard
-        run: make scorecard
-
-  architecture-drift:
-    name: Architecture diagram not stale
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # full history so git rev-parse / git log resolve the HEAD sha + date
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: architecture diagram == generated (no drift)
-        run: make architecture-check
-
-  installed-wheel-smoke:
-    name: Installed wheel smoke (no source checkout on PATH)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: build the wheel
-        run: |
-          python -m pip install -q build
-          python -m build packages/percept-vision
-      - name: install into a clean venv and smoke the installed surface
-        run: |
-          set -euo pipefail
-          python -m venv /tmp/wheelsmoke
-          /tmp/wheelsmoke/bin/pip install -q packages/percept-vision/dist/percept_vision-*.whl
-          # import the public surface with NO extras and NO repo on sys.path (run from /tmp)
-          cd /tmp
-          /tmp/wheelsmoke/bin/python -c "import percept; import percept.contracts; from percept.harness import tier0; print('import ok', percept.__version__, percept.contracts.CONTRACT_VERSION)"
-          /tmp/wheelsmoke/bin/percept-schema
-          # the golden set is repo data, not packaged — percept-bench must fail with a usable message, not a traceback
-          out="$(/tmp/wheelsmoke/bin/percept-bench audit 2>&1 || true)"
-          echo "$out"
-          echo "$out" | grep -q "ships with the source repo" || { echo "::error::percept-bench audit did not emit the actionable not-found message"; exit 1; }
-          echo "installed-wheel smoke OK"
-
-  l2-live:
-    name: L2 live eval (gated)
-    runs-on: ubuntu-latest
-    # Runs only when a backend key is present (pre-merge / nightly). Skips cleanly otherwise.
-    if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: eval-live (skips without PERCEPT_LIVE=1 + keys)
+      - name: check size
         env:
-          PERCEPT_LIVE: ${{ secrets.ANTHROPIC_API_KEY != '' && '1' || '' }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: make eval-live
-
-  l3-e2e:
-    name: L3 browser e2e (pre-release)
-    runs-on: ubuntu-latest
-    if: ${{ github.ref == 'refs/heads/main' }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: e2e (scaffold)
-        run: make e2e
+          APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'size-approved') }}
+        run: |
+          set +e
+          python tools/guardrails/guardrails.py size
+          code=$?
+          set -e
+          if [ "$code" = "2" ] && [ "$APPROVED" != "true" ]; then
+            echo "::error::percept/ is over the line threshold. The owner must review and add the 'size-approved' label."
+            exit 1
+          fi
+          exit $(( code == 2 ? 0 : code ))

@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "percept-vision"
-version = "0.6.0"
-description = "Research preview — the open-source cognition layer for goal-driven, proactive vision agents."
+version = "1.0.0.dev0"
+description = "A decision layer for live video: tells your agent, once per occurrence, when a plain-language condition becomes true."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Divi", email = "divi@velvee.ai" }]
-keywords = ["vision", "agents", "proactive", "perception", "cognition", "vlm", "video", "real-time"]
+keywords = ["video", "agents", "vlm", "monitoring", "events", "real-time"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -20,65 +20,30 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Multimedia :: Video",
 ]
-# Core is PURE STDLIB — `pip install percept-vision` then run with fake backends, no keys, no heavy deps.
-# The frozen wire-contract (DTOs/Protocols) and the tier-0 salience harness now ship INSIDE this package as
-# `percept.contracts` and `percept.harness` (no separate packages). Opt into heavy deps only via extras.
-dependencies = []
+dependencies = [
+    "numpy>=1.24",
+    "pillow>=10",
+]
+
+[project.optional-dependencies]
+video = ["opencv-python-headless>=4.8"]
+gemini = ["google-genai>=1.0"]
+claude = ["anthropic>=0.40"]
+openai = ["openai>=1.40"]
+dev = ["pytest>=8", "hypothesis>=6.100"]
 
 [project.urls]
 Homepage = "https://github.com/divi-vijayakumar/Percept"
 Repository = "https://github.com/divi-vijayakumar/Percept"
-Documentation = "https://github.com/divi-vijayakumar/Percept/blob/main/docs/README.md"
 Issues = "https://github.com/divi-vijayakumar/Percept/issues"
 
-[project.optional-dependencies]
-claude = ["anthropic>=0.40"]
-gemini = ["google-genai>=1.0"]
-openrouter = ["openai>=1.40"]
-deepgram = ["deepgram-sdk>=3"]
-audio = ["numpy>=1.24"]
-harness = ["numpy>=1.24"]                                    # tier-0 salience gate + detectors fast path
-edge = ["numpy>=1.24"]                                       # Python tier-0 edge (parity with percept-edge JS)
-runtime = ["opencv-python-headless>=4.8", "numpy>=1.24"]     # camera/video/RTSP runtime worker
-screen = ["mss>=9"]
-bench = ["numpy>=1.24", "opencv-python-headless>=4.8"]
-pose = ["mmpose>=1.3", "mmdet>=3.0,<4", "mmcv>=2.0,<2.2", "mmengine>=0.10", "opencv-python-headless>=4.8", "numpy>=1.24"]
-blazepose = ["mediapipe>=0.10"]
-otel = ["opentelemetry-api>=1.20"]
-ui = []
-all = [
-    "anthropic>=0.40",
-    "google-genai>=1.0",
-    "openai>=1.40",
-    "deepgram-sdk>=3",
-    "numpy>=1.24",
-    "opencv-python-headless>=4.8",
-    "mss>=9",
-    "mmpose>=1.3",
-    "mmdet>=3.0,<4",
-    "mmcv>=2.0,<2.2",
-    "mmengine>=0.10",
-    "opentelemetry-api>=1.20",
-]
-dev = ["pytest>=8", "ruff>=0.6"]
-
-[project.scripts]
-percept-bench = "percept.bench:main"
-percept-schema = "percept.contracts.jsonschema:main"
-
 [tool.setuptools.packages.find]
-where = ["."]
-# Ship ONLY the `percept` namespace. The top-level `eval` benchmark harness is repo/dev tooling
-# (needs golden data that isn't packaged), so it stays out of the wheel — no `eval` namespace squat in
-# every installer's site-packages. `percept.bench` imports it lazily and degrades gracefully.
 include = ["percept*"]
 
 [tool.setuptools.package-data]
-"percept.contracts" = ["schema/*.json"]
+percept = ["py.typed"]
 
-[tool.ruff]
-line-length = 100
-target-version = "py310"
+[tool.pytest.ini_options]
+testpaths = ["tests"]

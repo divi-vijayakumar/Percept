@@ -1,8 +1,0 @@
-cache/
-logs/
-runs/
-*.json
-*.jsonl
-*.log
-*.txt
-
