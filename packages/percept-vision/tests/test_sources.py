@@ -352,6 +352,13 @@ url = sys.argv[sys.argv.index("-i") + 1]
 frame = b"P6\\n4 4\\n255\\n" + bytes(48)
 sys.stdout.buffer.write(frame * int(os.environ.get("FAKE_FRAMES", "0")))
 sys.stdout.flush()
+if os.environ.get("FAKE_STREAM"):  # a healthy 20 fps stream, honouring an -vf fps= cap like ffmpeg
+    vf = sys.argv[sys.argv.index("-vf") + 1]
+    rate = float(vf.split(",")[0][4:]) if vf.startswith("fps=") else 20.0
+    while True:
+        sys.stdout.buffer.write(frame)
+        sys.stdout.flush()
+        time.sleep(1 / rate)
 sys.stderr.write("Connection refused while opening " + url + "\\n")
 sys.stderr.flush()
 time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
@@ -494,3 +501,53 @@ def test_read_ppm_rejects_oversized_frames():
         read_ppm(io.BytesIO(b"P6\n4000 4000\n255\n"), max_pixels=640 * 640)
     with pytest.raises(ValueError):
         read_ppm(io.BytesIO(b"P6\n0 4\n255\n"))
+
+
+def test_low_fps_live_ffmpeg_is_not_mistaken_for_a_stall(fake_ffmpeg, monkeypatch):
+    monkeypatch.setenv("FAKE_STREAM", "1")
+    src = open_source("https://cdn.local/live/index.m3u8", ffmpeg=fake_ffmpeg, fps=0.5, stall_timeout=0.3,
+                      backoff=(0.05, 0.05))
+    t0 = time.monotonic()
+    frames, health = asyncio.run(until_health(src, lambda f, h: time.monotonic() - t0 > 2.5))
+    assert health == [] and frames and {f.stream_epoch for f in frames} == {0}
+
+
+def test_live_ffmpeg_command_caps_fps_reader_side(fake_ffmpeg):
+    live = open_source("https://cdn.local/live/index.m3u8", ffmpeg=fake_ffmpeg, fps=2)
+    assert live.fps == 2
+    reader = live.opener()
+    try:
+        assert not reader.proc.args[reader.proc.args.index("-vf") + 1].startswith("fps=")
+    finally:
+        reader.close()
+
+
+def test_stall_limit_is_at_least_two_frame_periods():
+    assert CaptureSource("cam", Reader, live=True, fps=1.0, stall_timeout=0.3).stall_limit == 2.0
+    assert CaptureSource("cam", Reader, live=True, fps=10.0, stall_timeout=30).stall_limit == 30
+    assert CaptureSource("cam", Reader, live=True, stall_timeout=None).stall_limit is None
+
+    class Slow(Reader):  # a healthy 1 fps camera
+        def read(self):
+            time.sleep(0.5)
+            return IMG[:8, :8], None
+
+    src = CaptureSource("cam", Slow, live=True, fps=1.0, stall_timeout=0.3)
+    t0 = time.monotonic()
+    frames, health = asyncio.run(until_health(src, lambda f, h: time.monotonic() - t0 > 1.6))
+    assert health == [] and len(frames) >= 1
+
+
+def test_stall_check_ignores_a_reader_that_is_no_longer_current():
+    aborted = []
+
+    class R(Reader):
+        def abort(self):
+            aborted.append(self)
+
+    src = CaptureSource("cam", Reader, live=True, stall_timeout=1.0, clock=lambda: 100.0)
+    old, new = R(), R()
+    src._reader, src._progress = new, 0.0  # a fresh connection replaced `old` after it was sampled
+    assert not src._check_stall(old)
+    assert not src._stalled and aborted == []
+    assert src._check_stall(new) and src._stalled and aborted == [new]

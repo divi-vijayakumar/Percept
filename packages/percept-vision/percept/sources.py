@@ -23,8 +23,12 @@ carried forward across ``loop`` restarts), so a file reads the same at any decod
 ``t`` may run ahead of ``time.monotonic()``. Compare ``frame.t`` only with another
 ``frame.t``. ``Health.t_wall`` is always real wall time.
 
-Credentials never leave the URI: the default ``stream_id`` drops ``user:password@``, the
-query string and the fragment, and health details are scrubbed of credentials.
+Credentials never leave the URI through Percept: the default ``stream_id`` drops
+``user:password@``, the query string and the fragment, and health details are scrubbed of
+credentials. Two places outside Percept's control still see the raw URI: OpenCV's own logger
+may print it to the process's stderr (set ``OPENCV_LOG_LEVEL=ERROR`` or ``OFF`` to silence
+it), and the ffmpeg/ffprobe command line carries it, so it is visible in local process
+listings.
 
 Link changes are reported, never raised: ``frames()`` does not raise for a camera that is
 down. They arrive as :class:`~percept.contracts.Health` (``link_down`` once per outage,
@@ -283,7 +287,9 @@ class CaptureSource(_Base):
     ``Health.t_wall`` is always real wall time.
 
     A live connection that delivers no frame for ``stall_timeout`` seconds is aborted and treated
-    as a failure (``link_down``, then backoff and reconnect). Aborting kills an ffmpeg reader
+    as a failure (``link_down``, then backoff and reconnect). The limit also bounds the time to
+    the first frame of a connection (for ffmpeg, which opens without blocking), and with an
+    ``fps`` cap it is never shorter than two frame periods. Aborting kills an ffmpeg reader
     at once; an OpenCV read can't be interrupted, so it ends at its own read timeout, and
     ``aclose`` may return while the thread finishes that bounded read.
 
@@ -322,6 +328,7 @@ class CaptureSource(_Base):
         self._reader: Reader | None = None
         self._progress = 0.0            # clock() at the last sign of life of the current connection
         self._stalled = False
+        self._conn_lock = threading.Lock()  # guards _reader/_progress/_stalled between threads
         self._last = (-math.inf, -math.inf, 0.0)  # (t, t_wall, media step) of the last frame
         self._thread: threading.Thread | None = None
 
@@ -334,13 +341,29 @@ class CaptureSource(_Base):
         if self.live and self.stall_timeout is not None:  # a file's handoff may wait on the consumer
             threading.Thread(target=self._watchdog, name="percept-capture-watchdog", daemon=True).start()
 
+    @property
+    def stall_limit(self) -> float | None:
+        """The effective stall timeout: ``stall_timeout``, but at least two ``fps`` periods."""
+        if self.stall_timeout is None:
+            return None
+        return max(self.stall_timeout, 2.0 / self.fps) if self.fps else self.stall_timeout
+
     def _watchdog(self) -> None:
-        assert self.stall_timeout is not None
-        while not self._stop_event.wait(min(1.0, self.stall_timeout / 4)):
-            reader = self._reader
-            if reader is not None and not self._stalled and self._clock() - self._progress > self.stall_timeout:
-                self._stalled = True
-                reader.abort()
+        limit = self.stall_limit
+        assert limit is not None
+        while not self._stop_event.wait(min(1.0, limit / 4)):
+            self._check_stall(self._reader)
+
+    def _check_stall(self, reader: Reader | None) -> bool:
+        """Abort ``reader`` if it is still the current connection and has gone quiet too long."""
+        limit = self.stall_limit
+        with self._conn_lock:
+            if (reader is None or reader is not self._reader or self._stalled or limit is None
+                    or self._clock() - self._progress <= limit):
+                return False
+            self._stalled = True
+        reader.abort()
+        return True
 
     def _health(self, kind: str, detail: str) -> None:
         self.link = "up" if kind == "link_up" else "down"
@@ -388,8 +411,8 @@ class CaptureSource(_Base):
             reader = self.opener()
         except Exception as exc:  # noqa: BLE001 - every open failure is retried the same way
             return False, f"{type(exc).__name__}: {exc}"
-        self._progress, self._stalled = self._clock(), False
-        self._reader = reader
+        with self._conn_lock:
+            self._progress, self._stalled, self._reader = self._clock(), False, reader
         got, error, seq, due, prev_media = False, None, 0, None, None
         last_t, last_wall, step = self._last
         t0, w0 = max(self._clock(), last_t + step), max(self._wall(), last_wall + step)
@@ -427,13 +450,14 @@ class CaptureSource(_Base):
         except Exception as exc:  # noqa: BLE001 - a read failure is a link failure
             error = f"{type(exc).__name__}: {exc}"
         finally:
-            self._reader = None
+            with self._conn_lock:
+                self._reader = None
             try:
                 reader.close()
             except Exception:  # noqa: BLE001
                 pass
         if self._stalled and not self._stop_event.is_set():
-            error = f"stalled: no frame for {self.stall_timeout:g} s"
+            error = f"stalled: no frame for {self.stall_limit:g} s"
         return got, error
 
     def _stop(self) -> None:
@@ -677,7 +701,9 @@ def open_source(uri: str, *, stream_id: str | None = None, fps: float | None = N
         binary = shutil.which(ffmpeg)
         if binary is None:
             raise RuntimeError(f"{name} is read with ffmpeg, and no {ffmpeg!r} binary is on PATH")
-        command = ffmpeg_command(path, fps=fps, max_side=max_side, ffmpeg=ffmpeg)
+        # Live: cap fps on our side, so the pipe (and the stall watchdog) sees every decoded
+        # frame. Files: cap inside ffmpeg, whose output rate then gives each frame's media time.
+        command = ffmpeg_command(path, fps=None if live else fps, max_side=max_side, ffmpeg=ffmpeg)
         ffprobe = os.path.join(os.path.dirname(binary), "ffprobe")
         rates: list[float | None] = []
 
@@ -686,7 +712,7 @@ def open_source(uri: str, *, stream_id: str | None = None, fps: float | None = N
                 rates.append(fps or probe_rate(path, ffprobe if os.path.exists(ffprobe) else "ffprobe"))
             return FfmpegReader(command, rate=None if live else rates[0], max_pixels=max_side * max_side)
 
-        return CaptureSource(name, ffmpeg_opener, **common)
+        return CaptureSource(name, ffmpeg_opener, fps=fps if live else None, **common)
     _cv2()
     target: str | int = int(low.split(":", 1)[1].lstrip("/") or 0) if webcam else path
     return CaptureSource(name, lambda: Cv2Reader(target, file=not live, label=name), fps=fps, **common)
