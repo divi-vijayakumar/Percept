@@ -68,10 +68,9 @@ async def call(
     """
     deadline_s = request.deadline_s if deadline_s is None else deadline_s
     start = clock()
-    # Encoding runs synchronously on the event loop; whether to move it to a thread is left to
-    # the runtime that calls this.
+    # Encoding runs in a worker thread, so large frames never stall the event loop.
     try:
-        images = tuple(to_jpeg(image, max_side=max_side) for image in request.images)
+        images = await asyncio.to_thread(lambda: tuple(to_jpeg(image, max_side=max_side) for image in request.images))
     except Exception as exc:  # noqa: BLE001 - a bad frame is an outage of this request, not a crash
         return JudgeResult(failed_observations(request, "unavailable", judge_name, _describe(exc)), ())
 

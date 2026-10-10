@@ -5,8 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sqlite3
+import stat
 import threading
+import time
+import tracemalloc
+from dataclasses import replace
 
 import pytest
 
@@ -108,30 +113,51 @@ def test_writer_close_abandons_a_commit_that_never_succeeds(monkeypatch):
     run(main())
 
 
-def test_outbox_restores_pending_decisions_in_order_with_attempt_plus_one():
-    store = MemoryStore()
+
+
+async def drain(ob: Outbox, ack: str = "manual") -> list:
+    ob.finish()
+    return [d async for d in Watch(ob, ack, 10**6, lambda n: None)]
+
+
+class CountingStore(MemoryStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes: list[dict] = []
+
+    def commit(self, writes):
+        self.writes.append(dict(writes))
+        super().commit(writes)
+
+
+def test_outbox_restores_pending_decisions_in_order_with_attempt_plus_one_and_rewrites_nothing():
+    store = CountingStore()
 
     async def first():
         ob = Outbox(Writer(store), "cam")
         assert await ob.restore() is None
         await ob.commit(b'{"decide": 1}', (decision(1), decision(2), decision(3)))
         await ob.commit(None, (decision(4),))
-        entries = list(ob.entries.values())
-        await ob.ack(entries[1])         # out of order
-        await ob.ack(entries[0])
+        got = await drain(ob)
+        await got[1].ack()         # out of order
+        await got[0].ack()
         await ob.writer.close(1.0)
 
     async def second():
         ob = Outbox(Writer(store), "cam")
-        assert await ob.restore() == {"decide": 1}
-        got = [(e.decision.decision_id, e.attempt) for e in ob.entries.values()]
+        before = len(store.writes)
+        assert await ob.restore() == b'{"decide": 1}'
+        restore_writes = store.writes[before:]
+        got = [(d.decision.decision_id, d.attempt) for d in await drain(ob)]
         await ob.writer.close(1.0)
-        return got
+        return got, restore_writes
 
     run(first())
-    assert json.loads(store.load(store_key("outbox-meta", "cam"))) == {"head": 2, "next": 4}
-    assert run(second()) == [(decision(3).decision_id, 2), (decision(4).decision_id, 2)]
-    assert run(second()) == [(decision(3).decision_id, 3), (decision(4).decision_id, 3)]  # never repeats
+    assert json.loads(store.load(store_key("outbox-meta", "cam")))["head"] == 2
+    got, writes = run(second())
+    assert got == [(decision(3).decision_id, 2), (decision(4).decision_id, 2)]
+    assert [list(w) for w in writes] == [[store_key("outbox-meta", "cam")]]     # one small write
+    assert run(second())[0] == [(decision(3).decision_id, 3), (decision(4).decision_id, 3)]  # never repeats
 
 
 def test_store_keys_of_different_streams_never_collide():
@@ -145,19 +171,17 @@ def test_watch_takeover_redelivers_unacknowledged_with_a_persisted_attempt():
         ob = Outbox(Writer(store), "cam")
         await ob.restore()
         await ob.commit(None, (decision(1), decision(2)))
-        ob.finish()
-        first = Watch(ob, "manual", 10, lambda n: None)
-        got = [(d.decision.decision_id, d.attempt) async for d in first]
-        second = Watch(ob, "auto", 10, lambda n: None)   # takes over: nothing was acknowledged
-        again = [(d.decision.decision_id, d.attempt) async for d in second]
+        got = [(d.decision.decision_id, d.attempt) for d in await drain(ob)]
+        again = [(d.decision.decision_id, d.attempt) for d in await drain(ob, "auto")]  # takes over
         await ob.writer.close(1.0)
-        return got, again, len(ob.entries)
+        return got, again, ob.pending()
 
     got, again, left = run(main())
     assert [a for _, a in got] == [1, 1] and [a for _, a in again] == [2, 2]
     assert [i for i, _ in got] == [i for i, _ in again]
     assert left == 0  # auto-acknowledged after the loop asked for more
-    assert json.loads(store.load(store_key("outbox-meta", "cam"))) == {"head": 2, "next": 2}
+    meta = json.loads(store.load(store_key("outbox-meta", "cam")))
+    assert (meta["head"], meta["next"]) == (2, 2)
 
 
 class GatedStore(MemoryStore):
@@ -181,9 +205,11 @@ def test_an_ack_while_a_later_commit_is_in_flight_never_hides_that_decision():
         ob = Outbox(Writer(store), "cam")
         await ob.restore()
         await ob.commit(None, (decision(1),))
+        watch = Watch(ob, "manual", 10, lambda n: None)
+        first = await watch.__anext__()
         later = asyncio.ensure_future(ob.commit(None, (decision(2),)))   # held in the writer
         await asyncio.to_thread(store.holding.wait, 5)
-        acked = asyncio.ensure_future(ob.ack(ob.entries[0]))             # queued behind it
+        acked = asyncio.ensure_future(first.ack())                       # queued behind it
         await asyncio.sleep(0.05)
         store.release.set()
         await asyncio.gather(later, acked)
@@ -192,8 +218,132 @@ def test_an_ack_while_a_later_commit_is_in_flight_never_hides_that_decision():
     async def restored():
         ob = Outbox(Writer(store), "cam")
         await ob.restore()
+        got = [d.decision.decision_id for d in await drain(ob)]
         await ob.writer.close(1.0)
-        return [e.decision.decision_id for e in ob.entries.values()]
+        return got
 
     run(main())
     assert run(restored()) == [decision(2).decision_id]
+
+
+# --------------------------------------------------------------------------- review findings
+
+
+class LoadFails(MemoryStore):
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    def load(self, key):
+        if self.failures:
+            self.failures -= 1
+            raise OSError("disk busy")
+        return super().load(key)
+
+
+def test_writer_retries_a_failed_load_visibly_and_close_stops_a_failing_one_promptly(monkeypatch):
+    monkeypatch.setattr(Writer, "RETRY_FIRST_S", 0.01)
+
+    async def transient():
+        writer = Writer(LoadFails(2))
+        assert await writer.load(["k"]) == [None]
+        assert writer.failures == 2 and not writer.retrying
+        await writer.close(1.0)
+
+    async def permanent():
+        writer = Writer(LoadFails(10**9))
+        pending = asyncio.ensure_future(writer.load(["k"]))
+        await asyncio.sleep(0.1)
+        assert writer.retrying and writer.failures >= 2
+        t0 = time.monotonic()
+        await writer.close(5.0)
+        with pytest.raises(OSError):
+            await pending
+        return time.monotonic() - t0
+
+    run(transient())
+    assert run(permanent()) < 1.5
+
+
+def test_an_unreadable_meta_record_is_never_renumbered_or_overwritten():
+    store = MemoryStore()
+    meta_key = store_key("outbox-meta", "cam")
+    store.commit({meta_key: b"{not json", delivery._entry_key("cam", 7): b"{}"})
+
+    async def main():
+        ob = Outbox(Writer(store), "cam")
+        with pytest.raises(delivery.OutboxUnreadable):
+            await ob.restore()
+        await ob.writer.close(1.0)
+
+    run(main())
+    assert store.load(meta_key) == b"{not json" and store.load(delivery._entry_key("cam", 7)) == b"{}"
+
+
+def test_restore_wakes_a_consumer_already_waiting():
+    store = MemoryStore()
+
+    async def seed():
+        ob = Outbox(Writer(store), "cam")
+        await ob.restore()
+        await ob.commit(None, (decision(1),))
+        await ob.writer.close(1.0)
+
+    async def main():
+        ob = Outbox(Writer(store), "cam")
+        waiting = asyncio.ensure_future(Watch(ob, "auto", 10, lambda n: None).__anext__())
+        await asyncio.sleep(0.05)
+        await ob.restore()
+        got = await asyncio.wait_for(waiting, 0.5)
+        await ob.writer.close(1.0)
+        return got.decision.decision_id
+
+    run(seed())
+    assert run(main()) == decision(1).decision_id
+
+
+def test_sqlite_store_has_one_owner_and_private_files(tmp_path):
+    path = tmp_path / "percept.db"
+    a, b = SqliteStore(path), SqliteStore(path)
+    a.lock()
+    with pytest.raises(RuntimeError, match="in use"):
+        b.lock()
+    a.commit({"k": b"v"})
+    for name in ("percept.db", "percept.db-wal", "percept.db.lock"):
+        assert stat.S_IMODE(os.stat(tmp_path / name).st_mode) == 0o600, name
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    a.close()
+    b.lock()                      # released with the first owner
+    assert b.load("k") == b"v"
+    b.close()
+
+
+def test_a_consumer_that_never_reads_keeps_memory_bounded_while_everything_stays_durable(tmp_path):
+    """R4: thousands of decisions with keyframes, nobody reading: memory stays flat, disk holds all."""
+    store = SqliteStore(tmp_path / "s.db")
+    big = [replace(decision(n), keyframe=os.urandom(8_000)) for n in range(3000)]
+
+    async def main():
+        ob = Outbox(Writer(store), "cam")
+        await ob.restore()
+        Watch(ob, "manual", 100, lambda n: None)             # attached, never iterated
+        tracemalloc.start()
+        before = tracemalloc.get_traced_memory()[0]
+        for i in range(0, len(big), 100):
+            await ob.commit(b'{"decide": 1}', tuple(big[i:i + 100]))
+        grown = tracemalloc.get_traced_memory()[0] - before
+        tracemalloc.stop()
+        sizes = (len(getattr(ob, "ahead", ())), len(getattr(ob, "held", ())), getattr(ob, "entries", None))
+        first = [(await Watch(ob, "auto", 10, lambda n: None).__anext__()).decision.decision_id]
+        await ob.writer.close(5.0)
+        return grown, sizes, first
+
+    grown, (ahead, held, entries), first = run(main(), timeout=60)
+    assert entries is None                                    # no full in-memory mirror
+    assert ahead <= delivery.READ_AHEAD and held == 0
+    assert grown < 2_000_000, grown            # 3000 x 8 KB keyframes would be 24 MB in memory
+    assert first == [big[0].decision_id]
+    with sqlite3.connect(tmp_path / "s.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM percept_kv WHERE key LIKE 'outbox:%'").fetchone()[0] == 3000
+    store.close()

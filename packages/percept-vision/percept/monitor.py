@@ -7,17 +7,28 @@ due work), a dispatcher task (budget, priority, single flight), a committer task
 then one atomic outbox write per emitting step) and one decide state. Shared across streams:
 the judge, limited by ``max_concurrent_requests``, and the store's writer thread.
 
-Budget (per stream). A request reserves ``max_attempts(judge)`` attempts (per item for a judge
-that can't batch) before it is sent and holds them until it finishes; then its actual attempts
-stay charged for the window. A request is admitted only while everything charged in that way
-plus its reservation fits ``max_requests_per_min``, so no 60 s span ever holds more outbound
-attempts than the limit (for judges that report their attempts truthfully). Dollars work the
-same way over an hour when the judge has a ``price``; without one, only the reported cost counts.
-Verification uses the same budget and the same concurrency limit: its own queue, not a bypass.
+Budget. A request reserves ``max_attempts(judge)`` attempts (per item for a judge that can't
+batch) against its stream's ``max_requests_per_min`` before it is sent and holds them until it
+finishes; then its actual attempts stay charged for the window. A request is admitted only while
+everything charged in that way plus its reservation fits, so no 60 s span ever holds more
+outbound attempts than the limit (for judges that report their attempts truthfully). Dollars work
+the same way over an hour, on one ledger for the whole monitor: every request reserves its worst
+case (``worst_case_cost`` for every attempt, cascade hops included) when the judge has a
+``price``; without one, only the reported cost counts (best effort). Verification uses the same
+budgets and the same concurrency limit: its own queue, not a bypass.
 
 Priority when constrained: verify, event detect, state detect, heartbeat, recheck. Event and
 state detections wait at most ``DEADLINES`` seconds, then are dropped with fate
 ``dropped_budget``; heartbeats and rechecks wait for the next free slot.
+
+Frames are processed at most ``fps`` per second (default 5, on the stream clock); capture is
+never slowed, the pre-roll still sees every frame, and skipped frames are counted in coverage. A
+look that needs the current frame waits while the stream has no recent frame (an open
+``link_down`` interval, or no frame for ``STALE_FRAME_S``) rather than judging an old one as
+current; such waits are counted as ``evidence_unavailable``.
+
+Scene return (decide's ``SceneReturn`` input, cause ``"scene_return"``) is reserved in 1.0: no
+trigger reports it, so the runtime never feeds it.
 
 Time: decide sees wall-clock time; timers run on the loop's monotonic clock, converted from
 decide's wall-clock deadlines when they are scheduled (a timer that fires early is rescheduled
@@ -33,7 +44,7 @@ import logging
 import time
 from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass, replace
-from typing import Any, Iterable, Optional, Sequence, Union
+from typing import Any, Callable, Iterable, Optional, Sequence, Union
 
 import numpy as np
 
@@ -53,7 +64,7 @@ from percept.contracts import (
     JudgeResult,
     Source,
 )
-from percept.delivery import Outbox, SqliteStore, Watch, Writer, store_key
+from percept.delivery import Outbox, OutboxUnreadable, SqliteStore, Watch, Writer, store_key
 from percept.judges.base import attribute_usage, failed_observations, max_attempts, worst_case_cost
 from percept.judges.encode import to_jpeg
 from percept.sources import PushSource, open_source
@@ -80,6 +91,8 @@ KEEP_REQUEST_FRAMES = 8     # recent requests whose frames are kept for keyframe
 KEYFRAME_STEPS = ((320, 70), (240, 55), (160, 40))   # (max side, JPEG quality) until <= 40 KB
 COVERAGE_BUCKET_S = 60.0
 COVERAGE_BUCKETS = 1440
+DEFAULT_FPS = 5.0           # frames processed per second, per stream, unless watch(fps=...) says otherwise
+STALE_FRAME_S = 10.0        # a frame older than this is not judged as the current one
 
 
 def _spread(frames: tuple[Frame, ...], n: int) -> tuple[Frame, ...]:
@@ -132,37 +145,30 @@ class _HealthRing:
                 await self.ready.wait()
 
 
-class _Budget:
-    """One stream's spend over sliding windows; see the module docstring."""
+class _Window:
+    """Spend over a sliding window (see the module docstring): what requests in flight reserved,
+    plus what finished requests actually used, each kept for ``window()`` seconds after it ended.
+    A ``limit`` of None admits everything but still keeps the account."""
 
-    def __init__(self, limit: int, max_cost: Optional[float]) -> None:
-        self.limit, self.max_cost = limit, max_cost
-        self.held = 0                    # attempts reserved by requests in flight
-        self.held_cost = 0.0
-        self.spent: deque[tuple[float, int]] = deque()        # (expires, attempts)
-        self.spent_cost: deque[tuple[float, float]] = deque()
+    def __init__(self, limit: Optional[float], window: Callable[[], float]) -> None:
+        self.limit, self.window = limit, window
+        self.held: float = 0
+        self.spent: deque[tuple[float, float]] = deque()        # (expires, amount)
 
-    def _used(self, now: float) -> tuple[int, float]:
+    def used(self, now: float) -> float:
         while self.spent and self.spent[0][0] <= now:
             self.spent.popleft()
-        while self.spent_cost and self.spent_cost[0][0] <= now:
-            self.spent_cost.popleft()
-        return (self.held + sum(a for _, a in self.spent),
-                self.held_cost + sum(c for _, c in self.spent_cost))
+        return self.held + sum(a for _, a in self.spent)
 
-    def fits(self, attempts: int, cost: float, now: float) -> bool:
-        used, used_cost = self._used(now)
-        return used + attempts <= self.limit and (self.max_cost is None or used_cost + cost <= self.max_cost)
+    def fits(self, amount: float, now: float) -> bool:
+        return self.limit is None or self.used(now) + amount <= self.limit
 
-    def take(self, attempts: int, cost: float) -> None:
-        self.held += attempts
-        self.held_cost += cost
+    def take(self, amount: float) -> None:
+        self.held += amount
 
-    def settle(self, attempts: int, cost: float, used: int, spent: float, now: float) -> None:
-        self.held -= attempts
-        self.held_cost -= cost
-        self.spent.append((now + BUDGET_WINDOW_S, used))
-        self.spent_cost.append((now + COST_WINDOW_S, spent))
+    def settle(self, reserved: float, actual: float, now: float) -> None:
+        self.held -= reserved
+        self.spent.append((now + self.window(), actual))
 
     def next_change(self, now: float) -> Optional[float]:
         return self.spent[0][0] - now if self.spent else None
@@ -184,16 +190,20 @@ class _Work:
     not_before: float = 0.0                     # verify retries
     blocked: bool = False                       # waited on the budget
     gone: bool = False                          # the original evidence is no longer held
+    starved: bool = False                       # counted once as evidence_unavailable
     frames: tuple = ()                          # an original-interval verification's frames
 
 
 class _Stream:
     """Everything the runtime keeps for one stream. Runs on the monitor's loop."""
 
-    def __init__(self, m: Monitor, source: Any) -> None:
+    def __init__(self, m: Monitor, source: Any, fps: Optional[float]) -> None:
         self.m, self.source, self.id = m, source, source.stream_id
-        self.outbox = Outbox(m._writer, self.id)
-        self.budget = _Budget(m.max_requests_per_min, m.max_cost_per_hour)
+        self.outbox = Outbox(m._writer, self.id, lambda detail: self.health("store_lag", detail))
+        self.budget = _Window(m.max_requests_per_min, lambda: BUDGET_WINDOW_S)
+        self.period, self.due = (1.0 / fps if fps else 0.0), None
+        self.latest_mono = self.latest_rx = 0.0
+        self.halted = False
         self.own_ring = getattr(source, "preroll", None) is None
         self.ring = PreRoll() if self.own_ring else source.preroll
         self.state: Optional[decide.StreamDecideState] = None
@@ -218,7 +228,7 @@ class _Stream:
         self.req_refs: OrderedDict[str, tuple[EvidenceRef, ...]] = OrderedDict()
         self.keyframes: OrderedDict[str, bytes] = OrderedDict()   # occurrence id -> latest keyframe
         self.counter: dict[str, list[CounterExample]] = {}
-        self.blind_open: dict[tuple[str, str], float] = {}
+        self.blind_open: dict[tuple[str, Optional[str]], tuple[float, str]] = {}
         self.blind: deque[BlindInterval] = deque(maxlen=MAX_BLIND)
         self.blind_dropped = 0
         self.fates: deque[tuple[int, Counter]] = deque(maxlen=COVERAGE_BUCKETS)
@@ -227,7 +237,10 @@ class _Stream:
         self.budget_blocked = False
         self.eof = False
         self.tasks: set[asyncio.Task] = set()
+        for cid in m._paused:           # paused before this stream existed
+            self.blind_set("paused", True, "paused by the application", cid)
         self.committer = self.spawn(self._commit_loop())
+        self.spawn(self._tick_loop())   # reports store trouble from the start, restore included
         self.runner = self.spawn(self._run())
 
     # ----------------------------------------------------------------- plumbing
@@ -241,15 +254,16 @@ class _Stream:
     def health(self, kind: str, detail: str = "", condition_id: Optional[str] = None) -> None:
         self.m._health.put(Health(kind, self.id, self.m._wall(), detail, condition_id=condition_id))  # type: ignore[arg-type]
 
-    def blind_set(self, kind: str, on: bool, detail: str = "") -> None:
-        key, now = (kind, detail), self.m._wall()
+    def blind_set(self, kind: str, on: bool, detail: str = "", condition_id: Optional[str] = None) -> None:
+        key, now = (kind, condition_id), self.m._wall()
         if on and key not in self.blind_open:
-            self.blind_open[key] = now
+            self.blind_open[key] = (now, detail)
         elif not on and key in self.blind_open:
-            start = self.blind_open.pop(key)
+            start, detail = self.blind_open.pop(key)
             if len(self.blind) == self.blind.maxlen:
                 self.blind_dropped += 1
-            self.blind.append(BlindInterval(kind, self.id, start, max(start, now), detail))  # type: ignore[arg-type]
+            self.blind.append(BlindInterval(kind, self.id, start, max(start, now), detail,  # type: ignore[arg-type]
+                                            condition_id))
 
     def fate(self, condition_id: str, fate: str, n: int = 1) -> None:
         bucket = int(self.m._wall() // COVERAGE_BUCKET_S)
@@ -262,9 +276,13 @@ class _Stream:
 
     async def _run(self) -> None:
         try:
-            await self._restore()
+            try:
+                await self._restore()
+            except OutboxUnreadable as exc:
+                self.halted = True      # never renumber or overwrite: report until someone looks
+                self.health("store_lag", f"{exc}; this stream is halted and nothing was overwritten")
+                return
             self.dispatcher = self.spawn(self._dispatch_loop())
-            self.spawn(self._tick_loop())
             frames = self.source.frames()
             try:
                 async for frame in frames:
@@ -283,17 +301,27 @@ class _Stream:
         finally:
             self.eof = True
             self.wake.set()
+            if self.dispatcher is None:     # never started: let watch() end instead of hanging
+                self.outbox.finish()
 
     async def _restore(self) -> None:
         m, wall = self.m, self.m._wall()
-        snap = await self.outbox.restore()
+        failures = m._writer.failures
+        raw = await self.outbox.restore()
+        if m._writer.failures > failures:
+            self.health("store_lag", f"{m._writer.failures - failures} store calls failed while restoring; retried")
         state = None
-        if snap is not None:
+        if raw is not None:
             try:
-                state = decide.from_dict(snap["decide"])
-            except (KeyError, TypeError, ValueError):
-                self.health("store_lag", "the stored snapshot is unreadable; this stream starts fresh")
-        if state is not None and state.stream_id == self.id:
+                state = decide.from_dict(json.loads(raw)["decide"])
+                if state.stream_id != self.id:
+                    raise ValueError(f"snapshot of stream {state.stream_id!r}")
+            except (KeyError, TypeError, ValueError) as exc:
+                state = None    # kept aside, never overwritten in place; new ids can't collide (§5.1)
+                await m._writer.commit({store_key("snapshot-unreadable", self.id, f"#{int(wall * 1000)}"): raw})
+                self.health("store_lag", f"the decide snapshot was unreadable ({exc!r:.80}); it was kept "
+                                         "aside and decide state starts over under a new incarnation")
+        if state is not None:
             self.state, self.epoch = state, state.stream_epoch + 1
             self.step(decide.EpochStarted(self.epoch, restart=True))
         else:
@@ -306,7 +334,6 @@ class _Stream:
         for (cid, subject), until in m._snoozes.items():
             if until > wall:
                 self.step(decide.Snooze(cid, until, subject))
-                self.mute_timer(cid, subject, until)
         backlog, self.backlog = self.backlog, []
         for inp in backlog:
             self.step(inp)
@@ -322,9 +349,14 @@ class _Stream:
             self.epoch_map[frame.stream_epoch] = self.epoch
             while len(self.epoch_map) > 16:
                 del self.epoch_map[next(iter(self.epoch_map))]
-        self.latest = frame
         if self.own_ring:
             self.ring.add(frame)
+        if self.period:     # the processing cap: capture and the pre-roll are not slowed
+            if self.due is not None and frame.t < self.due - 0.1 * self.period:
+                self.fate("*", "frames_capped")
+                return
+            self.due = (frame.t if self.due is None or frame.t - self.due > self.period else self.due) + self.period
+        self.latest, self.latest_mono, self.latest_rx = frame, m._mono(), m._wall()
         verdict, self.qstate = m._quality.check(frame, self.qstate, frame.t)
         if verdict.reseeded:
             self.health("degraded", "a lasting blur became the new normal (refocused, or a lens out of focus)")
@@ -383,6 +415,26 @@ class _Stream:
             w.frame, w.images = frame or w.frame, images or w.images
         self.wake.set()
 
+    def current(self) -> Optional[Frame]:
+        """The newest processed frame, unless the stream has gone quiet since: a frame from before
+        an open ``link_down`` interval, or one older than ``STALE_FRAME_S``, is not current."""
+        f, m = self.latest, self.m
+        if f is None:
+            return None
+        down = self.blind_open.get(("link_down", None))
+        if down is not None and self.latest_rx <= down[0]:
+            return None
+        if m._mono() - self.latest_mono > STALE_FRAME_S:
+            return None
+        if getattr(self.source, "live", True) and m._wall() - f.t_wall > STALE_FRAME_S:
+            return None
+        return f
+
+    def starve(self, w: _Work) -> None:
+        if not w.starved:
+            w.starved = True
+            self.fate(w.condition_id, "evidence_unavailable")
+
     def frames_of(self, interval: tuple[float, float], epoch: int) -> tuple[Frame, ...]:
         """Every pre-roll frame of ``epoch`` inside ``interval``, oldest first."""
         held = self.ring.within(interval) if self.own_ring else self.source.clip(interval, 1024)
@@ -406,7 +458,7 @@ class _Stream:
     def evidence(self, w: _Work) -> Optional[tuple]:
         """(frames, images, evidence_t, crop) for a look, or None when there is nothing to judge."""
         cond = self.m._conds.get(w.condition_id)
-        latest = self.latest
+        latest = self.current()
         if cond is None:
             return None
         if w.images is not None:
@@ -417,14 +469,18 @@ class _Stream:
             if v.mode == "original":
                 frames = w.frames
                 if not frames:
+                    self.starve(w)
                     return None  # the original evidence is gone
             elif latest is None or v.stream_epoch != self.epoch:
+                if latest is None:
+                    self.starve(w)
                 return None
             else:
                 frames = (latest,)
         elif w.frame is not None:
             frames = (w.frame,)
         elif latest is None:
+            self.starve(w)
             return None
         elif cond.kind == "event":
             anchor = latest.t_wall if w.t_trigger is None else min(w.t_trigger, latest.t_wall)
@@ -453,6 +509,7 @@ class _Stream:
                 await asyncio.wait_for(self.wake.wait(), timeout)
             except asyncio.TimeoutError:
                 pass
+        self.m._cost_waiters.pop(self.id, None)
         await self.commits.join()
         self.outbox.finish()
 
@@ -464,8 +521,9 @@ class _Stream:
             if w.deadline is not None and now > w.deadline:
                 del self.pending[key]
                 self.fate(w.condition_id, "dropped_budget")
-            elif self.eof and self.latest is None and w.images is None:
-                del self.pending[key]
+            elif self.eof and self.current() is None and w.images is None and w.frame is None:
+                del self.pending[key]               # the stream ended: no frame will come
+                self.starve(w)
                 self.fate(w.condition_id, "dropped_budget")
         refused = False
         if self.verify_task is None and self.verifies:
@@ -497,22 +555,26 @@ class _Stream:
             self.blind_set("budget_exhausted", refused)
             if refused:
                 self.health("budget_exhausted", f"more than {m.max_requests_per_min} attempts a minute are due")
-        if refused and (nxt := self.budget.next_change(now)) is not None:
-            wait = min(wait, nxt)
+        changes = [c for c in (self.budget.next_change(now), m._cost.next_change(now)) if c is not None]
+        if refused and changes:
+            wait = min([wait] + changes)
+        if not refused:             # not waiting for money: don't hold the line for others
+            m._cost_waiters.pop(self.id, None)
         if self.granted:            # handed a slot it can't use now: pass it on
             self.granted = False
             m._release()
         return max(0.005, wait)
 
     def group(self) -> list[_Work]:
-        """The most urgent look, plus every waiting look with identical evidence."""
+        """The most urgent look that can be judged now, plus every waiting look with identical
+        evidence (a look whose evidence is unavailable doesn't hold up the others)."""
         order = sorted(self.pending.values(), key=lambda w: (w.priority, w.created))
-        top_ev = self.evidence(order[0])
-        if top_ev is None:
+        top, top_ev = next(((w, ev) for w in order if (ev := self.evidence(w)) is not None), (None, None))
+        if top is None:
             return []
         cap = len(order) if self.m.judge.can_batch else max(1, self.m.max_requests_per_min // self.m._attempts)
-        group = [order[0]]
-        for w in order[1:]:
+        group = [top]
+        for w in order[order.index(top) + 1:]:
             if len(group) >= cap:
                 break
             ev = self.evidence(w)
@@ -548,9 +610,16 @@ class _Stream:
         reserve = m._attempts * calls
         price = getattr(m.judge, "price", None)
         cost = worst_case_cost(request, price, retries=m._attempts - 1) * calls if price is not None else 0.0
-        if not self.budget.fits(reserve, cost, now):
+        cost_ok = m._cost.fits(cost, now)
+        if cost_ok and cost > 0 and m._cost_waiters and next(iter(m._cost_waiters)) != self.id:
+            cost_ok = False             # another stream has waited longer for the shared dollar cap
+        if not cost_ok:
+            m._cost_waiters.setdefault(self.id, None)
+        if not (cost_ok and self.budget.fits(reserve, now)):
             return "budget"
-        self.budget.take(reserve, cost)
+        m._cost_waiters.pop(self.id, None)
+        self.budget.take(reserve)       # both ledgers are checked and taken in one step on the loop:
+        m._cost.take(cost)              # atomic across every stream
         if self.granted:
             self.granted = False
         else:
@@ -585,7 +654,8 @@ class _Stream:
         finally:  # a cancelled request keeps its whole reservation charged
             used = reserve if result is None else sum(u.usage.attempts for u in result.usage)
             spent = cost if result is None else sum(u.usage.cost_usd for u in result.usage)
-            self.budget.settle(reserve, cost, used, spent, m._mono())
+            self.budget.settle(reserve, used, m._mono())
+            m._cost.settle(cost, spent, m._mono())
             self.totals["requests"] += 1
             self.totals["attempts"] += used
             self.totals["cost_usd_micros"] += round(spent * 1e6)
@@ -681,13 +751,9 @@ class _Stream:
         if not self.m._closing:
             self.step(decide.TimerFired(*key))
 
-    def mute_timer(self, cid: str, subject: Optional[str], until: float) -> None:
-        handle = asyncio.get_running_loop().call_later(max(0.0, until - self.m._wall()), self.mute_ended, cid, subject)
-        self.m._handles.append(handle)
-
     def mute_ended(self, cid: str, subject: Optional[str]) -> None:
         """A snooze ended: look again at every held state it may have deferred a met for (D2)."""
-        if self.m._closing or self.state is None or self.m._snoozes.get((cid, subject), 0.0) > self.m._wall():
+        if self.m._closing or self.state is None:
             return
         for (kcid, ksubject), k in self.state.keys.items():
             if kcid == cid and subject in (None, ksubject) and k.met_pending and k.phase == decide.HOLDING:
@@ -742,38 +808,51 @@ class _Stream:
         failures = 0
         while True:
             await asyncio.sleep(SNAPSHOT_EVERY_S)
-            if self.dirty and self.commits.empty():
+            if self.dirty and self.commits.empty() and not self.halted:
                 self.flush_snapshot()
             w = self.m._writer
-            if w.pending > STORE_LAG_DEPTH or w.failures > failures:
-                self.health("store_lag", f"{w.pending} store writes waiting, {w.failures} failed")
+            if w.pending > STORE_LAG_DEPTH or w.failures > failures or w.retrying:
+                self.health("store_lag", f"{w.pending} store calls waiting, {w.failures} failed"
+                                         + (", retrying" if w.retrying else ""))
+            if self.halted:
+                self.health("store_lag", "this stream is halted: its outbox record is unreadable")
             failures = w.failures
 
     # ----------------------------------------------------------------- reports
 
     def coverage(self, since_wall: float) -> dict:
         fates: dict[str, Counter] = {}
+        unavailable: Counter = Counter()
+        capped = 0
         first = int(since_wall // COVERAGE_BUCKET_S)
         for bucket, counts in self.fates:
             if bucket >= first:
                 for (cid, fate), n in counts.items():
-                    fates.setdefault(cid, Counter())[fate] += n
+                    if fate == "frames_capped":
+                        capped += n
+                    elif fate == "evidence_unavailable":
+                        unavailable[cid] += n
+                    else:
+                        fates.setdefault(cid, Counter())[fate] += n
         now = self.m._wall()
         blind = [b for b in self.blind if b.t_end_wall is None or b.t_end_wall >= since_wall]
-        blind += [BlindInterval(kind, self.id, start, None, detail)  # type: ignore[arg-type]
-                  for (kind, detail), start in self.blind_open.items()]
+        blind += [BlindInterval(kind, self.id, start, None, detail, cid)  # type: ignore[arg-type]
+                  for (kind, cid), (start, detail) in self.blind_open.items()]
         return {"stream_id": self.id, "since_wall": since_wall, "until_wall": now,
                 "fates": {cid: dict(c) for cid, c in sorted(fates.items())},
+                "frames_capped": capped, "evidence_unavailable": dict(sorted(unavailable.items())),
                 "blind_intervals": sorted(blind, key=lambda b: b.t_start_wall),
                 "blind_intervals_dropped": self.blind_dropped}
 
     def stats(self) -> dict:
         t, ob = self.totals, self.outbox
-        counts = {k: t[k] for k in ("frames", "frames_vetoed", "requests", "attempts")}
+        counts = {k: t[k] for k in ("frames", "frames_capped", "frames_vetoed", "requests", "attempts",
+                                    "evidence_unavailable")}
         fates = {k: v for k, v in t.items() if k not in counts and k != "cost_usd_micros"}
         return dict(counts, cost_usd=t["cost_usd_micros"] / 1e6, fates=fates, decisions=ob.committed,
-                    delivered=ob.delivered, redelivered=ob.redelivered, acked=ob.acked, unacked=len(ob.entries),
-                    pending_looks=len(self.pending), pending_verifications=len(self.verifies))
+                    delivered=ob.delivered, redelivered=ob.redelivered, acked=ob.acked, unacked=ob.pending(),
+                    pending_looks=len(self.pending), pending_verifications=len(self.verifies),
+                    halted=self.halted)
 
     def stop(self) -> list[asyncio.Task]:
         """Cancel capture, dispatch and in-flight judging (the committer is drained separately)."""
@@ -793,8 +872,8 @@ class Monitor:
     cheaper judges first). ``store`` defaults to ``SqliteStore("percept.db")`` in the working directory;
     ``percept.MemoryStore()`` is the explicit, not crash-safe alternative.
     ``max_requests_per_min`` is a hard per-stream limit on outbound attempts over any 60 s;
-    ``max_cost_per_hour`` (per stream) is reserved before each request and reconciled after,
-    guaranteed for judges with a ``price`` and best-effort otherwise;
+    ``max_cost_per_hour`` is one cap for the whole monitor, reserved (worst case) before each
+    request and reconciled after, guaranteed for judges with a ``price`` and best-effort otherwise;
     ``max_concurrent_requests`` limits requests in flight across every stream.
 
     Configuration errors raise here, in :meth:`add` and in :meth:`watch`. Nothing raises
@@ -836,9 +915,11 @@ class Monitor:
         self._snoozes: dict[tuple[str, Optional[str]], float] = {}
         self._streams: dict[str, _Stream] = {}
         self._health = _HealthRing()
-        self._handles: list[asyncio.TimerHandle] = []
+        self._mutes: dict[tuple[str, Optional[str]], asyncio.TimerHandle] = {}
+        self._cost = _Window(max_cost_per_hour, lambda: COST_WINDOW_S)
         self._slots = 0
         self._waiters: OrderedDict[str, _Stream] = OrderedDict()
+        self._cost_waiters: OrderedDict[str, None] = OrderedDict()   # streams waiting on the dollar cap, in order
         self._quality, self._scene = QualityGate(), SceneMonitor()
         self._default_change, self._default_heartbeat = on_change(), every(300)
         self._wall, self._mono = time.time, time.monotonic
@@ -875,6 +956,8 @@ class Monitor:
             for trigger in triggers:
                 groups.setdefault(id(trigger), (trigger, []))[1].append(cond)
         self._groups = [(t, tuple(cs)) for t, cs in groups.values()]
+        for stream in getattr(self, "_streams", {}).values():    # forget replaced triggers' state
+            stream.tstates = {k: v for k, v in stream.tstates.items() if k in groups}
 
     def _bind(self) -> None:
         loop = asyncio.get_running_loop()
@@ -923,36 +1006,49 @@ class Monitor:
     # ----------------------------------------------------------------- streams
 
     def watch(self, source: Union[str, Source], *, stream_id: Optional[str] = None, ack: str = "auto",
-              max_unacked: int = 100) -> Watch:
+              max_unacked: int = 100, fps: Optional[float] = DEFAULT_FPS) -> Watch:
         """Decisions for one stream, in order, as ``Delivery`` envelopes (``async for``).
 
         ``source`` is a URI (see ``percept.open_source``), a ``Source``, or the id of a stream
         this monitor already has (pushed to, or watched before). Watching a stream again takes
         it over: every unacknowledged decision is delivered again. Ends at ``aclose()``, or
         once a source that ends (a file, a closed ``PushSource``) is fully judged and delivered.
+
+        ``fps`` (default 5) caps how many frames per second, on the stream clock, go through the
+        quality gate, scene check and triggers; ``None`` processes every frame. Capture and the
+        pre-roll are not slowed, and skipped frames are counted in ``coverage()``. It applies
+        when the stream starts; ``push()`` starts streams at the default.
         """
+        if fps is not None and not fps > 0:
+            raise ValueError("fps is positive or None")
         self._bind()
         if isinstance(source, str):
             stream = self._streams.get(stream_id or source)
             if stream is None:
                 opened = open_source(source, stream_id=stream_id, on_health=self._source_health, preroll=PreRoll())
-                stream = self._streams.get(opened.stream_id) or self._add(opened)
+                stream = self._streams.get(opened.stream_id) or self._add(opened, fps)
         elif isinstance(source, Source):
             if stream_id is not None and stream_id != source.stream_id:
                 raise ValueError("stream_id must match source.stream_id")
             stream = self._streams.get(source.stream_id)
             if stream is not None and stream.source is not source:
                 raise ValueError(f"stream {source.stream_id!r} is already watched from another source")
-            stream = stream or self._add(source)
+            stream = stream or self._add(source, fps)
         else:
             raise TypeError("watch() takes a URI or a Source")
         return Watch(stream.outbox, ack, max_unacked,
                      lambda n: stream.health("store_lag", f"delivery paused: {n} decisions unacknowledged"))
 
-    def _add(self, source: Any) -> _Stream:
+    def _add(self, source: Any, fps: Optional[float] = DEFAULT_FPS) -> _Stream:
+        lock = getattr(self.store, "lock", None)
+        if callable(lock):
+            lock()      # one owner per database: raises StoreLocked if another process has it
         if getattr(source, "preroll", 0) is None:
             source.preroll = PreRoll()  # sources that accept one are fed at capture rate
-        stream = self._streams[source.stream_id] = _Stream(self, source)
+        stream = self._streams[source.stream_id] = _Stream(self, source, fps)
+        for key in self._snoozes:       # snoozes set before the loop was known
+            if key not in self._mutes:
+                self._schedule_mute(key)
         return stream
 
     def push(self, stream_id: str, image: np.ndarray, t_wall: Optional[float] = None) -> None:
@@ -1013,7 +1109,7 @@ class Monitor:
         self._regroup()
         for stream in self._streams.values():
             stream.pending = {k: w for k, w in stream.pending.items() if k[0] != condition_id}
-            stream.blind_set("paused", False, condition_id)
+            stream.blind_set("paused", False, condition_id=condition_id)
             stream.step(decide.ConditionChanged(condition_id))
 
     def pause(self, condition_id: str) -> None:
@@ -1026,7 +1122,7 @@ class Monitor:
         self._regroup()
         for stream in self._streams.values():
             stream.pending = {k: w for k, w in stream.pending.items() if k[0] != condition_id}
-            stream.blind_set("paused", True, condition_id)
+            stream.blind_set("paused", True, "paused by the application", condition_id)
 
     def resume(self, condition_id: str) -> None:
         self._on_loop()
@@ -1035,7 +1131,7 @@ class Monitor:
         self._paused.discard(condition_id)
         self._regroup()
         for stream in self._streams.values():
-            stream.blind_set("paused", False, condition_id)
+            stream.blind_set("paused", False, condition_id=condition_id)
             stream.enqueue(condition_id, decide.SCENE, HEARTBEAT)   # one look at what was missed
 
     def snooze(self, condition_id: str, until_wall: float, subject: Optional[str] = None) -> None:
@@ -1044,11 +1140,35 @@ class Monitor:
         self._on_loop()
         if condition_id not in self._conds:
             raise ValueError(f"unknown condition {condition_id!r}")
-        self._snoozes[(condition_id, subject)] = until_wall
+        key = (condition_id, subject)
+        self._snoozes[key] = until_wall
         for stream in self._streams.values():
             stream.step(decide.Snooze(condition_id, until_wall, subject))
-            if stream.state is not None:
-                stream.mute_timer(condition_id, subject, until_wall)
+        self._schedule_mute(key)
+
+    def _schedule_mute(self, key: tuple[str, Optional[str]]) -> None:
+        """One timer per (condition, subject), replaced by a new snooze, removed when it fires."""
+        old = self._mutes.pop(key, None)
+        if old is not None:
+            old.cancel()
+        until = self._snoozes.get(key)
+        if until is None or self._loop is None:
+            return
+        if until <= self._wall():       # a snooze that ends now or earlier cancels the mute
+            del self._snoozes[key]
+            self._mute_ended(key)
+            return
+        self._mutes[key] = self._loop.call_later(until - self._wall(), self._mute_ended, key)
+
+    def _mute_ended(self, key: tuple[str, Optional[str]]) -> None:
+        self._mutes.pop(key, None)
+        until = self._snoozes.get(key)
+        if until is not None and until > self._wall():     # fired early: wait for the rest
+            self._schedule_mute(key)
+            return
+        self._snoozes.pop(key, None)
+        for stream in self._streams.values():
+            stream.mute_ended(*key)
 
     def resolve(self, occurrence_id: str) -> None:
         """The application says this occurrence is over."""
@@ -1076,7 +1196,8 @@ class Monitor:
         """Exact counters, per stream and for health, available at any time."""
         return {"streams": {sid: s.stats() for sid, s in self._streams.items()},
                 "health": dict(self._health.counts), "health_dropped": self._health.dropped,
-                "store_pending": self._writer.pending, "store_failures": self._writer.failures}
+                "store_pending": self._writer.pending, "store_failures": self._writer.failures,
+                "store_retrying": self._writer.retrying, "cost_usd_in_window": self._cost.used(self._mono())}
 
     def coverage(self, stream_id: str, since_wall: float = 0.0) -> dict:
         """Fates per condition (counted per minute, from the minute holding ``since_wall``) and
@@ -1094,8 +1215,9 @@ class Monitor:
             return
         self._closing = True
         streams = list(self._streams.values())
-        for handle in self._handles:
+        for handle in self._mutes.values():
             handle.cancel()
+        self._mutes.clear()
         stopping = [t for s in streams for t in s.stop()]
         await asyncio.gather(*stopping, return_exceptions=True)
         for s in streams:

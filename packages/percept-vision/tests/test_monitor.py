@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 import time
 
@@ -101,7 +102,7 @@ def test_state_is_met_then_cleared_with_keyframe_and_evidence():
     async def main():
         async with percept.Monitor(judge, [door], store=mem(), max_requests_per_min=1000) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             await push_frames(src, 6)
             src.close()
             got = await collect(watch)
@@ -125,7 +126,7 @@ def test_default_triggers_heartbeat_a_state_and_fire_an_event_on_change():
     async def main():
         async with percept.Monitor(judge, [door, fall], store=mem(), max_requests_per_min=1000) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             base = image(0)
             for _ in range(4):
                 src.push(base)
@@ -151,7 +152,7 @@ def test_an_event_is_verified_on_its_original_clip():
     async def main():
         async with percept.Monitor(judge, [fall], store=mem(), max_requests_per_min=1000) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             await push_frames(src, 10, t0=time.time() - 10, pause=0.03)
             src.close()
             return await collect(watch)
@@ -175,7 +176,7 @@ def test_a_dead_verifier_ends_in_uncertain_at_the_deadline(monkeypatch):
     async def main():
         async with percept.Monitor(judge, [fall], store=mem(), max_requests_per_min=1000) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             await push_frames(src, 4, t0=time.time() - 4)
             src.close()
             got = await collect(watch)
@@ -200,16 +201,16 @@ def test_budget_property_no_window_ever_holds_more_attempts_than_the_limit():
                       arrivals=st.lists(st.tuples(st.floats(0, 5), st.floats(0, 20), st.floats(0, 1)), max_size=60))
     def check(limit, reserve, arrivals):
         reserve = min(reserve, limit)
-        budget = rt._Budget(limit, None)
+        budget = rt._Window(limit, lambda: rt.BUDGET_WINDOW_S)
         now, attempts, running = 0.0, [], []
         for gap, duration, frac in arrivals:
             now += gap
             for end, used, start in sorted(running):
                 if end <= now:
-                    budget.settle(reserve, 0.0, used, 0.0, end)
+                    budget.settle(reserve, used, end)
                     running.remove((end, used, start))
-            if budget.fits(reserve, 0.0, now):
-                budget.take(reserve, 0.0)
+            if budget.fits(reserve, now):
+                budget.take(reserve)
                 used = max(0, min(reserve, round(frac * reserve + 0.49)))
                 attempts += [now + duration * k / max(1, used) for k in range(used)]
                 running.append((now + duration, used, now))
@@ -248,7 +249,7 @@ def test_a_trigger_storm_with_a_cascade_and_retries_never_exceeds_the_window(mon
     async def main():
         async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=limit) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             await push_frames(src, 110, pause=0.02)
             src.close()
             await collect(watch)               # drained: nothing is in flight any more
@@ -279,7 +280,7 @@ def test_verification_waits_for_the_budget_like_everything_else(monkeypatch):
     async def main():
         async with percept.Monitor(judge, [fall], store=mem(), max_requests_per_min=2) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             await push_frames(src, 3, t0=time.time() - 3)
             got = await asyncio.wait_for(watch.__anext__(), 3.0)
             return got, m.stats(), m.coverage("cam")
@@ -347,7 +348,7 @@ def test_a_ten_second_judge_never_stalls_capture():
     async def main():
         m = percept.Monitor(judge, [door], store=mem(), max_requests_per_min=100)
         src = PushSource("cam")
-        m.watch(src)
+        m.watch(src, fps=None)
         t0 = time.monotonic()
         await push_frames(src, 40, pause=0.01)
         await asyncio.sleep(0.05)
@@ -371,7 +372,7 @@ def test_a_slow_store_delays_delivery_but_not_capture_or_judging():
     async def main():
         async with percept.Monitor(judge, [door], store=SlowStore(0.2), max_requests_per_min=1000) as m:
             src = PushSource("cam")
-            m.watch(src)
+            m.watch(src, fps=None)
             await push_frames(src, 20, pause=0.01)
             stats = m.stats()["streams"]["cam"]
             return stats, src.dropped
@@ -427,7 +428,7 @@ def _crash_run(crash_at: int):
     async def before():
         m = percept.Monitor(judge, [door], store=store, max_requests_per_min=1000)
         src = PushSource("cam")
-        watch = m.watch(src)
+        watch = m.watch(src, fps=None)
 
         async def consume():
             async for d in watch:
@@ -442,7 +443,7 @@ def _crash_run(crash_at: int):
     async def after():
         m = percept.Monitor(FakeJudge({}), [door], store=store.durable(), max_requests_per_min=1000)
         src = PushSource("cam")
-        watch = m.watch(src)
+        watch = m.watch(src, fps=None)
         src.close()
         got = [(d.decision.decision_id, d.attempt) async for d in watch]
         await m.aclose()
@@ -450,6 +451,19 @@ def _crash_run(crash_at: int):
 
     run(before())
     return store, seen, run(after())
+
+
+def last_attempt(store: MemoryStore, key: str) -> int:
+    """The highest attempt number a decision may have been delivered with before the crash:
+    its attempt record if it was redelivered, else 1, plus every restart since (meta ``inc``)."""
+    import json
+    stream = key[len("outbox:"):key.rindex("#")]
+    meta = json.loads(store._data[f"outbox-meta:{stream}"])
+    attempt = store._data.get("outbox-attempt:" + key[len("outbox:"):])
+    if attempt is not None:
+        att = json.loads(attempt)
+        return att["attempt"] + meta.get("inc", 0) - att["inc"]
+    return 1 + meta.get("inc", 0) - json.loads(store._data[key])["inc"]
 
 
 def test_crash_at_every_commit_boundary_loses_and_duplicates_nothing(monkeypatch):
@@ -463,7 +477,7 @@ def test_crash_at_every_commit_boundary_loses_and_duplicates_nothing(monkeypatch
         boundaries += 1
         durable = store.durable()
         pending = [k for k in sorted(durable._data) if k.startswith("outbox:")]
-        stored = {store.records[k]: __import__("json").loads(durable._data[k])["attempt"] for k in pending}
+        stored = {store.records[k]: last_attempt(durable, k) for k in pending}
         expected = [store.records[k] for k in pending]
         assert [d for d, _ in redelivered] == expected                      # in order, same ids
         assert all(a == stored[d] + 1 for d, a in redelivered)              # attempt + 1
@@ -483,7 +497,7 @@ def test_auto_ack_only_after_the_loop_body_succeeds():
     async def main():
         async with percept.Monitor(judge, [door], store=mem()) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             src.push(image())
             await asyncio.sleep(0.05)
             m.poke("cam", ["door"], reason="test")
@@ -510,7 +524,7 @@ def test_max_unacked_blocks_delivery_only_and_raises_store_lag():
     async def main():
         async with percept.Monitor(judge, [door], store=store, max_requests_per_min=1000) as m:
             src = PushSource("cam")
-            watch = m.watch(src, ack="manual", max_unacked=2)
+            watch = m.watch(src, fps=None, ack="manual", max_unacked=2)
             await push_frames(src, 3, pause=0.03)
             held = [await watch.__anext__(), await watch.__anext__()]
             with pytest.raises(asyncio.TimeoutError):
@@ -550,7 +564,7 @@ def test_resolve_while_a_request_is_in_flight_does_not_resurrect_the_occurrence(
     async def main():
         async with percept.Monitor(Gated(), [door], store=mem()) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             src.push(image())
             await asyncio.sleep(0.05)
             m.poke("cam", "door", reason="first look")
@@ -576,7 +590,7 @@ def test_pause_is_an_accounted_blind_interval_and_resume_closes_it():
     async def main():
         async with percept.Monitor(judge, [door], store=mem(), max_requests_per_min=1000) as m:
             src = PushSource("cam")
-            m.watch(src)
+            m.watch(src, fps=None)
             await push_frames(src, 2)
             m.pause("door")
             sent = len(judge.sent)
@@ -588,7 +602,7 @@ def test_pause_is_an_accounted_blind_interval_and_resume_closes_it():
 
     sent, paused, after, total = run(main())
     open_ = [b for b in paused["blind_intervals"] if b.kind == "paused"]
-    assert len(open_) == 1 and open_[0].t_end_wall is None and open_[0].detail == "door"
+    assert len(open_) == 1 and open_[0].t_end_wall is None and open_[0].condition_id == "door"
     closed = [b for b in after["blind_intervals"] if b.kind == "paused"]
     assert len(closed) == 1 and closed[0].t_end_wall is not None
     assert total > sent
@@ -601,7 +615,7 @@ def test_snooze_keeps_judging_and_delivers_the_deferred_met_when_the_mute_ends()
     async def main():
         async with percept.Monitor(judge, [door], store=mem()) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             src.push(image())
             await asyncio.sleep(0.05)
             m.snooze("door", time.time() + 0.4)
@@ -625,7 +639,7 @@ def test_default_store_is_sqlite_in_the_working_directory(tmp_path, monkeypatch)
         m = percept.Monitor(FakeJudge(answers({"detect": [Y]})), [door])
         assert isinstance(m.store, SqliteStore) and m.store.path == str(tmp_path / "percept.db")
         src = PushSource("cam")
-        watch = m.watch(src, ack="manual")
+        watch = m.watch(src, fps=None, ack="manual")
         src.push(image())
         await asyncio.sleep(0.05)
         m.poke("cam", "door", reason="look")
@@ -689,7 +703,7 @@ def test_shutdown_order_and_no_leaked_threads_or_tasks(tmp_path):
     async def main():
         m = percept.Monitor(judge, conds, store=SqliteStore(tmp_path / "s.db"), max_requests_per_min=100)
         src = CaptureSource("live", TickingReader, live=True, stall_timeout=None)
-        m.watch(src)
+        m.watch(src, fps=None)
         await asyncio.sleep(0.3)
         frames = m.stats()["streams"]["live"]["frames"]
         await m.aclose()
@@ -722,7 +736,7 @@ def test_priority_is_verify_then_event_then_state(monkeypatch):
     async def main():
         async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=2) as m:
             src = PushSource("cam")
-            watch = m.watch(src)
+            watch = m.watch(src, fps=None)
             src.push(image())
             await collect(watch, limit=2)
 
@@ -751,7 +765,7 @@ def test_the_concurrency_limit_covers_every_stream_and_both_lanes():
         async with percept.Monitor(Counting(), conds, store=mem(), max_requests_per_min=1000,
                                    max_concurrent_requests=1) as m:
             a, b = PushSource("a"), PushSource("b")
-            m.watch(a), m.watch(b)
+            m.watch(a, fps=None), m.watch(b, fps=None)
             for i in range(8):
                 a.push(image(i)), b.push(image(i))
                 await asyncio.sleep(0.03)
@@ -772,7 +786,7 @@ def test_the_cost_budget_is_reserved_before_a_request_is_sent(monkeypatch):
         async with percept.Monitor(judge, [door], store=mem(), max_requests_per_min=1000,
                                    max_cost_per_hour=4.0) as m:
             src = PushSource("cam")
-            m.watch(src)
+            m.watch(src, fps=None)
             await push_frames(src, 6, pause=0.05)
             return m.stats(), m.coverage("cam")
 
@@ -800,7 +814,7 @@ def test_a_source_epoch_change_starts_a_new_decide_epoch():
 
     async def main():
         async with percept.Monitor(judge, [door], store=mem(), max_requests_per_min=1000) as m:
-            watch = m.watch(EpochSource())
+            watch = m.watch(EpochSource(), fps=None)
             got = await collect(watch)
             return got, m._streams["ep"].state.stream_epoch
 
@@ -826,7 +840,7 @@ def test_a_restart_redelivers_pending_decisions_first_then_resolves_interrupted_
     async def before():
         m = percept.Monitor(Hanging(), [door, fall], store=store)
         src = PushSource("cam")
-        m.watch(src)
+        m.watch(src, fps=None)
         src.push(image())
         await asyncio.sleep(0.05)
         m.poke("cam", ["door"], reason="look")
@@ -838,7 +852,7 @@ def test_a_restart_redelivers_pending_decisions_first_then_resolves_interrupted_
     async def after():
         m = percept.Monitor(FakeJudge({}), [door, fall], store=store)
         src = PushSource("cam")
-        watch = m.watch(src)
+        watch = m.watch(src, fps=None)
         src.close()
         got = [(d.decision.condition_id, d.decision.type, d.decision.cause, d.attempt) async for d in watch]
         await m.aclose()
@@ -859,7 +873,7 @@ def test_a_scene_reset_is_a_blind_interval_followed_by_one_settled_look():
         async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=1000) as m:
             m._scene = SceneMonitor(suppress_s=0.15)
             src = PushSource("cam")
-            m.watch(src)
+            m.watch(src, fps=None)
             for _ in range(3):
                 src.push(image())
                 await asyncio.sleep(0.03)
@@ -873,3 +887,395 @@ def test_a_scene_reset_is_a_blind_interval_followed_by_one_settled_look():
     assert cov["blind_intervals"][0].t_end_wall is not None
     assert stats["health"]["scene_reset"] == 1
     assert len(judge.sent) == 1 and {i.condition.id for i in judge.sent[0][3].items} == {"door", "fall"}
+
+
+# --------------------------------------------------------------------------- review findings (PR7)
+
+
+class LoadFails(MemoryStore):
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+
+    def load(self, key):
+        if self.failures:
+            self.failures -= 1
+            raise OSError("disk busy")
+        return super().load(key)
+
+
+def test_f1_a_transient_store_failure_at_restore_recovers_and_is_reported(monkeypatch):
+    monkeypatch.setattr(rt, "SNAPSHOT_EVERY_S", 0.05)
+    door = Condition("door", "the door is open", trigger=Always())
+
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [Y]})), [door], store=LoadFails(1),
+                                   max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            await push_frames(src, 4, pause=0.03)
+            got = await asyncio.wait_for(watch.__anext__(), 2.0)
+            await asyncio.sleep(0.1)
+            return got, m.stats()
+
+    got, stats = run(main())
+    assert got.decision.type == "met"
+    assert stats["store_failures"] == 1 and stats["health"]["store_lag"] >= 1
+    assert stats["health"].get("link_down", 0) == 0          # a store problem is not a source failure
+
+
+def test_f1_r1_a_permanent_store_failure_keeps_reporting_and_aclose_returns(monkeypatch):
+    monkeypatch.setattr(rt, "SNAPSHOT_EVERY_S", 0.05)
+    monkeypatch.setattr(Writer, "RETRY_FIRST_S", 0.01)
+    monkeypatch.setattr(Writer, "RETRY_MAX_S", 0.05)
+    door = Condition("door", "the door is open", trigger=Always())
+
+    async def main():
+        m = percept.Monitor(FakeJudge(answers({"detect": [Y]})), [door], store=LoadFails(10**9),
+                            max_requests_per_min=1000)
+        src = PushSource("cam")
+        watch = m.watch(src, fps=None)
+        waiting = asyncio.ensure_future(watch.__anext__())
+        await push_frames(src, 3, pause=0.03)
+        await asyncio.sleep(0.3)
+        first = m.stats()
+        await asyncio.sleep(0.3)
+        second = m.stats()
+        t0 = time.monotonic()
+        await m.aclose()
+        closed_in = time.monotonic() - t0
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(waiting, 1.0)              # ends with the monitor, never hangs
+        return first, second, closed_in
+
+    first, second, closed_in = run(main())
+    assert first["store_retrying"] and second["store_failures"] > first["store_failures"]
+    assert second["health"]["store_lag"] > first["health"]["store_lag"] >= 1     # keeps reporting
+    assert closed_in < 2.0
+
+
+def _seed_pending(store):
+    door = Condition("door", "the door is open", trigger=Never())
+
+    async def seed():
+        m = percept.Monitor(FakeJudge(answers({"detect": [Y]})), [door], store=store)
+        src = PushSource("cam")
+        watch = m.watch(src, ack="manual")
+        src.push(image())
+        await asyncio.sleep(0.05)
+        m.poke("cam", "door", reason="look")
+        d = await asyncio.wait_for(watch.__anext__(), 2)
+        await m.aclose()
+        return d.decision.decision_id
+
+    return run(seed())
+
+
+async def _restart_first(store, timeout=1.0):
+    m = percept.Monitor(FakeJudge({}), [Condition("door", "the door is open", trigger=Never())], store=store)
+    watch = m.watch(PushSource("cam"))
+    t0 = time.monotonic()
+    try:
+        d = await asyncio.wait_for(watch.__anext__(), timeout)
+        return d.decision.decision_id, d.attempt, time.monotonic() - t0, m.stats()
+    finally:
+        await m.aclose()
+
+
+def test_f5_pending_decisions_reach_a_waiting_consumer_promptly_after_a_restart():
+    store = mem()
+    did = _seed_pending(store)
+    got, attempt, latency, _ = run(_restart_first(store))
+    assert (got, attempt) == (did, 2) and latency < 0.5
+
+
+def test_f1_a_corrupt_snapshot_is_kept_aside_and_pending_decisions_still_arrive():
+    store = mem()
+    did = _seed_pending(store)
+    store.commit({store_key("snapshot", "cam"): b"{not json"})
+    got, attempt, _, stats = run(_restart_first(store))
+    assert (got, attempt) == (did, 2)
+    assert stats["health"]["store_lag"] >= 1
+    kept = [k for k in store._data if k.startswith("snapshot-unreadable:")]
+    assert len(kept) == 1 and store._data[kept[0]] == b"{not json"
+
+
+def test_f1_an_unreadable_outbox_record_halts_the_stream_without_overwriting_anything():
+    store = mem()
+    _seed_pending(store)
+    meta = store_key("outbox-meta", "cam")
+    store.commit({meta: b"{broken"})
+    before = dict(store._data)
+
+    async def main():
+        async with percept.Monitor(FakeJudge({}), [Condition("door", "x", trigger=Never())], store=store) as m:
+            src = PushSource("cam")
+            watch = m.watch(src)
+            src.push(image())
+            got = await asyncio.wait_for(collect(watch), 2.0)     # ends: never hangs
+            return got, m.stats()
+
+    got, stats = run(main())
+    assert got == [] and stats["streams"]["cam"]["halted"] and stats["health"]["store_lag"] >= 1
+    assert store._data == before
+
+
+def test_f2_a_stream_added_during_a_pause_records_it_and_resume_closes_it():
+    door = Condition("door", "the door is open", trigger=Always())
+
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [N]})), [door], store=mem(),
+                                   max_requests_per_min=1000) as m:
+            a = PushSource("a")
+            m.watch(a, fps=None)
+            a.push(image())
+            await asyncio.sleep(0.05)
+            m.pause("door")
+            b = PushSource("b")                 # added while paused
+            m.watch(b, fps=None)
+            await push_frames(b, 3, pause=0.03)
+            during = m.coverage("b")["blind_intervals"]
+            m.resume("door")
+            return during, m.coverage("b")["blind_intervals"]
+
+    during, after = run(main())
+    assert [(x.kind, x.condition_id, x.t_end_wall) for x in during] == [("paused", "door", None)]
+    assert [(x.kind, x.condition_id) for x in after] == [("paused", "door")] and after[0].t_end_wall is not None
+
+
+class OldFrame:
+    """A custom source whose only frame is 100 s old, then silence."""
+
+    stream_id = "ep"
+
+    async def frames(self):
+        yield percept.Frame("ep", 0, 0, time.monotonic(), time.time() - 100.0, image())
+        await asyncio.sleep(3600)
+
+
+def test_f3_an_old_frame_is_never_judged_as_the_current_one():
+    door = Condition("door", "the door is open", trigger=Always(), recheck_every_s=0.2)
+    judge = FakeJudge(answers({"detect": [Y]}))
+
+    async def main():
+        async with percept.Monitor(judge, [door], store=mem(), max_requests_per_min=1000) as m:
+            m.watch(OldFrame(), fps=None)
+            await asyncio.sleep(0.5)
+            return m.coverage("ep")
+
+    cov = run(main())
+    assert judge.sent == []
+    assert cov["evidence_unavailable"]["door"] >= 1
+
+
+def test_f3_rechecks_wait_while_the_link_is_down_and_resume_when_frames_return(monkeypatch):
+    monkeypatch.setattr(rt, "DEADLINES", {rt.EVENT: 0.2, rt.STATE: 0.2})
+    door = Condition("door", "the door is open", trigger=Never(), recheck_every_s=0.15)
+    judge = FakeJudge(answers({"detect": [Y]}))
+
+    async def main():
+        async with percept.Monitor(judge, [door], store=mem(), max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            src.push(image())
+            await asyncio.sleep(0.05)
+            m.poke("cam", "door", reason="look")
+            await asyncio.sleep(0.1)
+            m._source_health(Health("link_down", "cam", time.time(), "gone"))
+            sent = len(judge.sent)
+            m.poke("cam", "door", reason="during the outage")
+            await asyncio.sleep(0.6)                           # several rechecks fall due
+            during = len(judge.sent)
+            m._source_health(Health("link_up", "cam", time.time(), "back"))
+            src.push(image(1))
+            await asyncio.sleep(0.3)
+            return sent, during, len(judge.sent), m.coverage("cam")
+
+    sent, during, after, cov = run(main())
+    assert during == sent                                  # nothing judged on the pre-outage frame
+    assert after > during                                  # the waiting recheck went out
+    assert cov["evidence_unavailable"]["door"] >= 1
+    assert cov["fates"]["door"]["dropped_budget"] >= 1    # the outage poke expired, accounted
+
+
+def test_f4_one_owner_per_database_and_private_files(tmp_path):
+    path = tmp_path / "percept.db"
+    door = Condition("door", "the door is open", trigger=Never())
+
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [Y]})), [door], store=SqliteStore(path)) as m1:
+            src = PushSource("cam")
+            watch = m1.watch(src, ack="manual")
+            src.push(image())
+            await asyncio.sleep(0.05)
+            m1.poke("cam", "door", reason="look")
+            await asyncio.wait_for(watch.__anext__(), 2)
+            m2 = percept.Monitor(FakeJudge({}), [door], store=SqliteStore(path))
+            with pytest.raises(RuntimeError, match="in use"):
+                m2.watch(PushSource("cam"))
+            await m2.aclose()
+
+    run(main())
+    assert oct(os.stat(path).st_mode & 0o777) == oct(0o600)
+
+
+def test_f6_snooze_timers_and_trigger_states_do_not_grow():
+    async def main():
+        door = Condition("door", "the door is open", trigger=Never())
+        async with percept.Monitor(FakeJudge({}), [door], store=mem()) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            src.push(image())
+            await asyncio.sleep(0.05)
+            for k in range(500):
+                m.snooze("door", time.time() + 0.001, subject=f"person-{k}")
+            await asyncio.sleep(0.1)
+            sizes = (len(m._mutes), len(m._snoozes))
+            for k in range(50):
+                m.add(Condition("door", "the door is open", trigger=percept.on_change(), version=k + 2))
+                src.push(image(k))
+                await asyncio.sleep(0.005)
+            return sizes, len(m._streams["cam"].tstates), len(m._groups)
+
+    (mutes, snoozes), tstates, groups = run(main())
+    assert mutes == 0 and snoozes == 0
+    assert tstates <= groups
+
+
+def test_f7_r3_frames_are_capped_at_5_fps_by_default_and_the_skips_are_counted():
+    door = Condition("door", "the door is open", trigger=Never())
+
+    async def main():
+        async with percept.Monitor(FakeJudge({}), [door], store=mem()) as m:
+            src = PushSource("cam")
+            m.watch(src)                                    # the default cap
+            await push_frames(src, 40, pause=0.01)
+            return m.stats()["streams"]["cam"], m.coverage("cam"), len(src.preroll)
+
+    stats, cov, ring = run(main())
+    processed = stats["frames"] - cov["frames_capped"]
+    assert stats["frames"] == 40 and 1 <= processed <= 6       # ~0.5 s at 5 fps
+    assert cov["frames_capped"] == stats["frames_capped"] == 40 - processed
+    assert ring >= 1                                            # capture and the pre-roll unaffected
+
+
+def test_f7_judge_images_are_encoded_off_the_event_loop(monkeypatch):
+    from percept.judges import policy
+
+    threads = []
+    original = policy.to_jpeg
+
+    def recording(image, **kw):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return original(image, **kw)
+
+    monkeypatch.setattr(policy, "to_jpeg", recording)
+    door = Condition("door", "the door is open", trigger=Never())
+
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [N]})), [door], store=mem()) as m:
+            src = PushSource("cam")
+            m.watch(src)
+            src.push(image())
+            await asyncio.sleep(0.05)
+            m.poke("cam", "door", reason="look")
+            await asyncio.sleep(0.2)
+
+    run(main())
+    assert threads and not any(threads)
+
+
+def test_r4_a_monitor_whose_consumer_never_reads_keeps_its_outbox_bounded(tmp_path):
+    door = Condition("door", "the door is open", trigger=Always(), clear_after_no=1, emit_cleared=True)
+    flip = iter(range(10**6))
+    judge = FakeJudge(answers({"detect": lambda r: {i.condition.id: (Y if next(flip) % 2 == 0 else N)
+                                                    for i in r.items}}))
+
+    async def main():
+        async with percept.Monitor(judge, [door], store=SqliteStore(tmp_path / "s.db"),
+                                   max_requests_per_min=10_000) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)                          # attached, never read
+            for _ in range(300):                            # a still scene: no scene resets
+                src.push(image())
+                await asyncio.sleep(0.004)
+            stream = m._streams["cam"]
+            while not stream.commits.empty() or stream.commits._unfinished_tasks:
+                await asyncio.sleep(0.02)
+            ob = stream.outbox
+            return len(ob.ahead), len(ob.held), m.stats()["streams"]["cam"]
+
+    ahead, held, stats = run(main(), timeout=60)
+    assert stats["decisions"] >= 3 * percept.delivery.READ_AHEAD and stats["unacked"] == stats["decisions"]
+    assert ahead <= percept.delivery.READ_AHEAD and held == 0
+    import sqlite3
+    with sqlite3.connect(tmp_path / "s.db") as conn:
+        on_disk = conn.execute("SELECT COUNT(*) FROM percept_kv WHERE key LIKE 'outbox:%'").fetchone()[0]
+    assert on_disk == stats["decisions"]
+
+
+def test_r2_the_dollar_cap_holds_for_the_whole_monitor_across_streams_and_cascades(monkeypatch):
+    monkeypatch.setattr(rt, "COST_WINDOW_S", 1.0)
+    monkeypatch.setattr(rt, "DEADLINES", {rt.EVENT: 0.3, rt.STATE: 0.3})
+    price = percept.PriceModel(usd_per_mtok_in=1000.0, usd_per_mtok_out=1000.0, tokens_per_image=100)
+    rng = np.random.default_rng(3)
+
+    def lite(request):
+        if rng.random() < 0.3:
+            return RetryableError("busy")
+        return {i.condition.id: ("unknown", 0.3, "?") for i in request.items}
+
+    inner = cascade(FakeJudge(lite, name="lite", price=price),
+                    FakeJudge(answers({"detect": [N], "verify": [N]}), name="pro", price=price))
+    calls: list[tuple[float, float]] = []
+
+    class Recording:
+        name, can_batch, price, max_attempts = inner.name, inner.can_batch, inner.price, inner.max_attempts
+
+        async def judge(self, request):
+            t0 = time.monotonic()
+            await asyncio.sleep(0.03)
+            result = await inner.judge(request)
+            calls.append((t0, sum(u.usage.cost_usd for u in result.usage)))
+            return result
+
+    cap = 12.0
+    conds = [Condition("door", "the door is open", trigger=Always())]
+
+    async def main():
+        async with percept.Monitor(Recording(), conds, store=mem(), max_requests_per_min=10_000,
+                                   max_cost_per_hour=cap, max_concurrent_requests=4) as m:
+            srcs = [PushSource(f"cam{i}") for i in range(4)]
+            for s in srcs:
+                m.watch(s, fps=None)
+            for k in range(90):
+                for s in srcs:
+                    s.push(image())
+                await asyncio.sleep(0.025)
+            return m.stats()
+
+    stats = run(main())
+    starts = sorted(calls)
+    assert sum(c for _, c in calls) > cap                       # the cap binds over the run
+    for i, (t, _) in enumerate(starts):
+        assert sum(c for u, c in starts[i:] if u < t + 1.0) <= cap + 1e-9
+    assert len({sid for sid, s in stats["streams"].items() if s["requests"]}) == 4
+
+
+def test_unavailable_original_evidence_resolves_through_the_unverified_path_without_a_judgment(monkeypatch):
+    fall = Condition("fall", "a person falls", kind="event", trigger=At(2), candidate_deadline_s=0.5)
+    judge = FakeJudge(answers({"detect": [Y], "verify": [Y]}))
+
+    async def main():
+        async with percept.Monitor(judge, [fall], store=mem(), max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            monkeypatch.setattr(m._streams["cam"], "original", lambda v: ())   # the frames are gone
+            await push_frames(src, 4, t0=time.time() - 4)
+            src.close()
+            return await collect(watch), m.coverage("cam"), m.stats()["health"]
+
+    got, cov, health = run(main())
+    assert [(d.decision.type, d.decision.cause) for d in got] == [("uncertain", "timeout")]
+    assert not [s for s in judge.sent if s[3].purpose == "verify"]     # nothing fabricated, nothing sent
+    assert cov["evidence_unavailable"]["fall"] == 1 and health["verify_deferred"] >= 1
