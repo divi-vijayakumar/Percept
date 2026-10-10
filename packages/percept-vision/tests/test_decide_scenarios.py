@@ -3,8 +3,8 @@
 Each scenario is a short story with explicit wall-clock times. Small numbers keep the
 stories readable; the reducer only ever compares and adds them.
 
-Every test runs against each implementation in ``IMPLEMENTATIONS``. Today that is the
-reference model; the real reducer joins the list when it exists, and must pass unchanged.
+Every test runs against each implementation in ``IMPLEMENTATIONS``: the reference model and
+the real reducer, ``percept.decide``, which must pass unchanged.
 On top of each scenario's own assertions, every stream a scenario drives is replayed through
 the reference model at teardown and must produce exactly the same decisions and effects
 (``check_matches_reference``).
@@ -21,9 +21,10 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import reference_model
+from percept import decide
 from percept.contracts import Condition, Observation, Usage
 
-IMPLEMENTATIONS = [reference_model]
+IMPLEMENTATIONS = [reference_model, decide]
 
 pytestmark = pytest.mark.parametrize("impl", IMPLEMENTATIONS, ids=lambda m: m.__name__)
 
@@ -1083,6 +1084,30 @@ def test_property_the_input_state_is_never_mutated(impl, data):
 @given(data=st.data())
 def test_property_matches_the_reference_model(impl, data):
     check_the_live_run_matches_the_reference(impl, _random_run(impl, _hypothesis_choose(data)))
+
+
+DIFFERENTIAL_SEEDS = range(1_000, 1_400)    # disjoint from the invariant walks' seeds
+DIFFERENTIAL_RUNS_PER_SEED = 3
+DIFFERENTIAL_STEPS_PER_RUN = 100
+DIFFERENTIAL_MIN_STEPS = 100_000
+
+
+def test_generated_runs_match_the_reference_model(impl):
+    """The done-criterion for an implementation: identical decisions and effects on every
+    generated run, well over 100,000 generated inputs in total."""
+    if impl is reference_model:
+        pytest.skip("the reference model is the oracle")
+    total = 0
+    for seed in DIFFERENTIAL_SEEDS:
+        rng = random.Random(seed)
+        for run in range(DIFFERENTIAL_RUNS_PER_SEED):
+            s = _random_run(impl, rng.choice, steps=DIFFERENTIAL_STEPS_PER_RUN)
+            try:
+                check_the_live_run_matches_the_reference(impl, s)
+            except AssertionError as exc:
+                raise AssertionError(f"differs from the reference model: seed {seed}, run {run}") from exc
+            total += len(s.script.steps)
+    assert total >= DIFFERENTIAL_MIN_STEPS
 
 
 @pytest.mark.parametrize("seed", range(40))
