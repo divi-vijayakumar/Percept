@@ -21,7 +21,7 @@ Where `$PWD` is your current working directory — the project you're running in
 ## Event schema (you receive)
 
 ```json
-{"event":"session.started","session_id":"<16 hex chars>","project":"<name>","voice":"af_heart","ts":1731510000.0}
+{"event":"session.started","session_id":"<16 hex chars>","project":"<name>","voice":"af_heart","language":"English","ts":1731510000.0}
 {"event":"utterance.final","session_id":"<id>","text":"hey can you check the build","duration_ms":2400,"audio_seconds":2.4,"ts":1731510003.6}
 {"event":"utterance.final","session_id":"<id>","text":"what's wrong with this layout","duration_ms":1800,"audio_seconds":1.8,"ts":1731510004.2,"screenshots":["/abs/project/.ski/screenshots/2026-07-15-121314.png"]}
 {"event":"tts.done","session_id":"<id>","ts":1731510010.1}
@@ -63,7 +63,7 @@ One JSON object per line, appended to `$PWD/.ski/commands.jsonl`. The widget's f
 |---|---|---|
 | `tts.speak` | `text` (required), `session_id` (optional), `prefix_project_name` (optional bool) | The widget shows the text in a bubble and speaks it via local Kokoro TTS. Replies from non-active projects are auto-prefixed with `From <project>:` by the widget — you don't need to add the prefix yourself. |
 | `tts.cancel` | `session_id` (optional) | Clears the current spoken reply and flushes the playback queue. |
-| `voice.set` | `voice` (required, one of `af_heart`, `am_adam`, `bf_emma`, `bm_george`), `session_id` (optional) | Switch the voice for subsequent replies. |
+| `voice.set` | `voice`, `session_id` (optional) | **Not implemented — the widget ignores this command.** Only the user changes the voice (Preferences → Voice, or the widget's own voice panel). See "Speaking other languages" below. |
 | `screen.capture` *(Phase AR)* | `session_id` (optional) | The widget captures the user's MAIN display under its own macOS Screen Recording grant (your terminal almost certainly has none — never run `screencapture` yourself; without the grant it silently produces a windowless wallpaper shot) and replies on events.jsonl with `screen.captured {path}` (full-res PNG inside this project) or `screen.capture_failed {reason}`. |
 | `agentcall.joined` *(Phase S)* | `url` (optional), `session_id` (optional) | Emit immediately after the join-meeting skill confirms the bot is in the call. The widget flips its action row middle slot to **Leave 📞** so the user has a one-click hangup affordance. |
 | `agentcall.left` *(Phase S)* | `session_id` (optional) | Emit when the call has ended (user pressed Leave, meeting ended naturally, or the skill errored out). The widget returns the action row to its idle shape. |
@@ -78,6 +78,68 @@ COMMANDS="$PWD/.ski/commands.jsonl"
 
 echo '{"command":"tts.speak","text":"Build is green on main."}' >> "$COMMANDS"
 ```
+
+## Speaking other languages
+
+SKI ships **17 voices across 7 languages** (Chinese arrives as an
+optional download). Getting this right matters, because the failure
+mode is silent: text in the wrong script is never rejected, only
+mispronounced.
+
+**The language comes from the SELECTED VOICE, not from your text.** The
+voice id's first letter picks the synthesis path, which then reads
+whatever you wrote *as that language*. So your reply must be written in
+that language's own script.
+
+| Language | Voice ids | Voices | Write your reply in |
+|---|---|---|---|
+| English | `af_*` `am_*` `bf_*` `bm_*` | Heart, Adam, Emma, George | Latin |
+| Español | `ef_*` `em_*` | Dora, Álex | Spanish **with accents** |
+| Français | `ff_*` | Siwis | French **with accents** |
+| हिन्दी (Hindi) | `hf_*` `hm_*` | Alpha, Beta, Omega, Psi | **Devanagari — never romanized** |
+| Italiano | `if_*` `im_*` | Sara, Nicola | Italian **with accents** |
+| Português | `pf_*` `pm_*` | Dora, Álex | Portuguese **with accents** |
+| 中文 (Chinese) | `zf_*` `zm_*` | 玲 (Líng), 峰 (Fēng) | **Simplified Han — never pinyin** |
+
+**How to know which voice is active.** The `session.started` event
+carries both `voice` and `language`:
+
+```json
+{"event":"session.started","session_id":"...","project":"...",
+ "voice":"hf_alpha","language":"हिन्दी","ts":1731510000.0}
+```
+
+Read `language` and reply in it. **When the user changes voice, a fresh
+`session.started` arrives** with the new pair — switch languages from
+that point on. You cannot change the voice yourself (`voice.set` does
+nothing).
+
+### Examples — write the left column, never the right
+
+| ✅ Correct | ❌ Wrong | What the wrong one actually says |
+|---|---|---|
+| `नमस्ते! मैं ठीक हूँ।` | `namaste! main theek hoon.` | Read with **English** rules — "mane theek hoon". The most common mistake. |
+| `¿Cómo estás? Todo bien.` | `Como estas? Todo bien.` | Stress lands on the wrong syllable (`kˌomo` instead of `kˈomo`). |
+| `Ça va très bien.` | `Ca va tres bien.` | The `è` vowel is **dropped entirely** — `tʁ` instead of `tʁɛ`. |
+| `Perché è così.` | `Perche e cosi.` | Wrong stress and vowel quality. |
+| `Olá! Está ótimo.` | `Ola! Esta otimo.` | Wrong stress; nasal vowels lost. |
+| `你好！构建完成了。` | `ni hao! gou jian wan cheng le.` | Read as **English words** — meaningless syllable soup. |
+
+**Never mix language and voice.** English text spoken by the Spanish
+voice comes out as "eyo tis is inglish", with no error anywhere. If the
+active voice is Spanish, reply in Spanish — even if the user wrote to
+you in English. Code identifiers, file names, and technical terms may
+stay in English inside a non-English sentence — the voices handle
+embedded English.
+
+**Accents are not decoration** — they carry stress and vowel identity.
+Dropping them degrades pronunciation even though the words look right.
+
+**Punctuation earns its place.** Sentence terminators are where SKI
+breaks a reply into separately spoken sentences, so they control the
+pauses: `.` `?` `!`, the Hindi danda `।`, and the CJK `。` `？` `！`.
+A comma inside a sentence is currently lost, so prefer a full stop
+where you want a real pause.
 
 ## How to run the loop
 

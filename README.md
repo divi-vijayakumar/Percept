@@ -2,7 +2,9 @@
 
 **The open-source cognition layer for goal-driven, proactive vision agents.**
 
-`percept-vision 1.0.0` · Apache-2.0 · Python ≥ 3.10 · docs & demos: **[percept.percia.ai](https://percept.percia.ai)**
+Repository development version: `percept-vision 1.0.0` (**unreleased**) · latest public release:
+`0.7.0` · Apache-2.0 · Python ≥ 3.10 · docs & demos:
+**[percept.percia.ai](https://percept.percia.ai)**
 
 ---
 
@@ -216,9 +218,10 @@ These refusals are a feature. **Do not lead with surveillance demos.**
 | **percept-vision** | the Python SDK: cognition core, scripted doubles, runtime worker, Python edge/harness, benchmark tooling | `pip install percept-vision` |
 | **percept-edge** | on-device reactive edge in JS/WASM: VAD + motion gate over the same wire contract | `npm install percept-edge` |
 
-> **Versioning.** The package is `percept-vision 1.0.0`. The **wire contract** versions separately —
-> `CONTRACT_VERSION = "1.10.0"` (additive-only). A `1.0.0` install exporting contract `1.10.0` is
-> expected, not a bug.
+> **Versioning.** This repository currently carries an **unreleased** `percept-vision 1.0.0`
+> development version. The latest public release is `0.7.0`; do not describe `1.0.0` as shipped or
+> stable. The **wire contract** versions separately — `CONTRACT_VERSION = "1.10.0"`
+> (additive-only).
 
 ### What you can rely on
 
@@ -274,9 +277,9 @@ tools/                      architecture, tunables, registries, and docs-index g
 
 ## Status
 
-**v1.0.0 — first stable release.** The cognition core, the batteries-included runtime, layered
-configuration, the fail-closed judge, and the offline quality rail run and are tested. Frontier
-backends and the edge packages are wired behind their seams. No benchmark numbers are published yet.
+**v1.0.0 — unreleased development candidate.** The cognition core, runtime, configuration,
+fail-closed judge, and offline test rail exist, but the end-to-end qualification is currently a
+no-go and no supporting benchmark has been published. The latest public package remains `0.7.0`.
 
 Sustained-duration Watches are supported by the in-process Python runtime only. They are
 session-scoped, remote `percept-edge` compilation fails closed, and
