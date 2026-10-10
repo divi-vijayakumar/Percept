@@ -42,6 +42,18 @@ jobs:
           python-version: "3.12"
       - run: make guardrails
 
+  benchmarks:
+    name: benchmark harness (offline dry run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e "packages/percept-vision[dev,video]"
+      - run: python -m pytest -q benchmarks/tests
+      - run: python -m benchmarks.run --dataset synthetic --judge fake --max-cost-usd 1 --out benchmarks/results/ci
+
   size-review:
     # Growth past the line threshold is not an automatic failure: it requires the
     # owner to add the `size-approved` label after reviewing why the code grew.

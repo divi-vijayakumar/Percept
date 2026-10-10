@@ -1,0 +1,15 @@
+{
+  "experiment": "E1",
+  "question": "Does Percept's runtime improve cost and event quality on its own?",
+  "holds_fixed": ["judge model", "evidence format (4 frames, longest side 640 px)", "condition text", "footage"],
+  "varies": ["scheduling and decision only"],
+  "dataset": "meva",
+  "arms": "percept,chunk5,chunk10,chunk30,detector_debounce,detector_then_vlm",
+  "negatives": 2,
+  "tolerance": 2.0,
+  "cooldown": 30.0,
+  "fps": 5.0,
+  "speed": 1.0,
+  "parallel": 8,
+  "seed": 0
+}

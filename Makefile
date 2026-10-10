@@ -3,7 +3,7 @@ PY ?= python
 .PHONY: test guardrails check validate
 
 test:
-	$(PY) -m pytest -q packages/percept-vision/tests tools/guardrails/tests
+	$(PY) -m pytest -q packages/percept-vision/tests tools/guardrails/tests benchmarks/tests
 
 guardrails:
 	$(PY) tools/guardrails/guardrails.py all

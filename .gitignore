@@ -20,6 +20,10 @@ htmlcov/
 # OS
 .DS_Store
 
+# Benchmark results (may describe private footage; published deliberately, never committed)
+/results/
+benchmarks/results/
+
 # Harness-managed agent worktrees (never track)
 .claude/worktrees/
 

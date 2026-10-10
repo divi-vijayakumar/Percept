@@ -1,0 +1,16 @@
+{
+  "experiment": "E2",
+  "status": "scaffold only: per-arm judges and cascades are not wired into the runner yet",
+  "question": "Is Percept the better developer solution end to end?",
+  "holds_fixed": ["condition text", "footage"],
+  "varies": ["the whole pipeline; cascades allowed"],
+  "dataset": "meva",
+  "arm_judges": {
+    "percept": "cascade: <cheap model> then <strong model>",
+    "chunk10": "<cheap model>",
+    "detector_debounce": null
+  },
+  "negatives": 2,
+  "tolerance": 2.0,
+  "seed": 0
+}
