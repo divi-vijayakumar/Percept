@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import time
 from typing import Optional
 
 import numpy as np
@@ -127,7 +129,7 @@ class CostCapReached(Exception):
 class CostGuard:
     """A judge wrapper holding a run-wide dollar cap (see the module docstring)."""
 
-    def __init__(self, inner, cap_usd: Optional[float]) -> None:
+    def __init__(self, inner, cap_usd: Optional[float], spend_log=None) -> None:
         if cap_usd is not None and getattr(inner, "price", None) is None:
             raise ValueError("a spend cap needs a judge with a PriceModel (pass --price)")
         self.inner, self.cap = inner, cap_usd
@@ -136,6 +138,7 @@ class CostGuard:
         self.spent = self.held = 0.0
         self.requests = self.refused = 0
         self.tripped = asyncio.Event()
+        self.spend_log = spend_log      # a path: one line per request, so spend survives a killed run
 
     def reservation(self, request: JudgeRequest) -> float:
         if self.price is None:
@@ -157,7 +160,12 @@ class CostGuard:
         finally:
             self.held -= reserve
             self.requests += 1
-            self.spent += reserve if result is None else sum(u.usage.cost_usd for u in result.usage)
+            cost = reserve if result is None else sum(u.usage.cost_usd for u in result.usage)
+            self.spent += cost
+            if self.spend_log is not None:
+                with open(self.spend_log, "a") as f:
+                    f.write(json.dumps({"t": round(time.time(), 3), "request_id": request.request_id,
+                                        "cost_usd": cost, "settled": result is not None}) + "\n")
 
 
 def build(spec: str, *, cases, timelines: Timelines, price: Optional[PriceModel], oracle: dict) -> object:

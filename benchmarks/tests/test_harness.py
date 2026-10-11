@@ -608,3 +608,13 @@ def test_parts_that_differ_do_not_merge(tmp_path):
         run.main(["--merge", str(tmp_path / "p1"), str(tmp_path / "p2"), "--out", str(tmp_path / "m")])
     with pytest.raises(SystemExit, match="more than one part"):
         run.main(["--merge", str(tmp_path / "p1"), str(tmp_path / "p1"), "--out", str(tmp_path / "m2")])
+
+
+def test_spend_is_logged_per_request(clips, tmp_path):
+    timelines = judging.Timelines()
+    oracle = judging.OracleJudge(clips, timelines, fn_rate=0.0, fp_rate=0.0, latency_s=0.0)
+    log = tmp_path / "spend.jsonl"
+    guard = judging.CostGuard(oracle, 1.0, spend_log=log)
+    asyncio.run(arms.run_chunk(clips[0], guard, timelines, 5.0))
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(rows) == guard.requests and abs(sum(r["cost_usd"] for r in rows) - guard.spent) < 1e-9

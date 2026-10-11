@@ -540,7 +540,7 @@ async def main_async(args) -> int:
     oracle = dict(fn_rate=args.oracle_fn, fp_rate=args.oracle_fp, latency_s=args.oracle_latency, seed=args.seed)
     inner = judging.build(args.judge, cases=cases, timelines=timelines,
                           price=judging.parse_price(args.price) if args.price else None, oracle=oracle)
-    judge = judging.CostGuard(inner, args.max_cost_usd)
+    judge = judging.CostGuard(inner, args.max_cost_usd, spend_log=out / "spend.jsonl")
     arm_names = [a for a in args.arms.split(",") if a]
     bad = [a for a in arm_names if a not in ARMS and not (a.startswith("chunk") and a[5:].replace(".", "").isdigit())]
     if bad:
