@@ -5,6 +5,7 @@ name: release
 # one-time setup on pypi.org (a trusted publisher for this repository, this workflow and the
 # `pypi` environment) and the `pypi` environment in the repository settings, with required
 # reviewers so every publish waits for an approval.
+# Before tagging, run `make prepublish` locally: its term list is not tracked, so CI cannot run it.
 
 on:
   push:

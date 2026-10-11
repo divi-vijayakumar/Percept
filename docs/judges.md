@@ -99,8 +99,8 @@ price reports no cost, and the cost cap can only count what is reported.
 - **Reservation.** Before a request is sent it reserves the most attempts it can make (2 for the
   built-in judges: one try and one retry; a cascade counts only the members the request can
   reach) and, with a price, its worst-case dollars. When it finishes, what it actually used stays
-  charged for the window. So with the default of 6, a stream sends between 3 and 5 requests in
-  any minute. A request that would not fit waits.
+  charged for the window. So with the default of 6, a stream makes at most 6 attempts in any
+  minute: 3 requests if every one retries, more when they don't. A request that would not fit waits.
 - **Guarantee.** No 60 s span holds more attempts than `max_requests_per_min`, and no hour more
   dollars than `max_cost_per_hour`, for judges that report their attempts truthfully and have a
   price. Without a price the cost cap is best effort. A cancelled request reports no usage, so its

@@ -1010,7 +1010,7 @@ class Monitor:
     ``max_concurrent_requests`` limits requests in flight across every stream.
     ``trace`` (a path or a :class:`~percept.trace.TraceWriter`) records every runtime event as
     JSON lines, without images or credentials, so a run can be inspected and replayed
-    (``percept.replay``); None (the default) records nothing.
+    (``percept.trace.replay``); None (the default) records nothing.
 
     Configuration errors raise here, in :meth:`add` and in :meth:`watch`. Nothing raises
     during operation: outages, failures, budget exhaustion and store lag are reported by

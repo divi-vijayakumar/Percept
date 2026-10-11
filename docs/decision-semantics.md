@@ -271,6 +271,8 @@ A decision is emitted only when no rule suppresses it. A suppressed decision is 
   the first confident detect "yes" while the state is still held and no rule suppresses it. When
   a snooze ends, the runtime looks again at every held state it deferred a `met` for. A deferred
   `met` is dropped if the state clears, is resolved or marked a false alarm, or expires first.
+  Snoozes survive a restart, but the look scheduled for a snooze's end does not: after a restart
+  a deferred `met` is delivered at the state's next recheck or heartbeat instead.
 - A suppressed event `met` stays silent for that occurrence; the event is still reported and
   rearms as usual.
 

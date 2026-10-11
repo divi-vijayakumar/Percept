@@ -119,31 +119,9 @@ node_modules/
 
 # Local datasets
 **/eval/bench-staging/
-docs/publish-readiness-plan.md
 
 # Local documents (not part of the project)
-/Spec/
-/handoff/
-/review/
 internal-docs/
-RELEASE_BRIEF.md
-docs/_release/
-out/
-docs/discussions/
-docs/enterprise-architecture.md
-docs/*handoff*.md
-docs/*research*.md
-docs/*scope*.md
-docs/*strategic*.md
-docs/*positioning*.md
-docs/*opportunity*.md
-docs/*v3-implementation*.md
-docs/*architecture-topologies*.md
-docs/*implementation-prompt*.md
-docs/*publish-readiness*.md
-docs/updated-percept-sdk-architecture.md
-docs/perception-event-individuation-research.md
-docs/benchmark-scorecard-runbook.md
 
 # Local documents (not part of the project)
 Product-Execution/
