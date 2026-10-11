@@ -95,6 +95,9 @@ async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot
         judge.inner.realtime = realtime
     if realtime:
         traces.mkdir(parents=True, exist_ok=True)
+    missing = sorted({s.path for c in cases for s in c.segments if not Path(s.path).is_file()})
+    if missing:     # the media went away (e.g. a drive unmounted): stop loudly, keep finished arms
+        raise SystemExit(f"{arm}: {len(missing)} media files are missing, first {missing[0]}")
 
     async def one(case):
         async with sem:

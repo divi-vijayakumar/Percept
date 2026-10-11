@@ -224,6 +224,23 @@ def test_a_failing_case_is_recorded_not_fatal(clips, tmp_path, monkeypatch):
     assert not manifest["publishable"] and "some cases were skipped" in manifest["not_publishable"]
 
 
+def test_unreadable_media_fails_the_case_not_quiet_footage(clips, tmp_path):
+    guard, timelines = oracle_guard(clips)
+    bad = tmp_path / "corrupt.avi"
+    bad.write_bytes(b"not a video")
+    case = VideoCase("bad", "t", (Segment(str(bad), 0, 20),), clips[0].conditions, ())
+    with pytest.raises(OSError, match="cannot open"):
+        asyncio.run(arms.run_chunk(case, guard, timelines, 5.0))
+
+
+def test_missing_media_stops_the_run(clips, tmp_path):
+    gone = VideoCase("gone", "t", (Segment(str(tmp_path / "unmounted.avi"), 0, 20),), clips[0].conditions, ())
+    guard, timelines = oracle_guard([gone])
+    args = run.parser().parse_args(["--dataset", "synthetic", "--out", str(tmp_path / "o")])
+    with pytest.raises(SystemExit, match="media files are missing"):
+        asyncio.run(run.run_arm("chunk5", [gone], guard, timelines, tmp_path / "o", args, {}))
+
+
 def test_dry_run_end_to_end(tmp_path):
     out = tmp_path / "run"
     code = run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "percept,percept-matched,chunk5",

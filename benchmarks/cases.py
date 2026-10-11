@@ -153,6 +153,9 @@ class Feed:
         """(time within the segment, frame), sampled to ``fps``."""
         import cv2
         cap = cv2.VideoCapture(seg.path)
+        if not cap.isOpened():          # unreadable media is a failed case, never quiet footage
+            cap.release()
+            raise OSError(f"cannot open {seg.path}")
         try:
             cap.set(cv2.CAP_PROP_POS_MSEC, seg.start * 1000.0)
             step, due, last = 1.0 / self.fps, 0.0, 0.0
