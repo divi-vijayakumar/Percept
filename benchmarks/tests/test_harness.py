@@ -305,7 +305,7 @@ def test_missing_media_stops_the_run(clips, tmp_path):
 def test_dry_run_end_to_end(tmp_path):
     out = tmp_path / "run"
     code = run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "percept,percept-matched,chunk5",
-                     "--speed", "3", "--oracle-latency", "0.2", "--out", str(out), "--max-cost-usd", "1",
+                     "--speed", "1", "--oracle-latency", "0.2", "--out", str(out), "--max-cost-usd", "1",
                      "--percept-rearm", "30"])
     assert code == 0
     manifest = json.loads((out / "manifest.json").read_text())
@@ -313,7 +313,7 @@ def test_dry_run_end_to_end(tmp_path):
     assert all(len(set(d.values())) == 1 for d in manifest["frame_digests"].values())
     assert manifest["cases"][0]["media"] and manifest["percept"]["package_sha256"]
     config = manifest["monitor_config"]
-    assert config["percept"]["max_requests_per_min"] == 6 and config["percept-matched"]["max_requests_per_min"] == 24
+    assert config["percept"]["max_requests_per_min"] == 6 and config["percept-matched"]["max_requests_per_min"] == 13
     assert config["percept"]["concurrency"]["max_concurrent_requests_per_case"] == 4
     assert "max_concurrent_requests" not in config["percept"]["changed_from_product_defaults"]
     assert config["percept"]["attempts_reserved_per_request"] == 2 and config["percept"]["condition"]["rearm_s"] == 30
@@ -333,13 +333,15 @@ def test_dry_run_end_to_end(tmp_path):
     text = (out / "report.md").read_text()
     for heading in ("Dry run", "Diagnostic, not publishable", "Publishable: no", "## Every arm", "recall ceiling",
                     "## Losses and verification", "## Misses by stage", "Actual spend $", f"| {label} |",
-                    "## Footprint", f"## Where {label} loses", "## Where percept-matched (max_requests_per_min 24; "
+                    "## Footprint", f"## Where {label} loses", "## Where percept-matched (max_requests_per_min 13; "
                     "rearm standardised to 30 s) loses", "## Judge failures", "onset recall", "## Method notes",
                     "No clear difference", "Same decoded frames: yes", "the frames each arm judged differ",
-                    "only 1.0x results are publishable", "2 reserved per request"):
+                    "2 reserved per request", "at most 5 requests a minute", "at most 12 requests a minute",
+                    "; rearm 30 s;"):
         assert heading in text
     assert (out / "traces" / "percept" / "synthetic-0.jsonl").exists()
-    assert "Identical evidence" not in text
+    assert "Identical evidence" not in text and "real time. Its budget" not in text     # ran at 1.0x
+    assert p["funnel_matched_outside"] == 0 and p["preds_without_yes_frames"] == 0
     # Percept's decisions and looks carry the frames the judge was shown
     _, results, _ = run.read_raw(out / "raw" / "percept.jsonl")
     assert all(p.frames for r in results for p in r.preds)
@@ -540,3 +542,20 @@ def test_rescore_reproduces_the_run_offline(tmp_path):
     assert report_after.replace(rescored + "\n\n", "") == report_before
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["rescored_utc"] and "rescore_git_sha" in manifest
+
+
+def test_percept_decisions_are_scored_on_their_yes_looks_frames_only():
+    """A Percept decision's evidence cites every request about the occurrence, a "no" included;
+    only the frames of the looks that said yes earn credit, as for the baselines."""
+    r = watched("percept", "x", 60)
+    r.looks = [Look("a", 0, 3, "yes", None, "detect", 0.9, (0.0, 3.0), "m-1"),
+               Look("a", 0, 10, "no", None, "detect", 0.9, (0.0, 10.0), "m-2"),
+               Look("b", 0, 10, "yes", None, "detect", 0.9, (0.0, 10.0), "m-2")]   # another condition's yes
+    r.preds = [Pred("a", 0.0, 10.0, 11.0, 0.9, (), (0.0, 3.0, 10.0), ("m-1", "m-2"))]
+    arms.yes_frames(r)
+    assert r.preds[0].frames == (0.0, 3.0) and r.preds[0].evidence_frames == (0.0, 3.0, 10.0)
+    m = metrics.match(r.preds, [Occurrence("a", 9.5, 12)], tol=0.0)
+    assert not m["matched"] and len(m["false"]) == 1
+    r.preds.append(Pred("a", 0.0, 10.0, 11.0, 0.9, (), (0.0, 10.0), ("m-9",)))
+    arms.yes_frames(r)
+    assert r.preds_without_yes_frames == 1

@@ -165,7 +165,8 @@ def read_raw(path: Path) -> tuple[str, list, dict]:
         if rec.pop("kind") == "arm":
             arm, footprint = rec["arm"], rec["footprint"]
             continue
-        rec["preds"] = [A.Pred(**dict(p, frames=tuple(p["frames"]))) for p in rec["preds"]]
+        rec["preds"] = [A.Pred(**dict(p, frames=tuple(p["frames"]), evidence_frames=tuple(p["evidence_frames"]),
+                                      request_ids=tuple(p["request_ids"]))) for p in rec["preds"]]
         rec["looks"] = [A.Look(**dict(lk, frames=tuple(lk["frames"]))) for lk in rec["looks"]]
         rec["budget_drops"] = [tuple(d) for d in rec["budget_drops"]]
         rec["fires"] = [tuple(x) for x in rec["fires"]]
@@ -274,6 +275,13 @@ def not_publishable(m: dict, table: dict) -> list[str]:
     return why
 
 
+def first_try_rate(c: dict) -> int:
+    """Requests a minute a budget admits when each succeeds first time: a request starts while
+    what was spent plus its reservation fits, and is then charged one attempt."""
+    limit, reserve = c["max_requests_per_min"], c["attempts_reserved_per_request"]
+    return max(0, limit - reserve + 1)
+
+
 def same_frames(digests: dict, case_ids: list, arms: list) -> bool:
     """Every arm has a digest for every case, and they agree."""
     return all(len({digests.get(c, {}).get(a) for a in arms}) == 1 and None not in
@@ -335,8 +343,9 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
         lines += [f"> **Aborted: spend cap reached** (${m['spent_usd']:.4f} of ${m['max_cost_usd']}). "
                   "Cases after the cap are skipped and excluded from every figure; see Coverage.", ""]
     if m["speed"] != 1.0:
-        lines += [f"> Percept ran at {m['speed']}x real time. Its budget and timers use the real clock, "
-                  "so only 1.0x results are publishable.", ""]
+        lines += [f"> Percept ran at {m['speed']}x real time. Its budget and timers use the real clock, and its "
+                  "pre-roll samples frames by wall clock, so any speed other than 1.0 also thins the clips it "
+                  "judges. Such runs are not evidence; only 1.0x results are publishable.", ""]
     lines += [f"**Publishable: {'yes' if not m['not_publishable'] else 'no'}**"
               + ("" if not m["not_publishable"] else " (" + "; ".join(m["not_publishable"]) + ")"), ""]
     synth = sorted({c["dataset"] for c in m["cases"] if c["synthetic"]})
@@ -350,7 +359,9 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
         changed = c["changed_from_product_defaults"]
         conc = c.get("concurrency", {})
         lines.append(f"- {c['label']}: {c['max_requests_per_min']} attempts a minute per stream, "
-                     f"{c['attempts_reserved_per_request']} reserved per request; rearm {c['condition']['rearm_s']:g} s; "
+                     f"{c['attempts_reserved_per_request']} reserved per request and the attempts used charged "
+                     f"(at most {first_try_rate(c)} requests a minute when each succeeds first time; retries "
+                     f"and verification draw on the same budget); rearm {c['condition']['rearm_s']:g} s; "
                      f"verify `{c['verify_mode']}`; min confidence {c['condition']['min_confidence']}; one Monitor "
                      f"per case, {conc.get('max_concurrent_requests_per_case', c['max_concurrent_requests'])} "
                      f"requests in flight per case, {conc.get('cases_at_once', m['parallel'])} cases at once. "
@@ -602,9 +613,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id")
     p.add_argument("--tolerance", type=float, default=2.0, help="matching tolerance, seconds")
     p.add_argument("--cooldown", type=float, default=A.COOLDOWN_S, help="baseline cooldown, seconds")
-    p.add_argument("--percept-budget", type=int, default=24,
-                   help="max_requests_per_min (attempts) of the percept-matched arm; 24 is about 12 requests "
-                        "at 2 attempts reserved each, chunk5's request rate")
+    p.add_argument("--percept-budget", type=int, default=13,
+                   help="max_requests_per_min (attempts) of the percept-matched arm; 13 admits at most 12 "
+                        "requests a minute when each succeeds first time (chunk5's rate)")
     p.add_argument("--percept-rearm", type=float, default=None,
                    help="rearm_s for the Percept arms (default: the product default)")
     p.add_argument("--fps", type=float, default=5.0, help="frames sampled per second, every arm")

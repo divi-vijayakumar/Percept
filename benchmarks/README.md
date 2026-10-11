@@ -46,8 +46,8 @@ treat it as unverified until a real fetch succeeds.
 
 | arm | what it does |
 |---|---|
-| `percept` | a `Monitor` with the product defaults (6 attempts a minute per stream, 2 reserved per request) **except the rearm**, which E1 standardises to 30 s (product default 120 s); fed in real time. Reports name it "percept (product defaults; rearm standardised to 30 s)" |
-| `percept-matched` | the same with `max_requests_per_min` set by `--percept-budget` (default 24 attempts a minute: about 12 requests at 2 attempts reserved each, `chunk5`'s request rate; verification requests draw on the same budget) |
+| `percept` | a `Monitor` with the product defaults (6 attempts a minute per stream; each request reserves 2 and is charged the attempts it used, so at most 5 requests a minute when each succeeds first time) **except the rearm**, which E1 standardises to 30 s (product default 120 s); fed in real time. Reports name it "percept (product defaults; rearm standardised to 30 s)" |
+| `percept-matched` | the same with `max_requests_per_min` set by `--percept-budget` (default 13 attempts a minute: at most 12 requests when each succeeds first time, `chunk5`'s rate; retries and verification draw on the same budget) |
 | `chunk5`, `chunk10`, `chunk30` | judge the last T seconds every T seconds, all conditions batched, then a cooldown |
 | `detector_debounce` | a people (HOG) or motion (MOG2) detector with a cooldown; only conditions a detector can express |
 | `detector_then_vlm` | the same detectors gate judge calls; other conditions are gated by motion |
@@ -168,22 +168,12 @@ the same frames gets the same answer. Its numbers test the harness, not a model.
 The benchmark exists to find where Percept wins and where it loses, and both are reported. A
 loss on MEVA will be published too.
 
-An offline diagnostic on 16 Perception Test clips (short, handheld, dense) found Percept behind
-simple periodic sampling. **This is a non-publishable diagnostic with a simulated (oracle)
-judge, not validated model accuracy.** Every arm used a 30 s cooldown; the observable recall
-ceiling under that cooldown was 46.4%.
-
-| arm | recall | relative to the 46.4% ceiling |
-|---|---|---|
-| Percept defaults (cooldown standardised to 30 s) | 17.9% | ≈39% |
-| Percept matched budget (12 a minute) | 26.2% | ≈57% |
-| model every 5 s | 40.5% | ≈89% |
-| model every 30 s | 21.4% | – |
-
-The cause is the request budget: on handheld footage the change trigger fires on nearly every
-frame, so looks queue up and the budget drops them (54 of the 69 misses of the Percept-defaults
-arm were budget drops). Dense handheld scenes are outside Percept 1.0's envelope, which is
-static cameras; that is why MEVA, with fixed cameras, is the primary public benchmark.
+Dense, continuously changing scenes (short handheld clips) were diagnosed separately with the
+oracle judge, which is a diagnostic, not a result. On such footage the change trigger fires on
+nearly every frame, so looks queue and the request budget drops them. Dense handheld scenes are
+outside Percept 1.0's envelope, which is static cameras; that is why MEVA, with fixed cameras,
+is the primary public benchmark. Numbers are published only from a full run's report, with its
+coverage and configuration.
 
 E2 (best practical pipelines, cascades allowed) is scaffolded in `configs/e2.json` and not wired
 into the runner yet.

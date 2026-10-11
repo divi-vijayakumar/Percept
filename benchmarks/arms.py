@@ -1,12 +1,13 @@
 """The arms: ways to turn the same footage and condition text into decisions.
 
 * ``percept``: a ``Monitor`` with the product defaults (change trigger, confirm/verify, request
-  budget of 6 attempts a minute, 2 reserved per request) EXCEPT the rearm, which a run may
+  budget of 6 attempts a minute: each request reserves 2 and is charged the attempts it used, so
+  at most 5 requests a minute when each succeeds first time) EXCEPT the rearm, which a run may
   standardise (E1: 30 s, the baselines' cooldown; the product default ``rearm_s`` is 120 s), fed
   in real time through a ``PushSource``.
 * ``percept-matched``: the same with ``max_requests_per_min`` raised (``--percept-budget``,
-  default 24 attempts: about 12 requests a minute at 2 attempts reserved each, the request rate
-  of ``chunk5``), so budget is not the only difference.
+  default 13 attempts a minute: at most 12 requests when each succeeds first time, ``chunk5``'s
+  rate; retries and verification draw on the same budget), so budget is not the only difference.
   Both use only Percept's public API.
 * ``chunk<T>``: judge the last ``T`` seconds every ``T`` seconds with every condition batched,
   then a plain cooldown per condition: what a developer writes in an afternoon.
@@ -67,6 +68,8 @@ class Pred:
     t_decided: float
     confidence: float
     frames: tuple = ()      # case times of the frames the judge was shown (empty: the interval ends)
+    evidence_frames: tuple = ()     # display only: every frame the decision cites (Percept: every request's)
+    request_ids: tuple = ()         # Percept: the requests the decision cites
 
 
 @dataclass
@@ -79,6 +82,7 @@ class Look:
     purpose: str = "detect"
     confidence: float = 0.0
     frames: tuple = ()      # case times of the frames the judge was shown (empty: the interval ends)
+    request_id: str = ""    # Percept: the request that produced it
 
 
 @dataclass
@@ -104,6 +108,7 @@ class ArmResult:
     budget_dropped: int = 0     # looks the request budget dropped (exact count)
     unverified: int = 0         # event candidates closed without a verified answer
     empty_clips: int = 0        # judge calls skipped because the clip held no frame
+    preds_without_yes_frames: int = 0   # Percept decisions whose yes-look frames weren't found
     error: str = ""             # the case failed: recorded, scored as skipped
 
 
@@ -335,7 +340,7 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
             ev = sorted(media(e.t_wall) for e in d.evidence) or [media(d.t_observed)]
             if d.type == "met":
                 result.preds.append(Pred(d.condition_id, ev[0], ev[-1], media(d.t_decided), d.confidence,
-                                         tuple(ev)))
+                                         (), tuple(ev), tuple(d.request_ids)))
             elif d.type == "uncertain":
                 result.uncertain += 1
         await player
@@ -351,7 +356,29 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
         stats["max_push_lag_s"] = round(max(stats.get("max_push_lag_s", 0.0), lag), 3)
         stats["requests_timed_by_content"] = stats.get("requests_timed_by_content", 0) + shown.by_content
     _read_trace(result, trace_path, media, shown.frames)
+    yes_frames(result)
     return result
+
+
+def _base(request_id: str) -> str:
+    return request_id.split("/")[0]         # a non-batching judge splits a request per condition
+
+
+def yes_frames(result: ArmResult) -> None:
+    """A Percept decision's ``frames``: the frames of the looks it cites that said ``yes`` (at
+    ``MIN_CONFIDENCE`` or more, detect or verify) for its condition. Its evidence also cites the
+    requests that said no; those frames were not the reason for the decision, so, as for the
+    baselines (whose decision frames are the yes-request's), they earn no credit. A decision whose
+    yes-looks can't be found keeps no frames and is scored at its evidence's ends, and counted."""
+    for p in result.preds:
+        ids = {_base(r) for r in p.request_ids}
+        times = sorted({t for lk in result.looks if lk.condition_id == p.condition_id and _base(lk.request_id) in ids
+                        and not lk.failed and lk.answer == "yes" and lk.confidence >= MIN_CONFIDENCE
+                        for t in lk.frames})
+        if times:
+            p.frames = tuple(times)
+        else:
+            result.preds_without_yes_frames += 1
 
 
 class FrameRecorder:
@@ -402,10 +429,10 @@ def _read_trace(result: ArmResult, path: Path, media, frames: Optional[dict] = N
     for rec in ptrace.read(path):
         if rec["kind"] == "decide_input" and rec["input"]["type"] == "Observed":
             o = rec["input"]["observation"]
-            shown = frames.get(o["request_id"].split("/")[0], ())    # a non-batching judge splits ids
+            shown = frames.get(_base(o["request_id"]), ())
             result.looks.append(Look(o["condition_id"], media(o["evidence_t"][0]), media(o["evidence_t"][1]),
                                      o["answer"], o["failure"], o["purpose"], o.get("confidence") or 0.0,
-                                     tuple(shown)))
+                                     tuple(shown), o["request_id"]))
         elif rec["kind"] == "drop" and rec.get("reason") in ("budget", "deadline"):
             # One record per dropped look: the request budget refused it (``budget``), or it waited
             # past its deadline for a request slot or evidence (``deadline``). Its evidence would

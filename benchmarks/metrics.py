@@ -253,11 +253,11 @@ def score(results: list, cases: dict, tol: float, *, only: set | None = None, se
         cost += r.cost_usd
         sampling.update(r.intentional_sampling)
         loss.update(r.unintended_loss)
-        drop_reasons.update(d[3] if len(d) > 3 else "budget" for d in r.budget_drops)
         if not watched_ok(r):
             skipped.append({"case_id": r.case_id, "reason": r.error or "not run: the spend cap was reached"})
             continue
         watched.append(r)
+        drop_reasons.update(d[3] if len(d) > 3 else "budget" for d in r.budget_drops)
         case = cases[r.case_id]
         seconds += r.seconds
         tally = Counter(occ=0, tp=0, onset=0, preds=0, false=0, seconds=r.seconds, cost=r.cost_usd)
@@ -324,6 +324,7 @@ def score(results: list, cases: dict, tol: float, *, only: set | None = None, se
         "uncertain": sum(r.uncertain for r in results),
         "unverified": sum(r.unverified for r in results),
         "empty_clips": sum(r.empty_clips for r in results),
+        "preds_without_yes_frames": sum(r.preds_without_yes_frames for r in results),
         "budget_drops": sum(r.budget_dropped for r in results),
         "drops_budget": drop_reasons.get("budget", 0), "drops_deadline": drop_reasons.get("deadline", 0),
         **looks_by_failure(results),
