@@ -94,7 +94,6 @@ Examples: [quickstart](examples/quickstart.py), [Frigate person events](examples
 | Path | What |
 |---|---|
 | `packages/percept-vision/` | The Python SDK |
-| `packages/percept-edge/` | Earlier JavaScript edge package, frozen and outside this release |
 | `docs/`, `examples/` | Documentation and runnable examples |
 | `benchmarks/` | The reproducible benchmark harness |
 | `tools/` | Structural checks, validation and the pre-publication scan |

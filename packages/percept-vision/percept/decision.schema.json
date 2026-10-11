@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/divi-vijayakumar/Percept/decision.schema.json",
+  "$id": "https://github.com/REPLACE-ME/percept/decision.schema.json",
   "title": "Percept Decision",
   "description": "One decision Percept delivers to an agent. Contract version 1.x: new top-level fields may be added within 1.x and readers ignore fields they don't know; nested objects don't change shape.",
   "type": "object",

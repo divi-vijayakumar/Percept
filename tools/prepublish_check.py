@@ -5,6 +5,8 @@ wheel freshly built from a clean copy of ``packages/percept-vision`` for:
 
 * secrets: key-shaped strings, private keys and URLs that carry a user name and password;
 * absolute home paths (``/Users/<name>``, ``/home/<name>``);
+* the repository URL placeholder (``REPLACE`` + ``-ME``), which must be replaced by the public
+  repository URL before a release;
 * media and dataset files, and any tracked file over 1 MB;
 * internal or strategy terms listed, one per line, in the untracked file ``.prepublish-terms``
   (copy ``.prepublish-terms.example`` to start; ``#`` starts a comment; matching ignores case and
@@ -44,6 +46,8 @@ SECRETS = [
         r"(?i)\b[\w-]*(?:api[_-]?key|secret|token|passw(?:or)?d)[\w-]*[\"']?\s*[:=]\s*[\"'][A-Za-z0-9/+_.=-]{16,}[\"']")),
     ("credentials in a URL", re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@'\"<>`]+:[^\s/@'\"<>`]+@")),
 ]
+# Assembled at run time so this file does not match itself.
+PLACEHOLDER = "REPLACE" + "-ME"
 HOME = re.compile(r"(?:/Users/|/home/)[A-Za-z0-9_.-]+")
 MEDIA = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".jpg", ".jpeg", ".png", ".gif", ".bmp",
          ".tif", ".tiff", ".webp", ".heic", ".wav", ".mp3", ".flac", ".ogg", ".m4a", ".npz", ".npy",
@@ -56,8 +60,8 @@ ALLOW: dict[str, tuple[str, ...]] = {
     # (the scan's own test builds its fake secrets at run time and needs no entry)
     "secret": tuple(f"packages/percept-vision/tests/{name}.py" for name in
                     ("test_monitor", "test_sources", "test_trace_replay", "test_vendor_judges")),
-    # the policy that lists the categories the term list is built from
-    "term": ("AGENTS.md", ".prepublish-terms.example"),
+    # the template for the local term list
+    "term": (".prepublish-terms.example",),
 }
 
 
@@ -86,6 +90,8 @@ def scan_text(label: str, text: str, terms: Terms) -> list[str]:
         match = HOME.search(line)
         if match and not allowed("home", label):
             found.append(f"{label}:{n}: absolute home path {match.group(0)!r}")
+        if PLACEHOLDER in line:
+            found.append(f"{label}:{n}: repository URL placeholder {PLACEHOLDER!r}: set the public repo URL")
         for term, pattern in terms:
             if pattern.search(line) and not allowed("term", label):
                 found.append(f"{label}:{n}: internal term {term!r}")

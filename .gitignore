@@ -14,6 +14,7 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.hypothesis/
 .coverage
 htmlcov/
 
@@ -21,123 +22,11 @@ htmlcov/
 .DS_Store
 
 # Benchmark results (published deliberately, never committed)
-/results/
 benchmarks/results/
 
-# Agent worktrees
+# Local agent settings
 .claude/worktrees/
-
-# Local run outputs
-scorecard.json
-scorecard.txt
-scorecard-live-*.txt
-results.json
-benchmark.json
-**/scorecard.txt
-**/scorecard.json
-**/results.json
-**/benchmark.json
-
-# Local run outputs
-calibration.json
-calibration_capture.json
-**/calibration*.json
-
-# Local run outputs
-categorical_capture.json
-exp_categorical.json
-**/categorical_capture.json
-
-# Local datasets
-eval/bench-staging/perception_test/raw/
-
-# Local run outputs
-perception_test_prevalence.json
-**/perception_test_prevalence.json
-
-# Local scratch
-scratch/
-handoff/
-
-# Local run outputs
-model_ab.json
-**/model_ab.json
-
-# Local run outputs
-e2e_result.json
-**/e2e_result.json
-
-# Local run outputs
-e2e_verdicts.json
-**/e2e_verdicts.json
-
-# Local datasets and run outputs
-eval/bench-staging/charades/raw/
-charades_verdicts.json
-charades_result.json
-**/charades_*.json
-
-# Local datasets and run outputs
-eval/bench-staging/proactiveqa/raw/
-proactiveqa_narrations.json
-proactiveqa_result.json
-**/proactiveqa_*.json
-
-# Local datasets and run outputs
-eval/bench-staging/repcount/raw/
-repcount_*.json
-**/repcount_*.json
-
-# Local datasets and run outputs
-eval/bench-staging/omnipro/
-omnipro_*.json
-**/omnipro_*.json
-.worktrees/
-
-# Local datasets
-**/eval/fixtures-golden/REVIEW_QUEUE.md
-**/eval/fixtures-private/
-/golden/
-**/eval/perception_probe/
-# Downloaded model binaries
-*.task
-# Backups
-*.bak
-.env.*
-
-# Generated benchmark reports
-**/bench_card_*.txt
-
-# Local datasets
-**/eval/bench-staging/perception_test/
-
-# Local datasets
-**/eval/bench-staging/repcount/
-
-# node
-node_modules/
-
-# Local datasets
-**/eval/bench-staging/
-
-# Local documents (not part of the project)
-internal-docs/
-
-# Local documents (not part of the project)
-Product-Execution/
-Product-Execution
-codewiki
-.dispatch-board
-internal-docs/
-
-# Local datasets, run outputs and tools
-eval/
-.worktrees/
-.ski/
-.netlify/
-.pnpm-store/
-packages/percept-vision/build/
-packages/percept-vision/dist/
+CLAUDE.local.md
 
 # The pre-publication scan's local term list (see .prepublish-terms.example)
 .prepublish-terms

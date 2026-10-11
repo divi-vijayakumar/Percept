@@ -9,7 +9,8 @@ description = "A decision layer for live video: tells your agent, once per occur
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Divi", email = "divi@velvee.ai" }]
+authors = [{ name = "Velvee, Inc.", email = "support@velvee.ai" }]
+maintainers = [{ name = "Velvee, Inc.", email = "support@velvee.ai" }]
 keywords = ["video", "agents", "vlm", "monitoring", "events", "real-time"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -20,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Video",
 ]
 dependencies = [
@@ -35,9 +37,9 @@ openai = ["openai>=1.40"]
 dev = ["pytest>=8", "hypothesis>=6.100"]
 
 [project.urls]
-Homepage = "https://github.com/divi-vijayakumar/Percept"
-Repository = "https://github.com/divi-vijayakumar/Percept"
-Issues = "https://github.com/divi-vijayakumar/Percept/issues"
+Homepage = "https://github.com/REPLACE-ME/percept"
+Repository = "https://github.com/REPLACE-ME/percept"
+Issues = "https://github.com/REPLACE-ME/percept/issues"
 
 [tool.setuptools.packages.find]
 include = ["percept*"]

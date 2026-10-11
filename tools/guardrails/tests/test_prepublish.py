@@ -43,3 +43,12 @@ def test_ordinary_code_and_allow_listed_fixtures_are_quiet():
     assert not findings("src/app.py", 'url = "rtsp://camera.local/stream"  # no credentials\nkey = os.environ["KEY"]')
     assert not findings("packages/percept-vision/tests/test_sources.py", "rtsp://" + "u:p" + "@cam/1")
     assert findings("packages/percept-vision/tests/test_other.py", "rtsp://" + "u:p" + "@cam/1")
+
+
+def test_the_repo_url_placeholder_is_found_in_files_and_wheel_metadata():
+    placeholder = "REPLACE" + "-ME"
+    hit = findings("README.md", f"git clone https://github.com/{placeholder}/percept")
+    assert hit and "set the public repo URL" in hit[0]
+    assert findings("percept_vision-0.9.0.whl!percept_vision-0.9.0.dist-info/METADATA",
+                    f"Project-URL: Homepage, https://github.com/{placeholder}/percept")
+    assert not findings("README.md", "git clone https://github.com/example/percept")

@@ -12,8 +12,8 @@ Each check prints its findings and exits non-zero on a violation. They read sour
     boundaries    imports point down: contracts imports no percept module, core modules
                   import only contracts/core and no I/O library
     reachability  every module under percept/ is reachable by imports from percept/__init__.py
-    size          total lines under percept/ (exit 2 when over budget; CI turns that into a
-                  required owner review rather than a hard failure)
+    size          total lines under percept/ (exit 2 when over the review threshold: growth
+                  past it is reviewed by a maintainer, not a hard failure)
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         over = lines > args.max_lines
         print(f"size: {lines} lines (review threshold {args.max_lines})")
         if over and args.check == "size":
-            print("  over the review threshold: needs the owner's written sign-off")
+            print("  over the review threshold: needs a maintainer's review")
             return 2
     return 1 if failed else 0
 

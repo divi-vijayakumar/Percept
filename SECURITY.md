@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please report security issues **privately** to **security@velvee.ai**. We aim to acknowledge within
+Please report security issues **privately** to **support@velvee.ai**. We aim to acknowledge within
 72 hours. Do not open a public issue for a vulnerability.
 
 ## Supported versions
