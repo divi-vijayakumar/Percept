@@ -23,6 +23,7 @@ import hashlib
 import inspect
 import json
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -337,6 +338,10 @@ def _comparison_lines(name: str, table: dict) -> tuple[list, list]:
 def report(manifest: dict, table: dict, digests: dict) -> str:
     m, lines = manifest, []
     lines += [f"# Percept benchmark run `{m['run_id']}`", ""]
+    if m.get("merged_from"):
+        lines += [f"> Merged from {len(m['merged_from'])} parts run at the same time with the same code, data "
+                  "and settings: " + "; ".join(f"`{p['run_id']}` ({', '.join(p['arms'])})" for p in m["merged_from"])
+                  + ".", ""]
     if m.get("rescored_utc"):
         lines += [f"> Rescored offline at {m['rescored_utc']} (git `{m['rescore_git_sha'][:10]}`) from the "
                   "run's raw results; no judge was called.", ""]
@@ -609,9 +614,58 @@ def rescore(out: Path, root: str | None = None) -> int:
     return 0
 
 
+# What may differ between the parts of one run: which arms each ran, its cap, where it wrote.
+PART_ARGS = {"arms", "max_cost_usd", "out", "run_id", "rescore", "merge", "root"}
+SAME_KEYS = ("git_sha", "git_dirty", "percept", "python", "platform", "opencv", "detectors_available", "dataset",
+             "cases", "judge", "harness", "seeds", "config", "tolerance_s", "cooldown_s", "fps", "speed",
+             "parallel", "pace_baselines")
+
+
+def merge(parts: list, out: Path, root: str | None = None) -> int:
+    """One run from parts that ran different arms at the same time (separate processes, same
+    code, data and settings), then rescored as one: the parts must agree on everything but their
+    arms, cap and output, and no arm may appear twice. Spend, requests and aborts add up."""
+    out = Path(out)
+    ms = [json.loads((Path(p) / "manifest.json").read_text()) for p in parts]
+    first = ms[0]
+    for p, m in zip(parts, ms):
+        bad = [k for k in SAME_KEYS if m.get(k) != first.get(k)]
+        bad += [f"args.{k}" for k in set(m["args"]) | set(first["args"])
+                if k not in PART_ARGS and m["args"].get(k) != first["args"].get(k)]
+        if bad:
+            raise SystemExit(f"{p} differs from {parts[0]} in {sorted(bad)}: not parts of one run")
+    arms = [a for m in ms for a in m["arms"]]
+    if len(set(arms)) != len(arms):
+        raise SystemExit(f"an arm appears in more than one part: {arms}")
+    (out / "raw").mkdir(parents=True, exist_ok=True)
+    for p, m in zip(parts, ms):
+        for arm in m["arms"]:
+            shutil.copyfile(Path(p) / "raw" / f"{arm}.jsonl", out / "raw" / f"{arm}.jsonl")
+            if (Path(p) / "traces" / arm).is_dir():
+                shutil.copytree(Path(p) / "traces" / arm, out / "traces" / arm, dirs_exist_ok=True)
+    caps = [m["max_cost_usd"] for m in ms]
+    cap = None if None in caps else sum(caps)     # one uncapped part leaves the run uncapped
+    manifest = dict(first)
+    manifest.update(
+        run_id=out.name, arms=arms,
+        monitor_config={k: v for m in ms for k, v in m.get("monitor_config", {}).items()},
+        spent_usd=sum(m["spent_usd"] for m in ms), requests=sum(m["requests"] for m in ms),
+        refused_by_cap=sum(m["refused_by_cap"] for m in ms), aborted=any(m["aborted"] for m in ms),
+        max_cost_usd=cap,
+        args=dict(first["args"], arms=",".join(arms), max_cost_usd=cap,
+                  out=str(out), run_id=out.name),
+        merged_from=[{"run_id": m["run_id"], "arms": m["arms"], "created_utc": m["created_utc"],
+                      "max_cost_usd": m["max_cost_usd"], "spent_usd": m["spent_usd"], "aborted": m["aborted"]}
+                     for m in ms])
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=1, default=str))
+    return rescore(out, root)
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m benchmarks.run", description=__doc__.splitlines()[0])
     p.add_argument("--config", help="a JSON file of defaults, e.g. benchmarks/configs/e1.json")
+    p.add_argument("--merge", nargs="+", metavar="PART_DIR",
+                   help="merge parts that ran different arms at the same time into --out, then rescore")
     p.add_argument("--rescore", metavar="OUT_DIR",
                    help="rescore a finished run from its raw/ results (no judge calls); --root may override")
     p.add_argument("--dataset",
@@ -647,6 +701,10 @@ def parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     p = parser()
     args = p.parse_args(argv)
+    if args.merge:
+        if not args.out:
+            raise SystemExit("--merge needs --out")
+        return merge(args.merge, Path(args.out), args.root)
     if args.rescore:
         return rescore(Path(args.rescore), args.root)
     if args.config:                     # the config sets defaults; flags on the command line still win

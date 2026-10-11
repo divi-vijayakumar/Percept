@@ -582,3 +582,29 @@ def test_unpaced_baselines_make_a_run_unpublishable():
     assert run.not_publishable(m, table) == []
     m["pace_baselines"] = False
     assert any("faster than real time" in w for w in run.not_publishable(m, table))
+
+
+def test_parts_merge_into_the_run_they_split(tmp_path):
+    base = ["--dataset", "synthetic", "--limit", "1", "--seed", "3"]
+    assert run.main(base + ["--arms", "chunk5,detector_debounce", "--out", str(tmp_path / "whole")]) == 0
+    assert run.main(base + ["--arms", "chunk5", "--out", str(tmp_path / "p1")]) == 0
+    assert run.main(base + ["--arms", "detector_debounce", "--out", str(tmp_path / "p2")]) == 0
+    assert run.main(["--merge", str(tmp_path / "p1"), str(tmp_path / "p2"), "--out", str(tmp_path / "m")]) == 0
+    whole = json.loads((tmp_path / "whole" / "metrics.json").read_text())
+    merged = json.loads((tmp_path / "m" / "metrics.json").read_text())
+    for arm in whole:
+        for key in ("recall", "precision", "funnel", "misses_by_stage", "cost_usd", "occurrences"):
+            assert merged[arm][key] == whole[arm][key], (arm, key)
+    manifest = json.loads((tmp_path / "m" / "manifest.json").read_text())
+    assert manifest["arms"] == ["chunk5", "detector_debounce"] and len(manifest["merged_from"]) == 2
+    assert "Merged from 2 parts" in (tmp_path / "m" / "report.md").read_text()
+
+
+def test_parts_that_differ_do_not_merge(tmp_path):
+    assert run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "chunk5", "--out", str(tmp_path / "p1")]) == 0
+    assert run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "chunk10", "--tolerance", "3",
+                     "--out", str(tmp_path / "p2")]) == 0
+    with pytest.raises(SystemExit, match="not parts of one run"):
+        run.main(["--merge", str(tmp_path / "p1"), str(tmp_path / "p2"), "--out", str(tmp_path / "m")])
+    with pytest.raises(SystemExit, match="more than one part"):
+        run.main(["--merge", str(tmp_path / "p1"), str(tmp_path / "p1"), "--out", str(tmp_path / "m2")])
