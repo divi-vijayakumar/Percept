@@ -8,7 +8,10 @@ as a *failed* answer, which never changes a decision.
 ## Built-in judges
 
 Each vendor SDK is an optional extra, imported only when the judge is built. There is no default
-model: pass the model id your provider offers.
+model: pass the model id your provider offers. Without the extra, building the judge raises
+`ImportError: this judge needs the 'google.genai' package: pip install 'percept-vision[gemini]'`
+(`'anthropic'` / `[claude]` and `'openai'` / `[openai]` likewise); install it with the camera
+extra, `pip install "percept-vision[video,gemini]"`.
 
 ```python
 percept.judges.gemini(model, *, api_key=None, price=None, can_batch=True, client=None, name=None,
@@ -39,6 +42,12 @@ percept.judges.openai_compatible(model, *, base_url=None, api_key=None, price=No
 
 `percept.judges.FakeJudge(script)` is a scripted judge for tests and offline demos. It runs the
 same prompt, parsing, retry and failure code as a real judge; only the provider is scripted.
+`script(request)` is called once per provider request and returns
+`{condition_id: (answer, confidence, reason)}` (`answer`: `"yes"`, `"no"` or `"unknown"`), a raw
+reply string, or an exception instance to raise (`base.RetryableError()`, `base.RefusalError()`,
+`TimeoutError()`); a non-callable `script` is that reply for every request. `request.images` are
+the BGR `uint8` frames a real judge would be sent, so a script can look at them. See
+[integration.md](integration.md#3-test-offline-with-fakejudge).
 
 ## What a request looks like
 
@@ -103,7 +112,8 @@ price reports no cost, and the cost cap can only count what is reported.
   built-in judges: one try and one retry; a cascade counts only the members the request can
   reach) and, with a price, its worst-case dollars. When it finishes, what it actually used stays
   charged for the window. So with the default of 6, a stream makes at most 6 attempts in any
-  minute: 3 requests if every one retries, more when they don't. A request that would not fit waits.
+  minute: 3 requests if every one retries, and 5 when none does (after 5 single-attempt requests,
+  a sixth would need 5 + 2 > 6). A request that would not fit waits.
 - **Guarantee.** No 60 s span holds more attempts than `max_requests_per_min`, and no hour more
   dollars than `max_cost_per_hour`, for judges that report their attempts truthfully and have a
   price. Without a price the cost cap is best effort. A cancelled request reports no usage, so its

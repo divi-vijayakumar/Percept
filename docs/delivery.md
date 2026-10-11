@@ -54,8 +54,45 @@ Acknowledgement:
   not acknowledged and is delivered again by the next `watch()` or after a restart.
 - `ack="manual"` leaves it to you: `await delivery.ack()` once your agent has acted. At most
   `max_unacked` (100) decisions are held unacknowledged per stream; past that, delivery waits
-  (capture and judging go on, and decisions keep being stored) and health `store_lag` is raised.
-  Acknowledging twice is harmless.
+  (capture and judging go on, and decisions keep being stored) and health `store_lag` is raised
+  ("delivery paused"), until you acknowledge one. Acknowledging twice is harmless.
+
+### What happens to a decision you don't acknowledge
+
+With `ack="manual"`, when your hand-off fails (say the webhook POST returned 503):
+
+- **Nothing happens within the same `watch()`.** The loop moves on to the next decision; the
+  unacknowledged one is not delivered again by that iterator, and there is no `nack` or retry
+  timer. It stays in the store and counts toward `max_unacked`.
+- **It is delivered again** when the stream is watched again (a new `monitor.watch(...)` call for
+  that stream, which ends the previous iterator) or after a restart: every unacknowledged decision
+  comes first, in order, with the same `decision_id` and `delivery.attempt` raised by one.
+- **If you never acknowledge it**, it stays in the store until a later run acknowledges it; with
+  `max_unacked` of them outstanding, delivery on that stream pauses.
+- An acknowledgement after `aclose()` is dropped; the decision is delivered again after a restart.
+
+The recommended pattern: retry the hand-off yourself, with backoff, and acknowledge only once it
+succeeded. `delivery.attempt` counts Percept's deliveries, not your retries.
+
+```python
+async def post_with_retry(url: str, decision: percept.Decision, tries: int = 5) -> bool:
+    body = json.dumps(decision.to_dict()).encode()
+    for attempt in range(tries):
+        try:
+            if 200 <= await asyncio.to_thread(post, url, body) < 300:   # post: a blocking urllib call
+                return True
+        except OSError:
+            pass
+        await asyncio.sleep(min(30.0, 0.25 * 2 ** attempt))
+    return False
+
+async for delivery in monitor.watch(source, ack="manual"):
+    if await post_with_retry(url, delivery.decision):
+        await delivery.ack()
+    # else: left unacknowledged; delivered again by the next watch() or after a restart
+```
+
+The complete version is [examples/webhook_agent.py](../examples/webhook_agent.py).
 
 A consumer that never reads loses nothing: decisions accumulate in the store, and memory stays
 bounded.
@@ -87,8 +124,20 @@ your own loop.
 Nothing raises during operation. Configuration errors raise when you build the `Monitor`, call
 `add()` or call `watch()`; everything else is reported:
 
-- `Monitor.health()` is an async iterator of `percept.Health` events, kept in a bounded ring
-  (repeats of an unread event raise its `count` instead of taking a slot). It ends at `aclose()`.
+- `Monitor.health()` returns an **async iterator** (not a list) of `percept.Health` events, kept in
+  a bounded ring of 256 entries (repeats of an unread event raise its `count` instead of taking a
+  slot). Consume it in a background task, `async for h in monitor.health(): ...`. Events are
+  buffered from the moment the monitor is built, so the task can start before or after
+  `watch()`; on overflow the oldest are dropped and counted in `stats()["health_dropped"]`. Use one
+  consumer: concurrent iterators split the events. It ends at `aclose()`.
+
+  ```python
+  async def log_health(monitor):
+      async for h in monitor.health():
+          log.warning("health %s on %s: %s (x%d)", h.kind, h.stream_id, h.detail, h.count)
+
+  health_task = asyncio.create_task(log_health(monitor))
+  ```
 
   | Kind | Meaning |
   |---|---|

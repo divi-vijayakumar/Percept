@@ -48,11 +48,22 @@ and the [trace](delivery.md#trace-and-replay) to tune them on your own footage.
 |---|---|---|---|
 | `rearm_s` | `120.0` | events | After an event is reported, repeats are absorbed for this long (and do not extend it). Shorter for events that can genuinely repeat quickly; longer to suppress a burst. |
 | `recheck_every_s` | `60.0` | states | While a state is held, look again this often on a fresh frame. Shorter means faster `cleared`, at more requests. |
-| `clear_after_no` | `3` | states | Confident "no" answers in a row (a confident "yes" resets the count) that clear a held state. Raise it if a state flickers off on a bad frame. |
+| `clear_after_no` | `3` | states | Confident "no" answers in a row (a confident "yes" resets the count; weak, unknown and failed answers neither count nor reset) that clear a held state. Raise it if a state flickers off on a bad frame. See [How fast a state clears](#how-fast-a-state-clears). |
 | `max_open_s` | `None` | states | If set, a state still held this long after `met` emits `expired` once, and stays held. Use it for "still open after 15 minutes" alerts. |
 | `cooldown_s` | `0.0` | both | After a `met`, another `met` for the same condition and subject is suppressed for this long, across occurrences. A suppressed state `met` is delivered later if the state is still held ([deferred](decision-semantics.md#13-emission-rules)); a suppressed event `met` is dropped. |
 | `emit_cleared` | `False` | states | Deliver `cleared` when a held state ends. Off by default: many agents only act on `met`. |
 | `version` | `1` | both | Raised automatically when `Monitor.add()` replaces a condition with the same id. Changing a condition closes its open occurrences (a held state emits `cleared`, cause `condition_changed`). |
+
+### How fast a state clears
+
+A held state clears on its `clear_after_no`-th confident "no", so the delay after the real end is
+set by how often it is looked at: a look when the end changes the zone (`on_change`), rechecks
+every `recheck_every_s` (60 s), and heartbeats. With the defaults (3 answers, 60 s rechecks), a
+door closed in a quiet scene is `cleared` 1 to 2 minutes after it closed: one look on the change,
+then two rechecks. A failed or unsure look adds a recheck period; looks that wait for the request
+budget add their wait. To clear faster, lower `recheck_every_s` (more requests), use a faster
+heartbeat trigger such as `every(10)` (a `trigger` replaces both defaults), or lower `clear_after_no` (more risk of clearing on one bad
+frame). `cleared` is delivered only with `emit_cleared=True`.
 
 ## Triggers
 

@@ -10,7 +10,8 @@ pip install -e "packages/percept-vision[video,gemini]"
 ```
 
 Extras: `video` (OpenCV, for cameras and files), `gemini`, `claude`, `openai` (one per judge).
-`import percept` needs none of them.
+`import percept` needs none of them, but building a judge without its extra raises
+`ImportError: this judge needs the 'google.genai' package: pip install 'percept-vision[gemini]'`.
 
 ## Run the offline demo first
 
@@ -45,7 +46,8 @@ is not crash-safe. A real monitor uses the default SQLite store. The look counts
 timing and may differ slightly on a slow machine.
 
 `examples/frigate_semantic.py` and `examples/kitchen_watch.py` also run offline with no
-arguments.
+arguments, and `python examples/webhook_agent.py --offline` runs the integration recipe: decisions
+posted to a local webhook and acknowledged only after it answered.
 
 ## Watch a camera
 
@@ -78,7 +80,7 @@ What happens:
 2. Cheap triggers decide when a condition is worth a look: by default a change in the frame, plus,
    for states, a look every 5 minutes.
 3. The judge answers yes, no or unknown, with a confidence, under a hard request budget
-   (6 attempts a minute per stream by default).
+   (6 attempts a minute per stream by default: about 5 requests a minute when none retries).
 4. The decision rules turn answers into at most one `met` per real occurrence. Events are checked
    a second time, on the same frames, before they are reported.
 5. Each decision is written to a SQLite file (`percept.db` in the working directory) before it is
@@ -86,6 +88,8 @@ What happens:
 
 ## Next
 
+- [integration.md](integration.md): the recipe for an app or agent: manual ack after delivery,
+  health, offline tests with `FakeJudge`, and the defaults that decide behaviour.
 - [concepts.md](concepts.md): triggers, judges, decisions, states and events, coverage.
 - [conditions.md](conditions.md): every `Condition` field and how to tune it.
 - [judges.md](judges.md): vendors, cascades, prices and budgets.
