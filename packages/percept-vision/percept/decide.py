@@ -8,18 +8,18 @@ confirmation, verification bookkeeping, holding, clearing, expiry, rearm, cooldo
 staleness, identities, capacity and the coverage fate of every observation. Budget, dispatch,
 retries, judging, delivery and storage belong to the shell.
 
-Section references (``§n``) point at the decision-semantics document that will be published
-with the documentation. The rules in brief:
+Names in brackets, such as [Time], are sections of ``docs/decision-semantics.md``, the public
+statement of these rules. The rules in brief:
 
-* Every stored time is wall clock (§3). Deadlines are data and timers are hints: each input
+* Every stored time is wall clock [Time]. Deadlines are data and timers are hints: each input
   that touches a key first applies every deadline that has passed, so a late or lost timer
   never changes an outcome.
 * Failed, weak (below ``min_confidence``) and ``unknown`` answers carry no information and
-  never change state (§4); only a verifier's ``unknown`` resolves a candidate as unverified.
+  never change state [Answers]; only a verifier's ``unknown`` resolves a candidate as unverified.
 * Answers are checked for staleness by epoch, condition version, occurrence generation,
-  purpose and the evidence floor (§5).
-* The confirm window is measured on evidence time (§7); verification, rearm, cooldown, snooze
-  and recheck on arrival time.
+  purpose and the evidence floor [Stale results].
+* The confirm window is measured on evidence time [Confirm window]; verification, rearm,
+  cooldown, snooze and recheck on arrival time.
 
 Purity: no I/O, no clock, no randomness. The state passed in is never mutated; keys are frozen
 values shared between the old and the new state.
@@ -48,7 +48,7 @@ MAX_REQUEST_IDS = 16            # request ids kept for one pending decision: the
 TimerKind = Literal["window", "verify", "recheck", "max_open", "rearm"]
 TIMER_KINDS: tuple[str, ...] = ("window", "verify", "recheck", "max_open", "rearm")
 
-# Lifecycle phases (§8, §9). A state condition is idle, confirming, verifying or holding; an
+# Lifecycle phases [States] [Events]. A state condition is idle, confirming, verifying or holding; an
 # event condition is idle, candidate, verifying or reported. Any phase but idle is "open".
 Phase = Literal["idle", "confirming", "candidate", "verifying", "holding", "reported"]
 IDLE: Phase = "idle"
@@ -62,7 +62,7 @@ EVENT_PHASES: tuple[str, ...] = (IDLE, CANDIDATE, VERIFYING, REPORTED)
 
 UnverifiedCause = Literal["timeout", "unverified", "restart"]
 
-# Fixed human sentences for decisions the judge did not word (§10.1). Agents branch on `cause`.
+# Fixed human sentences for decisions the judge did not word [Decision fields]. Agents branch on `cause`.
 _UNVERIFIED_REASONS: Mapping[str, str] = MappingProxyType({
     "timeout": "a possible occurrence could not be verified before its deadline",
     "unverified": "the verifier could not tell from the original evidence",
@@ -74,7 +74,7 @@ _SCENE_RETURN_REASON = "the scene returned to its baseline"
 _CONDITION_CHANGED_REASON = "the condition was changed"
 
 
-# --------------------------------------------------------------------------- inputs (§2.1)
+# --------------------------------------------------------------------------- inputs
 
 
 @dataclass(frozen=True)
@@ -148,7 +148,7 @@ class EpochStarted:
 Input = Union[Observed, TimerFired, Resolve, FalseAlarm, Snooze, SceneReturn, ConditionChanged, EpochStarted]
 
 
-# --------------------------------------------------------------------------- effects (§2.2)
+# --------------------------------------------------------------------------- effects
 
 
 @dataclass(frozen=True)
@@ -238,7 +238,7 @@ class StoreCounterExample:
 
 @dataclass(frozen=True)
 class Trace:
-    """A trace record. Every ``Observed`` input yields exactly one Trace with a ``fate`` (§13)."""
+    """A trace record. Every ``Observed`` input yields exactly one Trace with a ``fate`` [Coverage fates]."""
 
     t: float
     event: str
@@ -253,7 +253,7 @@ Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, CancelVerify, RequestR
                StoreCounterExample, Trace]
 
 
-# --------------------------------------------------------------------------- state (§2.3)
+# --------------------------------------------------------------------------- state
 
 
 KeyId = tuple[str, str]                      # (condition_id, subject)
@@ -295,7 +295,7 @@ class Key:
     met_confidence: float = 0.0
     last_met: Optional[float] = None
     last_uncertain: Optional[float] = None
-    closed_evidence_end: Optional[float] = None  # the evidence floor for detect answers (§5.4)
+    closed_evidence_end: Optional[float] = None  # the evidence floor for detect answers [Evidence floor]
     cost: Usage = Usage()
     request_ids: tuple[str, ...] = ()
     last_touched: float = 0.0
@@ -332,7 +332,7 @@ class StepResult:
 
 def new_state(stream_id: str, *, created_at: float, stream_epoch: int = 0,
               max_keys: int = DEFAULT_MAX_KEYS) -> StreamDecideState:
-    """A fresh stream state. ``created_at`` (wall clock) mints the incarnation (§5.1), so ids
+    """A fresh stream state. ``created_at`` (wall clock) mints the incarnation [Identity], so ids
     stay unique even when a snapshot is lost and the stream starts over."""
     if not stream_id:
         raise ValueError("stream_id must not be empty")
@@ -342,7 +342,7 @@ def new_state(stream_id: str, *, created_at: float, stream_epoch: int = 0,
 
 
 def gen_for(state: StreamDecideState, condition_id: str, subject: str = SCENE) -> int:
-    """The occurrence generation to tag a new judge request with (§5.2). 0 for an absent key."""
+    """The occurrence generation to tag a new judge request with [Identity]. 0 for an absent key."""
     key = state.keys.get((condition_id, subject))
     return 0 if key is None else key.gen
 
@@ -354,7 +354,7 @@ def phase_of(state: StreamDecideState, condition_id: str, subject: str = SCENE) 
 
 
 def decision_view(state: StreamDecideState) -> dict:
-    """The snapshot without bookkeeping fields: what "unchanged" means in the spec."""
+    """The snapshot without bookkeeping fields: what "unchanged" means: bookkeeping never changes an outcome."""
     data = to_dict(state)
     for key in data["keys"]:
         for name in BOOKKEEPING_FIELDS:
@@ -468,13 +468,13 @@ class _Step:
         return key
 
     def mint_gen(self) -> int:
-        """A new occurrence generation from the per-stream counter (§5.2)."""
+        """A new occurrence generation from the per-stream counter [Identity]."""
         gen = self.next_gen
         self.next_gen += 1
         return gen
 
     def mint_occurrence_id(self, condition_id: str) -> str:
-        """``{stream}/{condition}/{incarnation}-{n}`` (§5.1)."""
+        """``{stream}/{condition}/{incarnation}-{n}`` [Identity]."""
         occurrence_id = f"{self.stream_id}/{condition_id}/{self.incarnation}-{self.next_occurrence}"
         self.next_occurrence += 1
         return occurrence_id
@@ -511,14 +511,14 @@ def _timers(key: Key) -> dict[str, float]:
 
 
 def _raise_floor(key: Key, evidence_end: float) -> Key:
-    """Raise (never lower) the evidence floor (§5.4)."""
+    """Raise (never lower) the evidence floor [Evidence floor]."""
     if key.closed_evidence_end is not None and evidence_end <= key.closed_evidence_end:
         return key
     return replace(key, closed_evidence_end=evidence_end)
 
 
 def _charge(key: Key, inp: Observed) -> Key:
-    """Add an observation's usage to the occurrence's pending cost (§10.1)."""
+    """Add an observation's usage to the occurrence's pending cost [Decision fields]."""
     request_id = inp.observation.request_id
     ids = key.request_ids
     if request_id not in ids:
@@ -539,7 +539,7 @@ def _close(st: _Step, key: Key, *, bump: bool = False, verify_answered: bool = F
 
 
 def _advance(st: _Step, key: Key, cond: Condition) -> Key:
-    """Apply every stored deadline that is due (§3): window give-up, verify deadline, rearm
+    """Apply every stored deadline that is due [Time]: window give-up, verify deadline, rearm
     end, expiry. The recheck is an action, not a deadline, and is not applied here."""
     now = st.now
     if key.phase in (CONFIRMING, CANDIDATE) and now >= key.window_close_at:
@@ -551,13 +551,13 @@ def _advance(st: _Step, key: Key, cond: Condition) -> Key:
         st.trace("rearmed", cond.id, key.subject, occurrence_id=key.occurrence_id)
         key = _close(st, _raise_floor(key, key.rearm_until))
     if key.phase == HOLDING and key.expires_at is not None and now >= key.expires_at:
-        # Expiry happens once; a met still waiting for delivery is dropped with it (§10).
+        # Expiry happens once; a met still waiting for delivery is dropped with it [Emission rules].
         key = replace(key, expires_at=None, expired=True, met_pending=False)
         key, _ = _emit(st, key, cond, "expired", "max_open", _EXPIRED_REASON, key.met_confidence, None)
     return key
 
 
-# --------------------------------------------------------------------------- emission (§10)
+# --------------------------------------------------------------------------- emission [Emission rules]
 
 
 def _snoozed(st: _Step, condition_id: str, subject: str) -> bool:
@@ -565,7 +565,7 @@ def _snoozed(st: _Step, condition_id: str, subject: str) -> bool:
 
 
 def _in_cooldown(cond: Condition, since: Optional[float], now: float) -> bool:
-    """Clamped (§3): a backwards clock step counts as no time elapsed; zero never suppresses."""
+    """Clamped [Time]: a backwards clock step counts as no time elapsed; zero never suppresses."""
     return cond.cooldown_s > 0 and since is not None and max(0.0, now - since) < cond.cooldown_s
 
 
@@ -575,7 +575,7 @@ def _last_alert(key: Key) -> Optional[float]:
 
 
 def _suppression(st: _Step, key: Key, cond: Condition, type_: str) -> Optional[str]:
-    """Why a decision of ``type_`` must not be emitted now, or None (§10)."""
+    """Why a decision of ``type_`` must not be emitted now, or None [Emission rules]."""
     if type_ in ("met", "uncertain") and _snoozed(st, cond.id, key.subject):
         return "snoozed"
     if type_ == "met" and _in_cooldown(cond, key.last_met, st.now):
@@ -593,7 +593,7 @@ def _emit(st: _Step, key: Key, cond: Condition, type_: str, cause: Optional[str]
           confidence: float, t_observed: Optional[float]) -> tuple[Key, bool]:
     """Emit a decision about the key's occurrence unless a rule suppresses it (traced).
 
-    The decision carries everything charged since the previous one (§10.1), and takes the next
+    The decision carries everything charged since the previous one [Decision fields], and takes the next
     ``decision_id`` of the occurrence. ``t_observed=None`` means ``now``.
     """
     why_not = _suppression(st, key, cond, type_)
@@ -627,7 +627,7 @@ def _start_window(key: Key, o: Observation) -> Key:
 
 
 def _count_yes(st: _Step, key: Key, cond: Condition, o: Observation) -> Key:
-    """Count a confident yes into the confirm window, on evidence time (§7). Traces the
+    """Count a confident yes into the confirm window, on evidence time [Confirm window]. Traces the
     observation's fate, and confirms the occurrence when the count reaches ``confirm``."""
     e = o.evidence_t[1]
     if key.yes_count == 0:
@@ -655,7 +655,7 @@ def _count_yes(st: _Step, key: Key, cond: Condition, o: Observation) -> Key:
 
 
 def _confirm(st: _Step, key: Key, cond: Condition, o: Observation) -> Key:
-    """The window is complete: accept now (verification off, or the fast path), or verify (§8, §9)."""
+    """The window is complete: accept now (verification off, or the fast path), or verify [States] [Events]."""
     if key.window_close_at is not None:
         key = replace(key, window_close_at=None)
         st.emit(CancelTimer(cond.id, o.subject, "window"))
@@ -675,9 +675,9 @@ def _confirm(st: _Step, key: Key, cond: Condition, o: Observation) -> Key:
 
 
 def _accept(st: _Step, key: Key, cond: Condition, confidence: float, reason: str) -> Key:
-    """The occurrence is real: hold the state or report the event, and emit ``met`` (§8, §9).
+    """The occurrence is real: hold the state or report the event, and emit ``met`` [States] [Events].
 
-    A suppressed state ``met`` is remembered and delivered later (``met_pending``, §10); a
+    A suppressed state ``met`` is remembered and delivered later (``met_pending``, [Emission rules]); a
     suppressed event ``met`` stays silent.
     """
     now = st.now
@@ -700,7 +700,7 @@ def _accept(st: _Step, key: Key, cond: Condition, confidence: float, reason: str
 
 
 def _unverified(st: _Step, key: Key, cond: Condition, cause: UnverifiedCause, *, verify_answered: bool) -> Key:
-    """on_unverified (§9): a candidate closes without a verified answer.
+    """on_unverified [Unverified candidates]: a candidate closes without a verified answer.
 
     Only a candidate supported by a confident yes is reported, under its own occurrence id: as
     ``uncertain`` or as ``unverified`` health. The key returns to idle with no gen bump and no floor.
@@ -716,7 +716,7 @@ def _unverified(st: _Step, key: Key, cond: Condition, cause: UnverifiedCause, *,
     return _close(st, key, verify_answered=verify_answered)
 
 
-# --------------------------------------------------------------------------- capacity (§11)
+# --------------------------------------------------------------------------- capacity
 
 
 def _pinned(key: Key, cond: Optional[Condition], now: float) -> bool:
@@ -742,14 +742,14 @@ def _admit_key(st: _Step, condition_id: str, subject: str) -> Optional[Key]:
     return Key(condition_id, subject, last_touched=st.now)
 
 
-# --------------------------------------------------------------------------- observations (§4, §5, §8, §9)
+# --------------------------------------------------------------------------- observations
 
 
 AnswerClass = Literal["failed", "unknown", "weak", "yes", "no"]
 
 
 def _classify(o: Observation, cond: Condition) -> AnswerClass:
-    """§4. Confidence is symmetric; a model ``unknown`` is unknown at any confidence."""
+    """[Answers] Confidence is symmetric; a model ``unknown`` is unknown at any confidence."""
     if o.failed:
         return "failed"
     if o.answer == "unknown":
@@ -760,7 +760,7 @@ def _classify(o: Observation, cond: Condition) -> AnswerClass:
 
 
 def _stale_reason(st: _Step, key: Optional[Key], cond: Condition, o: Observation) -> Optional[str]:
-    """§5.3, in order: epoch, version, generation, purpose, evidence floor."""
+    """[Stale results], in order: epoch, version, generation, purpose, evidence floor."""
     if o.purpose == "verify" and key is not None and key.phase == VERIFYING and cond.verify_mode == "original":
         expected_epoch = key.interval_epoch    # about the candidate's own evidence
     else:
@@ -780,7 +780,8 @@ def _stale_reason(st: _Step, key: Optional[Key], cond: Condition, o: Observation
 
 
 def _on_observed(st: _Step, inp: Observed) -> None:
-    """§6: stream check, version sync, advance, stale check, charge, failed, weak, phase table."""
+    """[Order of processing]: stream check, version sync, advance, stale check, charge, failed,
+    weak, phase table."""
     o = inp.observation
     if o.stream_id != st.stream_id:
         raise ValueError(f"observation for stream {o.stream_id!r} sent to {st.stream_id!r}")
@@ -815,7 +816,7 @@ def _on_observed(st: _Step, inp: Observed) -> None:
     if o.purpose == "verify":
         _on_verify_answer(st, key, cond, o, answer)
     elif answer == "unknown":
-        # The model can't tell: no information, in every phase (§4).
+        # The model can't tell: no information, in every phase [Answers].
         phase = IDLE if key is None else key.phase
         st.trace(f"unknown_while_{phase}", cid, subject, fate="judged_weak", occurrence_id=occurrence_id)
     else:
@@ -863,7 +864,7 @@ def _idle_detect(st: _Step, key: Optional[Key], cond: Condition, inp: Observed, 
 
 
 def _confirming_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answer: AnswerClass) -> None:
-    """State, confirming: a yes counts; a no from inside the window is a flicker (§8)."""
+    """State, confirming: a yes counts; a no from inside the window is a flicker [States]."""
     o = inp.observation
     if answer == "yes":
         st.put(_count_yes(st, key, cond, o))
@@ -876,7 +877,7 @@ def _confirming_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answ
 
 
 def _candidate_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answer: AnswerClass) -> None:
-    """Event, candidate: a yes counts; a no is not evidence against an event (§9)."""
+    """Event, candidate: a yes counts; a no is not evidence against an event [Events]."""
     o = inp.observation
     if answer == "yes":
         st.put(_count_yes(st, key, cond, o))
@@ -891,7 +892,7 @@ def _verifying_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answe
 
 
 def _holding_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answer: AnswerClass) -> None:
-    """State, holding (§8): a yes resets the no-count and may deliver a deferred met; enough
+    """State, holding [States]: a yes resets the no-count and may deliver a deferred met; enough
     confident no's clear the state and set the evidence floor."""
     o = inp.observation
     occurrence_id = key.occurrence_id
@@ -914,7 +915,7 @@ def _holding_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answer:
 
 
 def _reported_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answer: AnswerClass) -> None:
-    """Event, reported (§9): a repeat is absorbed without extending rearm; events never clear."""
+    """Event, reported [Events]: a repeat is absorbed without extending rearm; events never clear."""
     event = "repeat_absorbed" if answer == "yes" else "ignored_while_reported"
     st.trace(event, cond.id, inp.observation.subject, fate="judged", occurrence_id=key.occurrence_id)
 
@@ -927,7 +928,7 @@ _EVENT_DETECT: Mapping[str, DetectHandler] = MappingProxyType({
 })
 
 
-# --------------------------------------------------------------------------- timers (§3)
+# --------------------------------------------------------------------------- timers
 
 
 def _on_timer(st: _Step, inp: TimerFired) -> None:
@@ -953,7 +954,7 @@ def _on_timer(st: _Step, inp: TimerFired) -> None:
     st.put(key)
 
 
-# --------------------------------------------------------------------------- controls (§8, §9)
+# --------------------------------------------------------------------------- controls
 
 
 def _find_open(st: _Step, occurrence_id: str) -> Optional[Key]:
@@ -964,7 +965,7 @@ def _find_open(st: _Step, occurrence_id: str) -> Optional[Key]:
 
 
 def _condition_of(stream_id: str, occurrence_id: str) -> Optional[str]:
-    """The condition id inside an occurrence id of this stream (ids parse right to left, §5.1)."""
+    """The condition id inside an occurrence id of this stream (ids parse right to left [Identity])."""
     prefix = stream_id + "/"
     if not occurrence_id.startswith(prefix):
         return None
@@ -976,7 +977,7 @@ def _condition_of(stream_id: str, occurrence_id: str) -> Optional[str]:
 
 def _close_externally(st: _Step, key: Key, cond: Condition, cause: str, reason: str) -> Key:
     """Resolve, false alarm, scene return: the world was declared changed. A held state emits
-    ``cleared``; the key goes idle with a gen bump (§5.2)."""
+    ``cleared``; the key goes idle with a gen bump [Identity]."""
     if cond.kind == "state" and key.phase == HOLDING:
         key, _ = _emit(st, key, cond, "cleared", cause, reason, 1.0, None)
     st.trace("closed", cond.id, key.subject, occurrence_id=key.occurrence_id, detail=cause)
@@ -1048,7 +1049,7 @@ def _on_scene_return(st: _Step, inp: SceneReturn) -> None:
         st.put(_close_externally(st, key, cond, "scene_return", _SCENE_RETURN_REASON))
 
 
-# --------------------------------------------------------------------------- conditions (§5.5)
+# --------------------------------------------------------------------------- conditions
 
 
 def _sync_condition(st: _Step, condition_id: str, idents: Optional[list[KeyId]] = None) -> bool:
@@ -1091,7 +1092,7 @@ def _on_condition_changed(st: _Step, inp: ConditionChanged) -> None:
         st.trace("condition_unchanged", inp.condition_id)
 
 
-# --------------------------------------------------------------------------- epochs (§12)
+# --------------------------------------------------------------------------- epochs
 
 
 def _on_epoch(st: _Step, inp: EpochStarted) -> None:
@@ -1116,7 +1117,7 @@ def _on_epoch(st: _Step, inp: EpochStarted) -> None:
 
 
 def _resume(st: _Step, key: Key, cond: Condition, *, restart: bool) -> Key:
-    """One key at the start of a new epoch (§8, §9, §12).
+    """One key at the start of a new epoch [Restart and reconnect].
 
     A fresh verification is requested again for the new epoch (same deadline). On a restart,
     an event candidate or original-interval verification resolves via on_unverified with cause

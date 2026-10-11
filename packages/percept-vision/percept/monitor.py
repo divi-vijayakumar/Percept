@@ -380,7 +380,9 @@ class _Stream:
                 if state.stream_id != self.id:
                     raise ValueError(f"snapshot of stream {state.stream_id!r}")
             except (KeyError, TypeError, ValueError) as exc:
-                state = None    # kept aside, never overwritten in place; new ids can't collide (§5.1)
+                # Kept aside, never overwritten in place; new ids can't collide
+                # (docs/decision-semantics.md, [Identity]).
+                state = None
                 await m._writer.commit({store_key("snapshot-unreadable", self.id, f"#{int(wall * 1000)}"): raw})
                 self.health("store_lag", f"the decide snapshot was unreadable ({exc!r:.80}); it was kept "
                                          "aside and decide state starts over under a new incarnation")
@@ -870,7 +872,8 @@ class _Stream:
             self.step(decide.TimerFired(*key))
 
     def mute_ended(self, cid: str, subject: Optional[str]) -> None:
-        """A snooze ended: look again at every held state it may have deferred a met for (D2)."""
+        """A snooze ended: look again at every held state it may have deferred a met for
+        (docs/decision-semantics.md, [Emission rules])."""
         if self.m._closing or self.state is None:
             return
         for (kcid, ksubject), k in self.state.keys.items():
