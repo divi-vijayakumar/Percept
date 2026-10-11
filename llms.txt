@@ -1,0 +1,26 @@
+# Percept
+
+> Percept (`pip install "percept-vision[video,gemini]"`, `import percept`) is a Python decision layer for live video from fixed cameras: give it a stream and plain-language conditions, and it delivers one decision (`met`, `uncertain`, `cleared` or `expired`) per real occurrence to your agent. Cheap triggers decide when to look, a vision-language judge (Gemini, Claude or an OpenAI-compatible server; each needs its pip extra) decides what is true, and a pure reducer decides whether the agent hears about it. Decisions are stored before delivery and redelivered until acknowledged. Version 0.9.0 is a Developer Preview; the API may change before 1.0.
+
+## Docs
+
+- [README](README.md): what Percept is, install, the offline demo, and the "Integrating Percept" recipe
+- [Integration](docs/integration.md): manual ack after delivery, the health task, offline tests with FakeJudge, and the defaults that decide behaviour
+- [Quickstart](docs/quickstart.md): install, the offline demo, a first camera
+- [Delivery](docs/delivery.md): the decision contract (`Decision.to_dict()`), acknowledgement and redelivery, stores, health, trace and replay
+- [Conditions](docs/conditions.md): every `Condition` field, its default, triggers, and how fast a state clears
+- [Judges](docs/judges.md): Gemini, Claude, OpenAI-compatible, cascades, FakeJudge, prices and request budgets
+- [Sources](docs/sources.md): `open_source` for cameras and files, `PushSource` for app-owned capture, link health
+
+## Examples
+
+- [webhook_agent.py](examples/webhook_agent.py): the integration recipe: an event and a state, decisions POSTed to a webhook with retries and acked after a 2xx, a health task; `--offline` needs no key
+- [quickstart.py](examples/quickstart.py): offline demo of a state, an event, coverage and trace replay with FakeJudge
+- [kitchen_watch.py](examples/kitchen_watch.py): a state on a heartbeat trigger with `max_open_s` and manual ack
+- [frigate_semantic.py](examples/frigate_semantic.py): Frigate person events poke Percept to judge what the person is doing
+
+## Optional
+
+- [Concepts](docs/concepts.md): Trigger, Judge, Decide; states and events; occurrences; coverage and blind intervals; what this release assumes
+- [Decision semantics](docs/decision-semantics.md): the exact decision rules
+- [Changelog](CHANGELOG.md): what changed in each release

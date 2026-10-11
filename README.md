@@ -93,6 +93,110 @@ the `occurrence_id` it belongs to, a machine-readable `cause`, a `reason` for pe
 `confidence`, the time the evidence shows it (`t_observed`), its `cost` and a keyframe. See
 [docs/delivery.md](docs/delivery.md#the-decision-contract).
 
+## Integrating Percept
+
+The recipe for wiring Percept into an app or agent, for people and coding agents alike.
+
+**1. Install the judge's extra.** `pip install "percept-vision[video,gemini]"` (or `[video,claude]`,
+`[video,openai]`). `video` is OpenCV, for `open_source`. Without the judge's extra, building it
+raises `ImportError: this judge needs the 'google.genai' package: pip install
+'percept-vision[gemini]'`. `percept.judges.gemini` reads `GEMINI_API_KEY`.
+
+**2. Ack after delivery, and watch health in a background task.**
+
+```python
+import asyncio, json, logging, os, urllib.request
+import percept
+
+log = logging.getLogger("app")
+WEBHOOK_URL = os.environ["WEBHOOK_URL"]
+
+
+def post(url: str, body: bytes) -> None:
+    """Blocking POST; urllib raises on a non-2xx answer or a network error."""
+    request = urllib.request.Request(url, body, {"Content-Type": "application/json"}, method="POST")
+    urllib.request.urlopen(request, timeout=10).close()
+
+
+async def post_with_retry(decision: percept.Decision, tries: int = 5) -> bool:
+    body = json.dumps(decision.to_dict()).encode()
+    for attempt in range(tries):
+        try:
+            await asyncio.to_thread(post, WEBHOOK_URL, body)   # keep the event loop free
+            return True
+        except OSError as exc:
+            log.warning("POST failed (%s); retrying", exc)
+        await asyncio.sleep(min(30.0, 0.25 * 2 ** attempt))
+    return False
+
+
+async def log_health(monitor: percept.Monitor) -> None:
+    async for h in monitor.health():        # an async iterator, not a list; ends at aclose()
+        log.warning("percept health %s on %s: %s", h.kind, h.stream_id, h.detail)
+
+
+async def main() -> None:
+    monitor = percept.Monitor(
+        percept.judges.gemini("gemini-2.5-flash"),
+        [percept.Condition("person_fell", "a person falls down", kind="event"),
+         percept.Condition("door_open", "the door is left open", emit_cleared=True)],
+    )
+    health = asyncio.create_task(log_health(monitor))
+    async with monitor:
+        source = percept.open_source("rtsp://camera.local/stream", stream_id="hallway")
+        async for delivery in monitor.watch(source, ack="manual"):
+            if await post_with_retry(delivery.decision):
+                await delivery.ack()        # only after the webhook accepted it
+    await health
+
+
+asyncio.run(main())
+```
+
+- With `ack="manual"`, an unacknowledged decision is **not** redelivered within the same
+  `watch()`, and there is no `nack`: retry the hand-off yourself. It stays in the store and is
+  delivered again (same `decision_id`, `attempt` + 1) by the next `watch()` of the stream or after
+  a restart. With `max_unacked` (100) unacknowledged, delivery on the stream pauses.
+- Delivery is at least once: deduplicate on `decision_id`. `decision.to_dict()` is the versioned
+  JSON form.
+- `health()` buffers events from construction in a bounded ring (256 aggregated entries), so the
+  task may start before or after `watch()`. Use one consumer.
+
+**3. Test offline with `FakeJudge`.** No key or network; the same prompt, parsing and failure
+handling as a real judge. The script is called once per judge request with the frames a real
+judge would see (BGR `uint8` arrays in `request.images`), and answers per condition id:
+
+```python
+def script(request):
+    lit = (request.images[-1][..., 1] > 200).any()
+    return {"door_open": ("yes", 0.9, "open") if lit else ("no", 0.9, "shut")}
+
+monitor = percept.Monitor(percept.judges.FakeJudge(script), conditions,
+                          store=percept.MemoryStore(), max_requests_per_min=600)
+camera = percept.PushSource("test-cam")    # camera.push(frame), then camera.close()
+```
+
+`MemoryStore` logs once that it is not crash-safe: expected in tests and demos.
+
+**4. Defaults that decide behaviour** (starting points, not calibrated):
+
+- `max_requests_per_min=6` attempts per stream: about 5 requests a minute when none retries
+  (a built-in judge reserves 2 attempts a request). Due conditions share a request.
+- A state is looked at on a scene change (`on_change()`) plus every 300 s (`every(300)`); an
+  event on a scene change only, or when you `poke()`. A `trigger=` replaces both.
+- `clear_after_no=3`: a held state clears after 3 confident "no" answers in a row. With 60 s
+  rechecks (`recheck_every_s`), a door closed in a quiet scene is `cleared` 1 to 2 minutes later.
+- The store is `SqliteStore("percept.db")` in the working directory: crash-safe, one process per
+  file. `MemoryStore()` is opt-in.
+- Each judge request has an 8 s deadline; a failure changes no decision and is reported on
+  `health()`.
+
+The complete, runnable recipe is [examples/webhook_agent.py](examples/webhook_agent.py): decisions
+POSTed to a webhook with retries and acknowledged after a 2xx, plus a health task.
+`python examples/webhook_agent.py --offline` runs it with no camera, key or network. Details:
+[docs/integration.md](docs/integration.md). For coding agents: [llms.txt](llms.txt) indexes the
+documentation.
+
 ## Architecture
 
 ```mermaid
@@ -147,6 +251,7 @@ What this release assumes, in full: [docs/concepts.md](docs/concepts.md#what-thi
 | Page | |
 |---|---|
 | [docs/quickstart.md](docs/quickstart.md) | install, the offline demo, a first camera |
+| [docs/integration.md](docs/integration.md) | the integration recipe: manual ack, health, `FakeJudge` tests, defaults |
 | [docs/concepts.md](docs/concepts.md) | Trigger → Judge → Decide, states and events, occurrences, coverage |
 | [docs/conditions.md](docs/conditions.md) | every `Condition` field, its default and how to tune it |
 | [docs/judges.md](docs/judges.md) | Gemini, Claude, OpenAI-compatible, cascades, prices and budgets |
@@ -155,7 +260,8 @@ What this release assumes, in full: [docs/concepts.md](docs/concepts.md#what-thi
 | [docs/decision-semantics.md](docs/decision-semantics.md) | the exact decision rules |
 
 - [examples/](examples/): the offline quickstart, Frigate person events, a kitchen state on a
-  heartbeat. All run offline with no arguments.
+  heartbeat (all run offline with no arguments), and the webhook integration recipe
+  (`--offline`).
 - [benchmarks/](benchmarks/README.md): the reproducible benchmark harness and its methodology.
 
 ## Contributing

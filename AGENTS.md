@@ -1,5 +1,9 @@
 # Working in this repo
 
+> Integrating Percept into an app? Start with the README section "Integrating Percept",
+> [examples/webhook_agent.py](examples/webhook_agent.py) and [llms.txt](llms.txt). The rest of
+> this file is for developing Percept itself.
+
 Instructions for contributors and coding agents. Read this before changing code.
 
 ## What Percept is

@@ -81,8 +81,9 @@ before 1.0.
   identical `Condition`s are equal and conditions with equal triggers share one trigger step.
 - The trace records each look given up unjudged (`kind: "drop"`, with the reason `budget`,
   `deadline` or `ended`), besides the per-minute fate counts.
-- Documentation in `docs/`; offline examples for a quickstart, Frigate person events and a
-  kitchen state on a heartbeat; a benchmark harness in `benchmarks/` (no results are published
+- Documentation in `docs/`, including an integration recipe (`docs/integration.md`) and an
+  `llms.txt` index; offline examples for a quickstart, Frigate person events, a kitchen state on a
+  heartbeat and a webhook integration (`examples/webhook_agent.py --offline`); a benchmark harness in `benchmarks/` (no results are published
   for this release).
 - Tooling: structural guardrails, `make validate` (clean-copy wheel build and an installed-wheel
   quickstart), a pre-publication scan (`make prepublish`) and a tag-triggered release workflow
