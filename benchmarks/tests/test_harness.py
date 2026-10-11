@@ -403,8 +403,6 @@ def test_configs():
     e1 = json.loads((run.Path(run.__file__).parent / "configs" / "e1.json").read_text())
     assert e1["dataset"] == "meva" and e1["cooldown"] == e1["percept_rearm"] == 30.0
     assert "percept-matched" in e1["arms"]
-    with pytest.raises(SystemExit, match="scaffold"):
-        run.main(["--config", str(run.Path(run.__file__).parent / "configs" / "e2.json")])
 
 
 def test_dry_run_reports_an_abort(tmp_path):

@@ -21,8 +21,9 @@ htmlcov/
 # OS
 .DS_Store
 
-# Benchmark results (published deliberately, never committed)
+# Benchmark results and downloaded benchmark datasets (never committed)
 benchmarks/results/
+/eval/bench-staging/
 
 # Local agent settings
 .claude/worktrees/

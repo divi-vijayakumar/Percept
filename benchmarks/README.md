@@ -2,7 +2,8 @@
 
 A reproducible harness that runs Percept and the pipelines a developer would otherwise write over
 the same public footage, with the same condition text and the same judge, and reports every arm,
-including the ones Percept loses.
+including the ones Percept loses. No benchmark results are published for the 0.9.0 Developer
+Preview; this directory is the method, so anyone can run it.
 
 ```bash
 pip install -e "packages/percept-vision[dev]" -r benchmarks/requirements.txt   # OpenCV 4, see Arms
@@ -11,7 +12,7 @@ pip install -e "packages/percept-vision[dev]" -r benchmarks/requirements.txt   #
 python -m benchmarks.run --dataset synthetic --judge fake --out benchmarks/results/dry-run
 
 # E1 on MEVA with a real judge and a hard spend cap
-python -m benchmarks.fetch_meva --hours 5                 # about 8.3 GB, into eval/bench-staging/meva
+python -m benchmarks.fetch_meva --hours 5                 # about 8.3 GB, into eval/bench-staging/meva (ignored by git)
 python -m benchmarks.run --config benchmarks/configs/e1.json --judge gemini:<model> \
     --price <usd_per_mtok_in>,<usd_per_mtok_out>,<tokens_per_image> --max-cost-usd 10 \
     --out benchmarks/results/e1-meva
@@ -20,14 +21,14 @@ python -m benchmarks.run --config benchmarks/configs/e1.json --judge gemini:<mod
 python -m benchmarks.run --rescore benchmarks/results/e1-meva [--root <dataset root>]
 ```
 
-`benchmarks/results/` and `results/` are ignored by git. Footage, private labels, keys and
-results are never committed.
+`benchmarks/results/` and `eval/bench-staging/` are ignored by git. Footage, private labels,
+keys and results are never committed.
 
 ## Datasets
 
 | `--dataset` | footage | notes |
 |---|---|---|
-| `meva` | MEVA (CC BY 4.0): fixed indoor and outdoor cameras, five-minute clips | the real continuous set, and the only one E1 publishes; fetch with `fetch_meva.py` |
+| `meva` | MEVA (CC BY 4.0): fixed indoor and outdoor cameras, five-minute clips | the real continuous set, and the only dataset a report can mark publishable; fetch with `fetch_meva.py` |
 | `perception-test` | Perception Test (CC-BY 4.0) action-localisation validation clips | short, dense clips: diagnostics only, never a published comparison |
 | `perception-test-sparse` | Perception Test clips joined with idle and distractor gaps at several occupancy levels | **synthetic**, for the cost-versus-occupancy curve only |
 | `local:<dir>` | your MP4s plus `labels.json` or `labels.yaml` | private clips, evaluated locally (format in `datasets.py`) |
@@ -39,8 +40,19 @@ events per hour are defined.
 
 `fetch_meva.py` builds annotation and video URLs from the layout of the public MEVA repository
 and bucket (`kitware/<date>/<hour>/` and `drops-123-r13/<date>/<hour>/`, the hour being the
-clip's end or start hour). That layout was checked by listing, not yet by a completed fetch:
-treat it as unverified until a real fetch succeeds.
+clip's end or start hour). If the repository's layout changes, these URLs need updating.
+
+## Datasets and attribution
+
+The footage is not redistributed in this repository. Each dataset is fetched from its own source
+and used under its own license.
+
+- **MEVA** (Multiview Extended Video with Activities), by Kitware, Inc., funded by IARPA. CC BY
+  4.0. `fetch_meva.py` downloads clips and annotations from the public MEVA data repository; see
+  the MEVA data repository for the full terms and citation.
+- **Perception Test**, by Google DeepMind. CC BY 4.0. Download its action-localisation validation
+  clips and labels from the Perception Test repository into
+  `eval/bench-staging/perception_test/raw/`; see that repository for the full terms and citation.
 
 ## Arms
 
@@ -163,17 +175,19 @@ The `fake` judge is an oracle that answers from the ground truth with injected n
 is shown falls within half a second before to two seconds after an onset, and a second look at
 the same frames gets the same answer. Its numbers test the harness, not a model.
 
-## Known limitation: dense, continuously changing scenes
+## Known limitations
 
-The benchmark exists to find where Percept wins and where it loses, and both are reported. A
-loss on MEVA will be published too.
+**Dense, continuously changing scenes.** On short handheld clips the change trigger fires on
+nearly every frame, so looks queue and the request budget drops them. This was diagnosed with the
+oracle judge, which is a diagnostic, not a result. Handheld footage is outside Percept's
+envelope, which is static cameras; that is why MEVA, with fixed cameras, is the primary public
+dataset.
 
-Dense, continuously changing scenes (short handheld clips) were diagnosed separately with the
-oracle judge, which is a diagnostic, not a result. On such footage the change trigger fires on
-nearly every frame, so looks queue and the request budget drops them. Dense handheld scenes are
-outside Percept's envelope, which is static cameras; that is why MEVA, with fixed cameras,
-is the primary public benchmark. Numbers are published only from a full run's report, with its
-coverage and configuration.
+**Small, distant or brief activity.** In busy surveillance scenes the change trigger often does
+not fire on activity that is small, far from the camera or brief, so it is never judged. The
+report attributes such misses to `trigger_never_fired`. Conditions like these need a heartbeat
+(`every`), a tighter zone or a lower `on_change` threshold; see `docs/concepts.md`.
 
-E2 (best practical pipelines, cascades allowed) is scaffolded in `configs/e2.json` and not wired
-into the runner yet.
+Numbers come only from a full run's report, together with its coverage and configuration.
+
+E2 (per-arm judges and cascades) is not implemented.
