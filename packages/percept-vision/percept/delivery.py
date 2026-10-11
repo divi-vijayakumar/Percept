@@ -298,6 +298,8 @@ class Envelope:
 
     ``await ack()`` removes it from the outbox durably; acknowledging twice is harmless. After
     the monitor is closed an acknowledgement is dropped and the decision is redelivered later.
+    There is no ``nack``: a decision left unacknowledged is not delivered again within the same
+    ``watch()``, only by the next ``watch()`` of its stream or after a restart (see :class:`Watch`).
     """
 
     __slots__ = ("decision", "attempt", "_outbox", "_entry")
@@ -482,7 +484,9 @@ class Watch:
     acknowledged, so after ``break`` and ``aclose()`` it is delivered again on the next start;
     consumers dedupe on ``decision_id``. ``ack="manual"``: call ``await delivery.ack()``; at most
     ``max_unacked`` decisions are held unacknowledged, and past that delivery waits (capture and
-    judging don't).
+    judging don't) until one is acknowledged. An unacknowledged decision is never delivered again
+    by the same iterator; a new ``watch()`` of the stream takes over (this iterator ends) and
+    delivers every unacknowledged decision again first, with ``attempt`` raised by one.
     """
 
     def __init__(self, outbox: Outbox, ack: str, max_unacked: int, on_blocked: Callable[[int], None]) -> None:

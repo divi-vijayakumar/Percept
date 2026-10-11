@@ -1012,10 +1012,18 @@ class Monitor:
     JSON lines, without images or credentials, so a run can be inspected and replayed
     (``percept.trace.replay``); None (the default) records nothing.
 
+    Defaults: ``max_requests_per_min=6`` attempts per stream (with a built-in judge, which
+    reserves 2 attempts a request, that is about 5 requests a minute when none retries and 3 when
+    every one does); a state with no ``trigger`` is looked at on a scene change (``on_change()``)
+    plus every 300 s (``every(300)``), an event on a scene change only.
+
     Configuration errors raise here, in :meth:`add` and in :meth:`watch`. Nothing raises
     during operation: outages, failures, budget exhaustion and store lag are reported by
     :meth:`health` and :meth:`coverage`. Methods other than :meth:`push` are called from the
     monitor's event loop thread.
+
+    For offline tests and demos, pass ``percept.judges.FakeJudge(script)`` as the judge: no key
+    or network, the same prompt, parsing and failure handling as a real judge.
     """
 
     def __init__(self, judge: Judge, conditions: Iterable[Condition] = (), *, store: Any = None,
@@ -1211,6 +1219,18 @@ class Monitor:
         source from ``open_source`` and every ``PushSource``, including ones the app built with
         its own ``on_frame`` / ``on_health``), so an outage is a ``link_down`` blind interval and
         health event without further wiring.
+
+        Acknowledgement. ``ack="auto"`` acknowledges a decision when the loop asks for the next
+        one. With ``ack="manual"``, call ``await delivery.ack()`` once the decision has been
+        handled (for example after a webhook answered 2xx). Within one ``watch()`` an
+        unacknowledged decision is **not** delivered again and there is no ``nack``: it stays in
+        the store and the loop goes on to the next decision. It is delivered again, first and
+        with the same ``decision_id`` and a higher ``attempt``, only when the stream is watched
+        again (a new ``watch()`` call, which ends this iterator) or after a restart. Retry a
+        failed hand-off yourself, with backoff, and ack only on success. Once ``max_unacked``
+        decisions are unacknowledged, delivery on this stream pauses (health ``store_lag``,
+        "delivery paused") until one is acknowledged; capture and judging go on and new
+        decisions keep being stored.
         """
         if fps is not None and not fps > 0:
             raise ValueError("fps is positive or None")
@@ -1412,7 +1432,19 @@ class Monitor:
     # ----------------------------------------------------------------- reports
 
     def health(self):
-        """Operational events, aggregated, from a bounded ring (oldest first). Ends at ``aclose()``."""
+        """Operational events (:class:`~percept.Health`), aggregated, oldest first.
+
+        Returns an **async iterator**, not a list: ``async for h in monitor.health(): ...``,
+        typically in a background task (``asyncio.create_task``) started alongside ``watch()``.
+        It waits for new events and ends at ``aclose()``, after yielding what is left.
+
+        Events are buffered from the moment the monitor is built, in one bounded ring (256
+        entries; a repeat of an unread event raises its ``count`` instead of taking a slot), so
+        starting the task after ``watch()`` loses nothing unless the ring overflows: the oldest
+        entries are then dropped and counted in ``stats()["health_dropped"]``; ``stats()["health"]``
+        counts every event by kind either way. The ring is shared: concurrent iterators split
+        the events between them, so use one consumer.
+        """
         return self._health.drain()
 
     def stats(self) -> dict:
@@ -1443,7 +1475,9 @@ class Monitor:
     # ----------------------------------------------------------------- shutdown
 
     async def aclose(self) -> None:
-        """Stop frames, cancel judge calls, flush the store, then close the sources."""
+        """Stop frames, cancel judge calls, flush the store, then close the sources. A coroutine:
+        ``await monitor.aclose()``, or leave ``async with monitor:``. Every ``watch()`` and
+        ``health()`` iterator ends."""
         if self._closed or self._closing:
             return
         self._closing = True

@@ -569,7 +569,13 @@ class Judge(Protocol):
 
 @runtime_checkable
 class Delivery(Protocol):
-    """The envelope a decision is delivered in. Acknowledging removes it from the outbox."""
+    """The envelope a decision is delivered in. Acknowledging removes it from the outbox.
+
+    ``attempt`` counts deliveries by Percept (1 the first time), not your own retries. With
+    ``watch(..., ack="manual")`` an unacknowledged decision is delivered again only by the next
+    ``watch()`` of its stream or after a restart, never within the same ``watch()``; there is no
+    ``nack``. Retry a failed hand-off yourself and ``await ack()`` only once it succeeded.
+    """
 
     decision: Decision
     attempt: int

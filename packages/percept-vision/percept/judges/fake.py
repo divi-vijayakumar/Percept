@@ -54,7 +54,25 @@ def reply_json(results: Mapping[str, tuple], request: JudgeRequest | None = None
 
 
 class FakeJudge:
-    """A deterministic ``Judge`` driven by ``script``."""
+    """A deterministic ``Judge`` driven by ``script``, for tests and offline demos.
+
+    ``script`` is either a callable, called once per provider request (retries included) with
+    the :class:`~percept.contracts.JudgeRequest` being sent, or a fixed reply returned for every
+    request. A reply is one of:
+
+    * ``{condition_id: (answer, confidence, reason)}``, ``answer`` being ``"yes"``, ``"no"`` or
+      ``"unknown"``: a well-formed reply. Ids the request did not ask about are ignored; ids it
+      asked about and the dict leaves out fail as missing;
+    * a ``str``: the raw reply text (to test malformed replies);
+    * an exception instance, raised by the provider: ``base.RetryableError()`` is retried,
+      ``base.RefusalError()`` and ``TimeoutError()`` fail the request.
+
+    In the request, ``images`` are the BGR ``uint8`` arrays a real judge would be sent (cropped
+    to the conditions' zones; a state's newest frame, an event's short clip, oldest first),
+    ``items[i].condition`` the conditions asked about and ``purpose`` ``"detect"`` or
+    ``"verify"``. A script that inspects the images behaves like a model watching the scene, so
+    states can clear. ``sent`` records every provider request.
+    """
 
     def __init__(self, script: Script | ScriptReply, *, name: str = "fake", can_batch: bool = True,
                  price: PriceModel | None = None, latency_s: float = 0.0, retries: int = 1,
