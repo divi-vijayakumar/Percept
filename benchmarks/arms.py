@@ -173,12 +173,20 @@ def _feed(case: VideoCase, fps: float, timelines) -> Feed:
     return Feed(case, fps, note=lambda t, image: timelines.note(case.case_id, t, image))
 
 
-async def frames_of(feed: Feed):
+async def frames_of(feed: Feed, pace: Optional[float] = None):
     """The feed's frames, decoded on the case's own thread: other cases keep running, and
-    decoding never takes a thread from the shared pool (JPEG encoding, trace flushes)."""
+    decoding never takes a thread from the shared pool (JPEG encoding, trace flushes). With
+    ``pace``, a frame is not yielded before its time at ``pace`` times real time (a caller that
+    falls behind, e.g. waiting on the judge, catches up without sleeping), so a baseline calls the
+    provider at the rate it would live, as Percept does; None yields as fast as decoding allows."""
     frames, loop = iter(feed), asyncio.get_running_loop()
+    start = loop.time()
     with ThreadPoolExecutor(1, thread_name_prefix=f"decode-{feed.case.case_id}") as pool:
         while (item := await loop.run_in_executor(pool, next, frames, None)) is not None:
+            if pace:
+                wait = start + item[0] / pace - loop.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
             yield item
 
 
@@ -240,10 +248,10 @@ class Baseline:
 
 
 async def run_chunk(case: VideoCase, judge, timelines, period_s: float, *, cooldown_s: float = COOLDOWN_S,
-                    fps: float = 5.0) -> ArmResult:
+                    fps: float = 5.0, pace: Optional[float] = None) -> ArmResult:
     b = Baseline(f"chunk{period_s:g}", case, judge, timelines, cooldown_s)
     feed, due, t, complete = _feed(case, fps, timelines), period_s, 0.0, False
-    async for t, image in frames_of(feed):
+    async for t, image in frames_of(feed, pace):
         b.remember(t, image, period_s + 1.0)
         if t >= due:
             await b.ask(list(b.conds), b.clip(due - period_s, t))
@@ -258,7 +266,7 @@ async def run_chunk(case: VideoCase, judge, timelines, period_s: float, *, coold
 
 
 async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, cooldown_s: float = COOLDOWN_S,
-                       gate_s: float = 5.0, fps: float = 5.0) -> ArmResult:
+                       gate_s: float = 5.0, fps: float = 5.0, pace: Optional[float] = None) -> ArmResult:
     b = Baseline("detector_then_vlm" if then_vlm else "detector_debounce", case, judge, timelines, cooldown_s)
     have = Detectors.available()
     gates = {c.id: (c.detector if c.detector in have else None) or ("motion" if then_vlm else None)
@@ -266,7 +274,7 @@ async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, coo
     b.result.unsupported = [cid for cid, g in gates.items() if g is None]
     det = Detectors({g for g in gates.values() if g})
     feed, gate_until, complete = _feed(case, fps, timelines), {}, False
-    async for t, image in frames_of(feed):
+    async for t, image in frames_of(feed, pace):
         b.remember(t, image, CLIP_S + 1.0)
         fired = det.step(t, image) if det.kinds else set()
         ids = [cid for cid, g in gates.items() if g in fired and t >= gate_until.get(cid, -1.0)]

@@ -18,6 +18,7 @@
   "tolerance": 2.0,
   "fps": 5.0,
   "speed": 1.0,
-  "parallel": 8,
+  "parallel": 6,
+  "pace_baselines": true,
   "seed": 0
 }

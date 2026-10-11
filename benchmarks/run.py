@@ -121,6 +121,8 @@ async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot
     if missing:     # the media went away (e.g. a drive unmounted): stop loudly, keep finished arms
         raise SystemExit(f"{arm}: {len(missing)} media files are missing, first {missing[0]}")
 
+    pace = args.speed if getattr(args, "pace_baselines", False) else None
+
     async def one(case):
         async with sem:
             if judge.tripped.is_set():
@@ -132,9 +134,9 @@ async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot
                                            rearm_s=args.percept_rearm, arm=arm, stats=foot)
             if arm.startswith("chunk"):
                 return await A.run_chunk(case, judge, timelines, float(arm[5:]), cooldown_s=args.cooldown,
-                                         fps=args.fps)
+                                         fps=args.fps, pace=pace)
             return await A.run_detector(case, judge, timelines, then_vlm=arm == "detector_then_vlm",
-                                        cooldown_s=args.cooldown, fps=args.fps)
+                                        cooldown_s=args.cooldown, fps=args.fps, pace=pace)
     try:
         done = await asyncio.gather(*(one(c) for c in cases), return_exceptions=True)
     finally:
@@ -254,6 +256,8 @@ def not_publishable(m: dict, table: dict) -> list[str]:
         why.append("the judge is the offline oracle")
     if m["dataset"] != "meva":
         why.append(f"dataset {m['dataset']} is diagnostic only (E1 publishes MEVA)")
+    if not m.get("pace_baselines"):
+        why.append("the baseline arms ran faster than real time (pass --pace-baselines)")
     if m["speed"] != 1.0:
         why.append(f"Percept ran at {m['speed']}x real time")
     if m["aborted"]:
@@ -453,6 +457,11 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
     h = m["harness"]
     pre = next((c.get("preroll") for c in m["monitor_config"].values() if c.get("preroll")), None)
     lines += ["## Method notes", "",
+              ("- Pacing. Every arm played the footage at the same rate, "
+               f"{m['speed']:g}x real time, so each called the provider at the rate it would live."
+               if m.get("pace_baselines") else
+               "- Pacing. Percept played the footage in real time; the baselines ran as fast as decoding and the "
+               "judge allowed, so provider load differed between arms."),
               f"- Frames judged. Baselines keep a history of at most {1 / h.get('baseline_history_spacing_s', 0.5):g} "
               f"frames a second and judge up to {h['clip_frames']} of them spread over the window: `chunk<T>` "
               f"shows {h['clip_frames']} frames about T/{h['clip_frames'] - 1} s apart; detector-gated calls show "
@@ -564,6 +573,7 @@ async def main_async(args) -> int:
                     "worker_threads": worker_threads(args)},
         "seeds": {"seed": args.seed}, "config": args.config, "tolerance_s": args.tolerance, "cooldown_s": args.cooldown,
         "fps": args.fps, "speed": args.speed, "parallel": args.parallel, "max_cost_usd": args.max_cost_usd,
+        "pace_baselines": bool(getattr(args, "pace_baselines", False)),
         "spent_usd": judge.spent, "requests": judge.requests, "refused_by_cap": judge.refused,
         "aborted": judge.tripped.is_set(), "args": vars(args),
     }
@@ -625,6 +635,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=float, default=5.0, help="frames sampled per second, every arm")
     p.add_argument("--speed", type=float, default=1.0, help="Percept arm pacing; only 1.0 is publishable")
     p.add_argument("--parallel", type=int, default=8, help="cases run at once, per arm")
+    p.add_argument("--pace-baselines", action="store_true",
+                   help="play baseline arms at --speed times real time, as Percept is (publishable runs need it)")
     p.add_argument("--seed", type=int, default=0, help="dataset negatives, oracle noise and bootstrap resampling")
     p.add_argument("--oracle-fn", type=float, default=0.1)
     p.add_argument("--oracle-fp", type=float, default=0.02)

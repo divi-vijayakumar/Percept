@@ -349,7 +349,8 @@ def test_dry_run_end_to_end(tmp_path):
 
 
 def _meva_run(**arm):
-    manifest = {"judge": {"spec": "gemini:m"}, "dataset": "meva", "speed": 1.0, "aborted": False}
+    manifest = {"judge": {"spec": "gemini:m"}, "dataset": "meva", "speed": 1.0, "aborted": False,
+                "pace_baselines": True}
     s = dict(skipped=[], footprint={"max_push_lag_s": 0.1}, intentional_sampling={}, unintended_loss={},
              unintended_loss_total=0)
     s.update(arm)
@@ -565,3 +566,19 @@ def test_untraced_decisions_make_a_run_unpublishable():
     assert run.not_publishable(*_meva_run(preds_without_yes_frames=0)) == []
     why = run.not_publishable(*_meva_run(preds_without_yes_frames=2))
     assert len(why) == 1 and "traced to the yes-looks" in why[0]
+
+
+def test_paced_baselines_take_real_time(clips):
+    import time
+    guard, timelines = oracle_guard(clips)
+    case = clips[0]
+    t0 = time.monotonic()
+    asyncio.run(arms.run_chunk(case, guard, timelines, 5.0, pace=60.0))
+    assert time.monotonic() - t0 >= case.duration / 60.0 * 0.9
+
+
+def test_unpaced_baselines_make_a_run_unpublishable():
+    m, table = _meva_run()
+    assert run.not_publishable(m, table) == []
+    m["pace_baselines"] = False
+    assert any("faster than real time" in w for w in run.not_publishable(m, table))
