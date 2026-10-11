@@ -5,7 +5,8 @@
   standardise (E1: 30 s, the baselines' cooldown; the product default ``rearm_s`` is 120 s), fed
   in real time through a ``PushSource``.
 * ``percept-matched``: the same with ``max_requests_per_min`` raised (``--percept-budget``,
-  default 12: the request rate of ``chunk5``), so budget is not the only difference.
+  default 24 attempts: about 12 requests a minute at 2 attempts reserved each, the request rate
+  of ``chunk5``), so budget is not the only difference.
   Both use only Percept's public API.
 * ``chunk<T>``: judge the last ``T`` seconds every ``T`` seconds with every condition batched,
   then a plain cooldown per condition: what a developer writes in an afternoon.
@@ -18,6 +19,14 @@
 Baseline arms run on the case timeline (no waiting); their decision time is the end of the
 evidence plus the judge's reported latency. Every judged look is recorded, so misses can be
 attributed to a stage in every arm.
+
+Every decision and look records ``frames``: the case times of the frames actually shown to the
+judge (a detector-only decision: the frame it fired on). Scoring uses those frames, not the
+interval they span.
+
+Each Percept case runs its own ``Monitor`` with the product's per-Monitor concurrency, and each
+case decodes on its own thread, so cases run at once never compete for a decode thread or a
+request slot (they do share the process, the event loop and the judge's HTTP client).
 """
 
 from __future__ import annotations
@@ -26,14 +35,19 @@ import asyncio
 import resource
 import sys
 import time
+import weakref
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 from percept import Condition, JudgeItem, JudgeRequest, MemoryStore, Monitor, PushSource
 from percept import trace as ptrace
 from percept.clips import PreRoll
+from percept.judges import base
 from percept.monitor import _max_output_tokens   # the Monitor's reply sizing, held fixed across arms
 
 from benchmarks.cases import Feed, VideoCase
@@ -41,6 +55,7 @@ from benchmarks.cases import Feed, VideoCase
 CLIP_FRAMES, CLIP_S = 4, 4.0        # the evidence format Percept uses for events, shared by every arm
 from benchmarks.metrics import MIN_CONFIDENCE   # noqa: E402  Percept's default, applied by the baselines too
 COOLDOWN_S = 30.0
+HISTORY_SPACING_S = 0.5             # baselines keep at most 2 frames a second, as Percept's pre-roll
 MAX_LAG_S = 1.0                     # a pushed frame later than this behind real time counts as lost
 
 
@@ -51,6 +66,7 @@ class Pred:
     t1: float
     t_decided: float
     confidence: float
+    frames: tuple = ()      # case times of the frames the judge was shown (empty: the interval ends)
 
 
 @dataclass
@@ -62,6 +78,7 @@ class Look:
     failed: Optional[str]   # the failure, if the look got no answer
     purpose: str = "detect"
     confidence: float = 0.0
+    frames: tuple = ()      # case times of the frames the judge was shown (empty: the interval ends)
 
 
 @dataclass
@@ -70,7 +87,7 @@ class ArmResult:
     case_id: str
     preds: list = field(default_factory=list)
     looks: list = field(default_factory=list)
-    budget_drops: list = field(default_factory=list)    # (condition_id, t0, t1): a look the budget dropped
+    budget_drops: list = field(default_factory=list)    # (condition_id, t0, t1, reason): a look dropped unjudged
     fires: list = field(default_factory=list)           # (condition_id, t): a detector gate opened
     unsupported: list = field(default_factory=list)     # condition ids this arm can't express
     uncertain: int = 0
@@ -86,6 +103,7 @@ class ArmResult:
     unintended_loss: dict = field(default_factory=dict)       # decode_gaps, handoff_dropped, late_frames
     budget_dropped: int = 0     # looks the request budget dropped (exact count)
     unverified: int = 0         # event candidates closed without a verified answer
+    empty_clips: int = 0        # judge calls skipped because the clip held no frame
     error: str = ""             # the case failed: recorded, scored as skipped
 
 
@@ -151,10 +169,12 @@ def _feed(case: VideoCase, fps: float, timelines) -> Feed:
 
 
 async def frames_of(feed: Feed):
-    """The feed's frames, decoded on a worker thread so other cases keep running."""
-    frames = iter(feed)
-    while (item := await asyncio.to_thread(next, frames, None)) is not None:
-        yield item
+    """The feed's frames, decoded on the case's own thread: other cases keep running, and
+    decoding never takes a thread from the shared pool (JPEG encoding, trace flushes)."""
+    frames, loop = iter(feed), asyncio.get_running_loop()
+    with ThreadPoolExecutor(1, thread_name_prefix=f"decode-{feed.case.case_id}") as pool:
+        while (item := await loop.run_in_executor(pool, next, frames, None)) is not None:
+            yield item
 
 
 class Baseline:
@@ -169,7 +189,7 @@ class Baseline:
         self.conds = {c.id: Condition(c.id, c.text, kind=c.kind) for c in case.conditions}
 
     def remember(self, t: float, image, keep_s: float) -> None:
-        if not self.history or t - self.history[-1][0] >= 0.5:      # 2 fps, as Percept's pre-roll
+        if not self.history or t - self.history[-1][0] >= HISTORY_SPACING_S:
             self.history.append((t, image))
         while self.history and self.history[0][0] < t - keep_s:
             self.history.popleft()
@@ -182,10 +202,13 @@ class Baseline:
         return [held[round(i * n / (CLIP_FRAMES - 1))] for i in range(CLIP_FRAMES)]
 
     async def ask(self, ids: list, frames: list) -> None:
-        if not ids or not frames or self.judge.tripped.is_set():
+        if not ids or self.judge.tripped.is_set():
             return
-        t0, t1 = frames[0][0], frames[-1][0]
         r = self.result
+        if not frames:              # nothing held in the window: counted, never silent
+            r.empty_clips += 1
+            return
+        t0, t1, times = frames[0][0], frames[-1][0], tuple(f[0] for f in frames)
         items = tuple(JudgeItem(self.conds[i]) for i in ids)
         request = JudgeRequest(f"{r.arm}-{r.case_id}-{r.requests}", r.case_id, 0, items,
                                tuple(f[1] for f in frames), (t0, t1),
@@ -196,17 +219,19 @@ class Baseline:
         r.cost_usd += sum(u.usage.cost_usd for u in result.usage)
         latency = sum(u.usage.latency_s for u in result.usage)
         for ob in result.observations:
-            r.looks.append(Look(ob.condition_id, t0, t1, ob.answer, ob.failure, "detect", ob.confidence))
+            r.looks.append(Look(ob.condition_id, t0, t1, ob.answer, ob.failure, "detect", ob.confidence, times))
             if ob.failure == "budget":
                 r.aborted = True
             if ob.answer == "yes" and not ob.failed and ob.confidence >= MIN_CONFIDENCE:
-                self.emit(ob.condition_id, t0, t1, t1 + latency, ob.confidence)
+                self.emit(ob.condition_id, t0, t1, t1 + latency, ob.confidence, times)
 
-    def emit(self, cid: str, t0: float, t1: float, t_decided: float, confidence: float) -> None:
+    def emit(self, cid: str, t0: float, t1: float, t_decided: float, confidence: float, frames: tuple) -> None:
+        """A decision, unless the condition's cooldown (counted from the end of the last emitted
+        decision's evidence) still runs."""
         last = self.last_emit.get(cid)
         if last is None or t1 - last >= self.cooldown:
             self.last_emit[cid] = t1
-            self.result.preds.append(Pred(cid, t0, t1, t_decided, confidence))
+            self.result.preds.append(Pred(cid, t0, t1, t_decided, confidence, frames))
 
 
 async def run_chunk(case: VideoCase, judge, timelines, period_s: float, *, cooldown_s: float = COOLDOWN_S,
@@ -245,7 +270,7 @@ async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, coo
             b.result.fires.append((cid, t))
         if not then_vlm:
             for cid in ids:
-                b.emit(cid, t, t, t, 1.0)
+                b.emit(cid, t, t, t, 1.0, (t,))
         elif ids:
             await b.ask(ids, b.clip(t - CLIP_S, t))
         if judge.tripped.is_set():
@@ -274,7 +299,8 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
     timelines.set(case.case_id, anchor, speed)
     peak_preroll, lag, late = 0, 0.0, 0
     budget = {} if max_requests_per_min is None else {"max_requests_per_min": max_requests_per_min}
-    monitor = Monitor(judge, conditions, store=MemoryStore(), trace=trace_path, **budget)
+    shown = FrameRecorder(judge, timelines)
+    monitor = Monitor(shown, conditions, store=MemoryStore(), trace=trace_path, **budget)
     async with monitor:
         decisions = monitor.watch(source, ack="auto", fps=None)
 
@@ -290,6 +316,7 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
                         break
                     behind = time.time() - wall                 # how far pacing fell behind real time
                     lag, late = max(lag, behind), late + (behind > MAX_LAG_S)
+                    shown.pushed(image, t)
                     source.push(image, t_wall=wall)
                     peak_preroll = max(peak_preroll, len(preroll))
                 else:
@@ -305,10 +332,10 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
         media = lambda w: timelines.media(case.case_id, w)    # noqa: E731
         async for delivery in decisions:
             d = delivery.decision
-            ev = [e.t_wall for e in d.evidence] or [d.t_observed]
+            ev = sorted(media(e.t_wall) for e in d.evidence) or [media(d.t_observed)]
             if d.type == "met":
-                result.preds.append(Pred(d.condition_id, media(min(ev)), media(max(ev)), media(d.t_decided),
-                                         d.confidence))
+                result.preds.append(Pred(d.condition_id, ev[0], ev[-1], media(d.t_decided), d.confidence,
+                                         tuple(ev)))
             elif d.type == "uncertain":
                 result.uncertain += 1
         await player
@@ -322,22 +349,70 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
     if stats is not None:
         stats["preroll_frames"] = max(stats.get("preroll_frames", 0), peak_preroll)
         stats["max_push_lag_s"] = round(max(stats.get("max_push_lag_s", 0.0), lag), 3)
-    _read_trace(result, trace_path, media)
+        stats["requests_timed_by_content"] = stats.get("requests_timed_by_content", 0) + shown.by_content
+    _read_trace(result, trace_path, media, shown.frames)
     return result
 
 
-def _read_trace(result: ArmResult, path: Path, media) -> None:
-    """Looks and budget drops from the Monitor's trace, for stage attribution."""
+class FrameRecorder:
+    """Passes every request to ``judge`` unchanged and remembers the case times of the images it
+    carried, by request id, so Percept's looks can be scored by the frames actually judged.
+    Its name, price, batching and attempts are the wrapped judge's.
+
+    A request's images are the pushed arrays themselves, or views of them (the source keeps a
+    frame that needs no downscaling as is; a crop is a view), so each is traced to the frame
+    pushed by identity. When that fails for any image, the request falls back to matching
+    images by content (``Timelines.frame_times``), which is ambiguous only for byte-identical
+    frames."""
+
+    def __init__(self, judge, timelines) -> None:
+        self._judge, self._timelines, self.frames = judge, timelines, {}
+        self.name, self.can_batch, self.price = judge.name, judge.can_batch, judge.price
+        self.max_attempts = base.max_attempts(judge)
+        self._pushed: dict[int, tuple] = {}         # id(image) -> (weak reference, case time)
+        self.exact = self.by_content = 0
+
+    def pushed(self, image, t: float) -> None:
+        if len(self._pushed) > 512:                 # forget frames nothing holds any more
+            self._pushed = {k: v for k, v in self._pushed.items() if v[0]() is not None}
+        self._pushed[id(image)] = (weakref.ref(image), t)
+
+    def _time(self, image) -> Optional[float]:
+        root = image
+        while isinstance(root.base, np.ndarray):
+            root = root.base
+        entry = self._pushed.get(id(root))
+        return entry[1] if entry is not None and entry[0]() is root else None
+
+    async def judge(self, request: JudgeRequest):
+        times = [self._time(image) for image in request.images]
+        if None in times:
+            self.by_content += 1
+            self.frames[request.request_id] = self._timelines.frame_times(request)
+        else:
+            self.exact += 1
+            self.frames[request.request_id] = tuple(times)
+        return await self._judge.judge(request)
+
+
+def _read_trace(result: ArmResult, path: Path, media, frames: Optional[dict] = None) -> None:
+    """Looks and dropped looks from the Monitor's trace, for stage attribution. ``frames`` maps a
+    request id to the case times of the images it carried (see ``FrameRecorder``)."""
+    frames = frames or {}
     for rec in ptrace.read(path):
         if rec["kind"] == "decide_input" and rec["input"]["type"] == "Observed":
             o = rec["input"]["observation"]
+            shown = frames.get(o["request_id"].split("/")[0], ())    # a non-batching judge splits ids
             result.looks.append(Look(o["condition_id"], media(o["evidence_t"][0]), media(o["evidence_t"][1]),
-                                     o["answer"], o["failure"], o["purpose"], o.get("confidence") or 0.0))
+                                     o["answer"], o["failure"], o["purpose"], o.get("confidence") or 0.0,
+                                     tuple(shown)))
         elif rec["kind"] == "drop" and rec.get("reason") in ("budget", "deadline"):
-            # One record per dropped look: the request budget refused it, or it expired waiting for
-            # the budget. Its evidence would have been the clip ending at the trigger.
-            t1 = media(rec["t_trigger"])
-            result.budget_drops.append((rec["condition_id"], t1 - CLIP_S, t1))
+            # One record per dropped look: the request budget refused it (``budget``), or it waited
+            # past its deadline for a request slot or evidence (``deadline``). Its evidence would
+            # have been the clip ending at the trigger (or, without one, when it was dropped).
+            t = rec.get("t_trigger")
+            t1 = media(rec["t_wall"] if t is None else t)
+            result.budget_drops.append((rec["condition_id"], t1 - CLIP_S, t1, rec["reason"]))
         elif rec["kind"] == "fate" and rec.get("event") == "unverified":
             result.unverified += 1
 

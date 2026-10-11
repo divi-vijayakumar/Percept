@@ -7,11 +7,11 @@
   "published_dataset": "MEVA only; Perception Test runs are diagnostics, never a published comparison",
   "rows": {
     "percept": "product defaults (6 attempts a minute per stream, 2 reserved per request) except rearm_s, standardised to 30 s (product default 120 s)",
-    "percept-matched": "max_requests_per_min 12 (the request rate of chunk5) and rearm_s 30 s; otherwise product defaults"
+    "percept-matched": "max_requests_per_min 24: 24 attempts a minute (≈12 requests at 2 attempts reserved each, chunk5's request rate); verification requests draw on the same budget. rearm_s 30 s; otherwise product defaults"
   },
   "dataset": "meva",
   "arms": "percept,percept-matched,chunk5,chunk10,chunk30,detector_debounce,detector_then_vlm",
-  "percept_budget": 12,
+  "percept_budget": 24,
   "percept_rearm": 30.0,
   "cooldown": 30.0,
   "negatives": 2,

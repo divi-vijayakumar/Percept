@@ -18,9 +18,9 @@ from benchmarks.arms import ArmResult, Look, Pred
 from benchmarks.cases import CondSpec, Occurrence, Segment, VideoCase
 
 
-def pred(t0, t1=None, decided=None, cid="a"):
+def pred(t0, t1=None, decided=None, cid="a", frames=()):
     t1 = t0 if t1 is None else t1
-    return Pred(cid, t0, t1, t1 if decided is None else decided, 0.9)
+    return Pred(cid, t0, t1, t1 if decided is None else decided, 0.9, tuple(frames))
 
 
 def watched(arm, case_id, seconds, **kw):
@@ -54,8 +54,37 @@ def test_matching_tolerance_and_evidence_intervals():
     occ = [Occurrence("a", 10, 12)]
     assert len(metrics.match([pred(13.9)], occ, tol=2.0)["matched"]) == 1
     assert len(metrics.match([pred(14.1)], occ, tol=2.0)["false"]) == 1
-    # a long chunk whose evidence covers the onset matches even though it ends much later
-    assert len(metrics.match([pred(0, 30)], occ, tol=0.0)["matched"]) == 1
+    # a long chunk matches when one of its judged frames lies in the event, though it ends much later
+    assert len(metrics.match([pred(0, 30, frames=(0, 11, 20, 30))], occ, tol=0.0)["matched"]) == 1
+
+
+def test_matching_needs_a_judged_frame_in_the_event_not_an_overlapping_interval():
+    occ = [Occurrence("a", 10, 12)]
+    sparse = pred(0, 30, frames=(0, 9.5, 20, 30))      # the interval spans the event; no frame shows it
+    m = metrics.match([sparse], occ, tol=0.0)
+    assert not m["matched"] and m["false"] == [sparse]
+    assert len(metrics.match([sparse], occ, tol=0.5)["matched"]) == 1      # 9.5 is within the tolerance
+    # looks follow the same rule: a sparse look that never showed the event is no look at it
+    look = Look("a", 0, 30, "yes", None, "detect", 0.9, (0, 9.5, 20, 30))
+    assert metrics.attribute(occ[0], [look], [], tol=0.0) == "trigger_never_fired"
+    assert metrics.survived(occ[0], [look], [], [], 0.0, judged=True, verifies=False) == 0
+    shown = Look("a", 0, 30, "yes", None, "detect", 0.9, (0, 11, 20, 30))
+    assert metrics.attribute(occ[0], [shown], [], tol=0.0) == "decide_suppressed"
+
+
+def test_onset_recall_needs_a_frame_at_the_onset():
+    occs = [Occurrence("a", 10, 40), Occurrence("a", 100, 130)]
+    early, late = pred(9, 11, frames=(9, 11)), pred(120, 122, frames=(120, 122))
+    m = metrics.match([early, late], occs, tol=2.0)
+    assert set(m["matched"]) == {0, 1} and m["onset"] == {0}
+    case = VideoCase("x", "t", (Segment("u.mp4", 0, 200),), (CondSpec("a", "a begins"),), tuple(occs))
+    s = metrics.score([watched("arm", "x", 200, preds=[early, late])], {"x": case}, tol=2.0)
+    assert s["recall"] == 1.0 and s["onset_recall"] == 0.5 and s["onset_matched"] == 1
+
+
+def test_a_low_confidence_yes_is_not_yes():
+    occ = Occurrence("a", 10, 12)
+    assert metrics.attribute(occ, [Look("a", 9, 11, "yes", None, "detect", 0.5)], [], 1.0) == "judge_said_no"
 
 
 def test_no_credit_for_deciding_before_the_onset():
@@ -106,8 +135,8 @@ def test_unsupported_conditions_are_not_scored():
     ([Look("a", 9, 11, "unknown", "budget")], [], "budget_dropped"),
     ([Look("a", 9, 11, "unknown", "timeout")], [], "judge_failed"),
     ([Look("a", 9, 11, "no", None), Look("a", 10, 12, "unknown", "timeout")], [], "judge_said_no"),
-    ([Look("a", 9, 11, "no", None), Look("a", 9, 11, "yes", None, "detect")], [], "decide_suppressed"),
-    ([Look("a", 9, 11, "yes", None), Look("a", 9, 11, "no", None, "verify")], [], "verify_rejected"),
+    ([Look("a", 9, 11, "no", None), Look("a", 9, 11, "yes", None, "detect", 0.9)], [], "decide_suppressed"),
+    ([Look("a", 9, 11, "yes", None, "detect", 0.9), Look("a", 9, 11, "no", None, "verify")], [], "verify_rejected"),
     ([Look("a", 30, 34, "yes", None)], [], "trigger_never_fired"),     # a look elsewhere doesn't count
 ])
 def test_stage_attribution(looks, drops, stage):
@@ -148,7 +177,7 @@ def test_funnel_is_monotone_and_ends_at_the_matches():
 
 def test_cooldown_absorbed_and_the_recall_ceiling():
     occs = [Occurrence("a", 10, 12), Occurrence("a", 20, 22), Occurrence("a", 60, 62)]
-    looks = [Look("a", 19, 21, "yes", None)]
+    looks = [Look("a", 19, 21, "yes", None, "detect", 0.9)]
     assert metrics.attribute(occs[1], looks, [], 1.0, reports=(10.5,), cooldown=30.0) == "cooldown_absorbed"
     assert metrics.attribute(occs[1], looks, [], 1.0, reports=(10.5,), cooldown=5.0) == "decide_suppressed"
     assert metrics.reachable(occs, 30.0, 1.0) == 2 and metrics.reachable(occs, 0.0, 1.0) == 3
@@ -284,7 +313,9 @@ def test_dry_run_end_to_end(tmp_path):
     assert all(len(set(d.values())) == 1 for d in manifest["frame_digests"].values())
     assert manifest["cases"][0]["media"] and manifest["percept"]["package_sha256"]
     config = manifest["monitor_config"]
-    assert config["percept"]["max_requests_per_min"] == 6 and config["percept-matched"]["max_requests_per_min"] == 12
+    assert config["percept"]["max_requests_per_min"] == 6 and config["percept-matched"]["max_requests_per_min"] == 24
+    assert config["percept"]["concurrency"]["max_concurrent_requests_per_case"] == 4
+    assert "max_concurrent_requests" not in config["percept"]["changed_from_product_defaults"]
     assert config["percept"]["attempts_reserved_per_request"] == 2 and config["percept"]["condition"]["rearm_s"] == 30
     assert manifest["harness"]["clip_frames"] == arms.CLIP_FRAMES and not manifest["publishable"]
     table = json.loads((out / "metrics.json").read_text())
@@ -293,7 +324,8 @@ def test_dry_run_end_to_end(tmp_path):
     assert p["unintended_loss_total"] == 0 and p["unintended_loss"]["handoff_dropped"] == 0
     assert set(p["intentional_sampling"]) == {"harness_fps", "monitor_fps_cap"}
     for key in ("budget_drops", "trigger_never_fired", "verify_rejected", "unverified", "uncertain", "watched_s",
-                "cases_skipped", "cost_per_hour", "latency_p95_s", "false_per_hour"):
+                "cases_skipped", "cost_per_hour", "latency_p95_s", "false_per_hour", "onset_recall", "ci95",
+                "failed_look_rate", "unknown_rate", "drops_budget", "drops_deadline", "empty_clips"):
         assert key in p
     label = "percept (product defaults; rearm standardised to 30 s)"
     assert p["label"] == label and config["percept"]["label"] == label
@@ -301,11 +333,17 @@ def test_dry_run_end_to_end(tmp_path):
     text = (out / "report.md").read_text()
     for heading in ("Dry run", "Diagnostic, not publishable", "Publishable: no", "## Every arm", "recall ceiling",
                     "## Losses and verification", "## Misses by stage", "Actual spend $", f"| {label} |",
-                    "## Footprint", f"## Where {label} loses", "## Where percept-matched (max_requests_per_min 12; "
-                    "rearm standardised to 30 s) loses",
-                    "Identical evidence: yes", "only 1.0x results are publishable", "2 reserved per request"):
+                    "## Footprint", f"## Where {label} loses", "## Where percept-matched (max_requests_per_min 24; "
+                    "rearm standardised to 30 s) loses", "## Judge failures", "onset recall", "## Method notes",
+                    "No clear difference", "Same decoded frames: yes", "the frames each arm judged differ",
+                    "only 1.0x results are publishable", "2 reserved per request"):
         assert heading in text
     assert (out / "traces" / "percept" / "synthetic-0.jsonl").exists()
+    assert "Identical evidence" not in text
+    # Percept's decisions and looks carry the frames the judge was shown
+    _, results, _ = run.read_raw(out / "raw" / "percept.jsonl")
+    assert all(p.frames for r in results for p in r.preds)
+    assert all(lk.frames for r in results for lk in r.looks)
 
 
 def _meva_run(**arm):
@@ -378,3 +416,127 @@ def test_dry_run_reports_an_abort(tmp_path):
     assert table["chunk10"]["cases"] == 0 and table["chunk10"]["source_hours"] == 0
     assert table["chunk10"]["cases_skipped"] == 2
     assert sum(s["cost_usd"] for s in table.values()) == pytest.approx(manifest["spent_usd"])   # partial spend kept
+
+
+# --------------------------------------------------------------------------- scoring parity
+
+
+def test_judge_failures_are_counted_by_type_and_gate_publication():
+    case = VideoCase("x", "t", (Segment("u.mp4", 0, 60),), (CondSpec("a", "a"),), ())
+    looks = [Look("a", 0, 1, "no", None)] * 16 + [Look("a", 0, 1, "unknown", None)] * 2 \
+        + [Look("a", 0, 1, "unknown", "timeout"), Look("a", 0, 1, "unknown", "malformed")] \
+        + [Look("a", 0, 1, "unknown", "budget")] * 5
+    s = metrics.score([watched("arm", "x", 60, looks=looks)], {"x": case}, tol=1.0)
+    assert s["looks_total"] == 25 and s["looks_refused_by_spend_cap"] == 5
+    assert s["looks_failed_by_type"] == {"malformed": 1, "timeout": 1}
+    assert s["failed_look_rate"] == pytest.approx(2 / 20)          # the spend cap's refusals left out
+    assert s["unknown_answers"] == 2 and s["unknown_rate"] == pytest.approx(2 / 18)
+    manifest, table = _meva_run(failed_look_rate=0.1)
+    why = run.not_publishable(manifest, table)
+    assert len(why) == 1 and "looks failed" in why[0]
+    assert run.not_publishable(*_meva_run(failed_look_rate=0.05)) == []
+
+
+def test_percept_drops_are_split_by_reason_and_a_null_trigger_time_falls_back(tmp_path):
+    trace = tmp_path / "t.jsonl"
+    recs = [{"v": 1, "t_wall": 107.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "deadline",
+             "t_trigger": None},
+            {"v": 1, "t_wall": 120.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "budget",
+             "t_trigger": 115.0},
+            {"v": 1, "t_wall": 130.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "ended",
+             "t_trigger": 129.0}]
+    trace.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    r = watched("percept", "x", 60)
+    arms._read_trace(r, trace, lambda w: w - 100.0)
+    assert r.budget_drops == [("a", 7.0 - arms.CLIP_S, 7.0, "deadline"), ("a", 15.0 - arms.CLIP_S, 15.0, "budget")]
+    case = VideoCase("x", "t", (Segment("u.mp4", 0, 60),), (CondSpec("a", "a"),), (Occurrence("a", 6, 8),))
+    s = metrics.score([r], {"x": case}, tol=1.0)
+    assert s["drops_budget"] == 1 and s["drops_deadline"] == 1
+    assert s["misses_by_stage"]["budget_dropped"] == 1
+
+
+def test_an_empty_baseline_clip_is_counted(clips):
+    guard, timelines = oracle_guard(clips)
+    b = arms.Baseline("chunk5", clips[0], guard, timelines)
+    asyncio.run(b.ask(list(b.conds), []))
+    assert b.result.empty_clips == 1 and b.result.requests == 0
+
+
+def _two_arms():
+    """Percept on conditions a and b; a detector arm that can express only a."""
+    conds = (CondSpec("a", "a"), CondSpec("b", "b"))
+    cases = {k: VideoCase(k, "t", (Segment("u.mp4", 0, 600),), conds,
+                          (Occurrence("a", 100, 105), Occurrence("b", 300, 305))) for k in ("x", "y")}
+    p = [watched("percept", k, 600, preds=[pred(101, frames=(101,))], cost_usd=0.01) for k in cases]
+    d = [watched("detector_debounce", k, 600, preds=[pred(101, frames=(101,)), pred(400, frames=(400,))],
+                 unsupported=["b"]) for k in cases]
+    return cases, p, d
+
+
+def test_comparisons_use_the_case_conditions_both_arms_score():
+    cases, p, d = _two_arms()
+    args = run.parser().parse_args(["--dataset", "synthetic"])
+    table = run.build_table({"percept": p, "detector_debounce": d}, cases, args, {})
+    assert table["percept"]["recall"] == 0.5            # misses b, which the detector isn't scored on
+    c = table["percept"]["vs"]["detector_debounce"]
+    assert c["subset"] and c["pairs_common"] == 2 and c["pairs_percept"] == 4
+    assert c["percept"]["recall"] == 1.0 and c["baseline"]["recall"] == 1.0     # like with like
+    assert not c["cost_comparable"]
+    loses, unclear = run._comparison_lines("percept", table)
+    assert not any("cost_per_true_event" in line for line in loses + unclear)   # never "$0 beats Percept"
+    assert any("cannot express 2 case-conditions" in line for line in unclear)
+
+
+def test_a_loss_needs_non_overlapping_intervals():
+    cases, p, d = _two_arms()
+    args = run.parser().parse_args(["--dataset", "synthetic"])
+    table = run.build_table({"percept": p, "detector_debounce": d}, cases, args, {})
+    loses, unclear = run._comparison_lines("percept", table)
+    assert loses == []                                            # the detector's false events: Percept wins
+    assert not any("false_per_hour" in line for line in unclear)  # a clear win is not "no clear difference"
+    assert any("on recall" in line for line in unclear)           # equal recall: no clear difference
+    table = run.build_table({"percept": d, "detector_debounce": p}, cases, args, {})     # roles swapped
+    loses, _ = run._comparison_lines("percept", table)
+    assert any("on false_per_hour" in line for line in loses) and any("on precision" in line for line in loses)
+
+
+def test_no_common_case_conditions_is_not_comparable():
+    cases, p, d = _two_arms()
+    d = [ArmResult("detector_debounce", r.case_id, error="boom") for r in d]
+    args = run.parser().parse_args(["--dataset", "synthetic"])
+    table = run.build_table({"percept": p, "detector_debounce": d}, cases, args, {})
+    assert not table["percept"]["vs"]["detector_debounce"]["comparable"]
+    assert any("not comparable" in line for line in run._comparison_lines("percept", table)[1])
+
+
+def test_bootstrap_intervals_are_deterministic_and_bracket_the_value():
+    conds = (CondSpec("a", "a"),)
+    cases = {f"c{i}": VideoCase(f"c{i}", "t", (Segment("u.mp4", 0, 600),), conds, (Occurrence("a", 100, 105),))
+             for i in range(12)}
+    res = [watched("arm", k, 600, preds=[pred(101, frames=(101,))] if i % 3 else [], cost_usd=0.01)
+           for i, k in enumerate(cases)]
+    one, two = (metrics.score(res, cases, 1.0, seed=7) for _ in range(2))
+    assert one["ci95"] == two["ci95"]
+    lo, hi = one["ci95"]["recall"]
+    assert lo < one["recall"] < hi and 0.0 <= lo and hi <= 1.0
+
+
+def test_a_missing_digest_is_not_the_same_frames():
+    digests = {"x": {"a": "5:abc", "b": "5:abc"}, "y": {"a": "5:def"}}
+    assert run.same_frames(digests, ["x"], ["a", "b"])
+    assert not run.same_frames(digests, ["x", "y"], ["a", "b"])
+
+
+def test_rescore_reproduces_the_run_offline(tmp_path):
+    out = tmp_path / "run"
+    assert run.main(["--dataset", "synthetic", "--limit", "1", "--arms", "chunk5,chunk30,detector_debounce",
+                     "--out", str(out)]) == 0
+    metrics_before, report_before = (out / "metrics.json").read_text(), (out / "report.md").read_text()
+    assert {p.name for p in (out / "raw").iterdir()} == {"chunk5.jsonl", "chunk30.jsonl", "detector_debounce.jsonl"}
+    assert run.main(["--rescore", str(out)]) == 0
+    assert (out / "metrics.json").read_text() == metrics_before
+    report_after = (out / "report.md").read_text()
+    rescored = next(ln for ln in report_after.splitlines() if ln.startswith("> Rescored offline"))
+    assert report_after.replace(rescored + "\n\n", "") == report_before
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["rescored_utc"] and "rescore_git_sha" in manifest
