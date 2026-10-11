@@ -25,8 +25,18 @@ yes and a matched report of the condition came less than the cooldown earlier
 (``cooldown_absorbed``); a look said yes but a verification of it said no (``verify_rejected``);
 a look said yes but no decision matched (``decide_suppressed``); looks answered, none yes
 (``judge_said_no``); only failed looks (``judge_failed``); no answered look and the budget
-dropped one (``budget_dropped``: approximate for Percept, whose trace counts drops per minute);
-nothing looked (``trigger_never_fired``).
+dropped one, or one expired waiting for it (``budget_dropped``); nothing looked
+(``trigger_never_fired``).
+
+Funnel. Every annotated occurrence is followed through the stages a pipeline can lose it at,
+each counted only if every earlier stage passed: a candidate was generated (a look, a dropped
+look or a detector gate overlapped the occurrence), the budget admitted a look, the judge
+evaluated one (answered, not failed), a detect answer was positive (``yes`` at ``MIN_CONFIDENCE``
+or more), it was verified (a verification said ``yes``; only for arms that verify, and only
+events), and a
+decision delivered it (matched). A stage an arm doesn't have passes through and is reported
+as not applicable. A look's evidence interval only has to overlap the occurrence, so a sparse
+look (``chunk30``'s 4 frames span 30 s) can count as evaluated without showing it.
 
 Frames. ``intentional_sampling`` counts frames the configured sampling skipped (the harness's
 ``--fps`` sampling of the source, the Monitor's processing fps cap): expected, not a defect.
@@ -41,6 +51,8 @@ import math
 from collections import Counter
 
 PRECOG_S = 0.5
+MIN_CONFIDENCE = 0.6        # a positive judgment, as Percept and the baselines apply it
+FUNNEL = ("annotated", "candidate", "admitted", "evaluated", "positive", "verified", "delivered")
 STAGES = ("trigger_never_fired", "budget_dropped", "judge_failed", "judge_said_no", "cooldown_absorbed",
           "verify_rejected", "decide_suppressed")
 
@@ -84,9 +96,32 @@ def attribute(occ, looks: list, drops: list, tol: float, *, reports: tuple = (),
         return "judge_said_no"
     if any(lk.failed and lk.failed != "budget" for lk in seen):
         return "judge_failed"
-    if seen or any(_overlaps(t0, t1, w0, w1) for _, t0, t1 in drops):
+    if seen or any(_overlaps(d[1], d[2], w0, w1) for d in drops):
         return "budget_dropped"
     return "trigger_never_fired"
+
+
+def survived(occ, looks: list, drops: list, fires: list, tol: float, *, judged: bool, verifies: bool) -> int:
+    """How many funnel stages after ``annotated`` the occurrence passed, up to ``verified``
+    (0-5); a stage the arm doesn't have passes through."""
+    w0, w1 = occ.start - tol, occ.end + tol
+    seen = [lk for lk in looks if _overlaps(lk.t0, lk.t1, w0, w1)]
+    fired = any(w0 <= t <= w1 for _, t in fires)
+    admitted = [lk for lk in seen if lk.failed != "budget"]     # a refused look never reached the judge
+    answered = [lk for lk in seen if not lk.failed]
+    positive = [lk for lk in answered if lk.purpose == "detect" and lk.answer == "yes"
+                and lk.confidence >= MIN_CONFIDENCE]
+    stages = (bool(seen) or fired or any(_overlaps(d[1], d[2], w0, w1) for d in drops),
+              bool(admitted) if judged else True,
+              bool(answered) if judged else True,
+              bool(positive) if judged else fired,
+              any(lk.purpose == "verify" and lk.answer == "yes" for lk in answered) if verifies else True)
+    n = 0
+    for ok in stages:
+        if not ok:
+            break
+        n += 1
+    return n
 
 
 def reachable(occs: list, cooldown: float, tol: float) -> int:
@@ -115,6 +150,9 @@ def score(results: list, cases: dict, tol: float) -> dict:
     seconds = cost = 0.0
     unsupported, skipped, conditions, watched = [], [], 0, []
     sampling, loss = Counter(), Counter()
+    funnel, outside = [0] * len(FUNNEL), 0
+    judged = any(r.looks for r in results)
+    verifies = any(lk.purpose == "verify" for r in results for lk in r.looks)
     for r in results:
         cost += r.cost_usd
         sampling.update(r.intentional_sampling)
@@ -146,6 +184,18 @@ def score(results: list, cases: dict, tol: float) -> dict:
             reports = tuple(p.t1 for p in m["matched"].values())
             stages.update(attribute(o, looks, drops, tol, reports=reports, cooldown=r.cooldown_s)
                           for o in m["missed"])
+            fires = [f for f in r.fires if f[0] == cond.id]
+            hit = set(m["matched"])
+            for i, o in enumerate(occs):
+                n = survived(o, looks, drops, fires, tol, judged=judged,
+                             verifies=verifies and cond.kind == "event")     # Percept verifies events only
+                for k in range(n + 1):
+                    funnel[k] += 1
+                if i in hit:
+                    if n == len(FUNNEL) - 2:
+                        funnel[-1] += 1
+                    else:
+                        outside += 1        # matched although an earlier stage shows no pass
     hours = seconds / 3600.0
     return {
         "cases": len(watched), "cases_skipped": len(skipped), "conditions": conditions,
@@ -170,6 +220,9 @@ def score(results: list, cases: dict, tol: float) -> dict:
         "unintended_loss": dict(sorted(loss.items())),
         "unintended_loss_total": sum(loss.values()),
         "misses_by_stage": {s: stages.get(s, 0) for s in STAGES},
+        "funnel": dict(zip(FUNNEL, funnel)), "funnel_matched_outside": outside,
+        "funnel_not_applicable": [s for s, on in (("admitted", judged), ("evaluated", judged),
+                                                  ("verified", verifies)) if not on],
         "unsupported": unsupported, "skipped": skipped,
         "aborted": any(r.aborted for r in results),
     }

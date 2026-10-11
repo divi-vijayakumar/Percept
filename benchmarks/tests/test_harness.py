@@ -114,6 +114,38 @@ def test_stage_attribution(looks, drops, stage):
     assert metrics.attribute(Occurrence("a", 10, 12), looks, drops, tol=1.0) == stage
 
 
+FUNNEL_CASES = [  # (looks, drops, fires, judged, verifies, stages passed after "annotated")
+    ([], [], [], True, False, 0),
+    ([], [("a", 8, 12)], [], True, False, 1),                                          # dropped by the budget
+    ([Look("a", 9, 11, "unknown", "budget")], [], [], True, False, 1),                # refused by the cap
+    ([Look("a", 9, 11, "unknown", "timeout")], [], [], True, False, 2),
+    ([Look("a", 9, 11, "no", None)], [], [], True, False, 3),
+    ([Look("a", 9, 11, "yes", None, "detect", 0.5)], [], [], True, False, 3),         # below the threshold
+    ([Look("a", 9, 11, "yes", None, "detect", 0.9)], [], [], True, False, 5),         # no verify stage
+    ([Look("a", 9, 11, "yes", None, "detect", 0.9)], [], [], True, True, 4),          # never verified
+    ([Look("a", 9, 11, "yes", None, "detect", 0.9), Look("a", 9, 11, "yes", None, "verify", 0.9)], [], [],
+     True, True, 5),
+    ([], [], [("a", 10.0)], False, False, 5),                                         # detector-only arm
+    ([], [], [("a", 40.0)], False, False, 0),
+]
+
+
+@pytest.mark.parametrize("looks,drops,fires,judged,verifies,n", FUNNEL_CASES)
+def test_funnel_stages(looks, drops, fires, judged, verifies, n):
+    assert metrics.survived(Occurrence("a", 10, 11), looks, drops, fires, 1.0, judged=judged, verifies=verifies) == n
+
+
+def test_funnel_is_monotone_and_ends_at_the_matches():
+    case = VideoCase("x", "t", (Segment("u.mp4", 0, 60),), (CondSpec("a", "a"),),
+                     (Occurrence("a", 10, 11), Occurrence("a", 30, 31), Occurrence("a", 50, 51)))
+    r = watched("chunk5", "x", 60.0, preds=[pred(9, 11)],
+                looks=[Look("a", 9, 11, "yes", None, "detect", 0.9), Look("a", 29, 31, "no", None)])
+    s = metrics.score([r], {"x": case}, 1.0)
+    f = [s["funnel"][k] for k in metrics.FUNNEL]
+    assert f == [3, 2, 2, 2, 1, 1, 1] and s["funnel_matched_outside"] == 0
+    assert s["funnel_not_applicable"] == ["verified"]
+
+
 def test_cooldown_absorbed_and_the_recall_ceiling():
     occs = [Occurrence("a", 10, 12), Occurrence("a", 20, 22), Occurrence("a", 60, 62)]
     looks = [Look("a", 19, 21, "yes", None)]

@@ -212,8 +212,24 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               "|" + "---|" * (len(metrics.STAGES) + 1)]
     for arm, s in table.items():
         lines.append(f"| {s['label']} | " + " | ".join(str(s["misses_by_stage"][k]) for k in metrics.STAGES) + " |")
-    lines += ["", "Percept's `budget_dropped` is approximate: its trace counts budget drops per minute, not per "
-              "look.", "", "## Footprint", "",
+    lines += ["", "`budget_dropped` counts misses whose only looks the request budget refused or that expired "
+              "waiting for it (Percept traces each dropped look).", "", "## Event survival funnel", "",
+              "Each annotated event, followed until the first stage it did not pass. "
+              "Counts (share of annotated); – marks a stage the arm does not have.", "",
+              "| arm | " + " | ".join(metrics.FUNNEL) + " | matched outside the funnel |",
+              "|" + "---|" * (len(metrics.FUNNEL) + 2)]
+    for arm, s in table.items():
+        fn, total = s["funnel"], s["funnel"]["annotated"] or 1
+        cells = ["–" if k in s["funnel_not_applicable"] else f"{fn[k]} ({100 * fn[k] / total:.1f}%)"
+                 for k in metrics.FUNNEL]
+        lines.append(f"| {s['label']} | " + " | ".join(cells) + f" | {s['funnel_matched_outside']} |")
+    lines += ["", "candidate: a look, a dropped look or a detector gate overlapped the event (± tolerance). "
+              "admitted: a look was sent. evaluated: the judge answered. positive: a detect `yes` at "
+              f"confidence {metrics.MIN_CONFIDENCE} or more. verified: a verification said `yes`. delivered: a "
+              "decision matched the event. A look only has to overlap the event, so sparse looks (chunk30's 4 "
+              "frames span 30 s) can count as evaluated without showing it. Matched outside the funnel: a "
+              "decision matched although no earlier stage overlapped (e.g. a decision whose evidence reached "
+              "the event only within the matching tolerance).", "", "## Footprint", "",
               "| arm | CPU s per source-hour | process peak RSS MB | pre-roll frames | intentional sampling | "
               "unintended loss | real-time lag s |", "|---|---|---|---|---|---|---|"]
     detail = lambda d: ", ".join(f"{k} {v}" for k, v in d.items()) or "0"    # noqa: E731

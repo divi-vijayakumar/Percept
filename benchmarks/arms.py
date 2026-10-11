@@ -39,7 +39,7 @@ from percept.monitor import _max_output_tokens   # the Monitor's reply sizing, h
 from benchmarks.cases import Feed, VideoCase
 
 CLIP_FRAMES, CLIP_S = 4, 4.0        # the evidence format Percept uses for events, shared by every arm
-MIN_CONFIDENCE = 0.6                # Percept's default, applied by the baselines too
+from benchmarks.metrics import MIN_CONFIDENCE   # noqa: E402  Percept's default, applied by the baselines too
 COOLDOWN_S = 30.0
 MAX_LAG_S = 1.0                     # a pushed frame later than this behind real time counts as lost
 
@@ -61,6 +61,7 @@ class Look:
     answer: str
     failed: Optional[str]   # the failure, if the look got no answer
     purpose: str = "detect"
+    confidence: float = 0.0
 
 
 @dataclass
@@ -70,6 +71,7 @@ class ArmResult:
     preds: list = field(default_factory=list)
     looks: list = field(default_factory=list)
     budget_drops: list = field(default_factory=list)    # (condition_id, t0, t1): a look the budget dropped
+    fires: list = field(default_factory=list)           # (condition_id, t): a detector gate opened
     unsupported: list = field(default_factory=list)     # condition ids this arm can't express
     uncertain: int = 0
     digest: str = ""
@@ -194,7 +196,7 @@ class Baseline:
         r.cost_usd += sum(u.usage.cost_usd for u in result.usage)
         latency = sum(u.usage.latency_s for u in result.usage)
         for ob in result.observations:
-            r.looks.append(Look(ob.condition_id, t0, t1, ob.answer, ob.failure))
+            r.looks.append(Look(ob.condition_id, t0, t1, ob.answer, ob.failure, "detect", ob.confidence))
             if ob.failure == "budget":
                 r.aborted = True
             if ob.answer == "yes" and not ob.failed and ob.confidence >= MIN_CONFIDENCE:
@@ -240,6 +242,7 @@ async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, coo
         ids = [cid for cid, g in gates.items() if g in fired and t >= gate_until.get(cid, -1.0)]
         for cid in ids:
             gate_until[cid] = t + gate_s
+            b.result.fires.append((cid, t))
         if not then_vlm:
             for cid in ids:
                 b.emit(cid, t, t, t, 1.0)
@@ -329,11 +332,12 @@ def _read_trace(result: ArmResult, path: Path, media) -> None:
         if rec["kind"] == "decide_input" and rec["input"]["type"] == "Observed":
             o = rec["input"]["observation"]
             result.looks.append(Look(o["condition_id"], media(o["evidence_t"][0]), media(o["evidence_t"][1]),
-                                     o["answer"], o["failure"], o["purpose"]))
-        elif rec["kind"] == "fate" and rec.get("event") == "runtime" and rec["fate"] == "dropped_budget":
-            # Approximate: the trace counts drops per minute, so the drop is somewhere in that minute.
-            t0 = media(rec["bucket_wall"])
-            result.budget_drops.append((rec["condition_id"], t0, t0 + 60.0 * (media(1.0) - media(0.0))))
+                                     o["answer"], o["failure"], o["purpose"], o.get("confidence") or 0.0))
+        elif rec["kind"] == "drop" and rec.get("reason") in ("budget", "deadline"):
+            # One record per dropped look: the request budget refused it, or it expired waiting for
+            # the budget. Its evidence would have been the clip ending at the trigger.
+            t1 = media(rec["t_trigger"])
+            result.budget_drops.append((rec["condition_id"], t1 - CLIP_S, t1))
         elif rec["kind"] == "fate" and rec.get("event") == "unverified":
             result.unverified += 1
 
