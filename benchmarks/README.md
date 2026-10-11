@@ -189,5 +189,3 @@ report attributes such misses to `trigger_never_fired`. Conditions like these ne
 (`every`), a tighter zone or a lower `on_change` threshold; see `docs/concepts.md`.
 
 Numbers come only from a full run's report, together with its coverage and configuration.
-
-E2 (per-arm judges and cascades) is not implemented.

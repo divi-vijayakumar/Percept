@@ -354,7 +354,7 @@ def test_protocols_accept_structural_implementations():
     assert RequestUsage("r", "fake", Usage()).failure is None
 
 
-# --- D5 contract additions
+# --- the cause field and the unverified/dropped_capacity accounting
 
 
 def test_decision_cause_round_trips_and_defaults_to_none():

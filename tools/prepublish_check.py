@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -124,6 +125,28 @@ def build_wheel(py: str, tmp: Path) -> Path | None:
     return build(py, src, tmp / "dist")
 
 
+def build_sdist(tmp: Path) -> Path | None:
+    """The source distribution the release uploads, built from the package's tracked files only
+    (an untracked local file must not reach it)."""
+    uv = shutil.which("uv")
+    if uv is None:
+        print("prepublish: building the sdist needs uv on PATH")
+        return None
+    src = tmp / "sdist-src"
+    for name in tracked_files():
+        if name.startswith("packages/percept-vision/") and (ROOT / name).is_file():
+            dest = src / name[len("packages/percept-vision/"):]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes((ROOT / name).read_bytes())
+    done = subprocess.run([uv, "build", "--sdist", "--out-dir", str(tmp / "sdist"), str(src)],
+                          capture_output=True, text=True)
+    found = sorted((tmp / "sdist").glob("percept_vision-*.tar.gz"))
+    if done.returncode != 0 or len(found) != 1:
+        print(done.stdout[-2000:], done.stderr[-2000:], file=sys.stderr)
+        return None
+    return found[0]
+
+
 def gitleaks(directory: Path, label: str) -> list[str]:
     binary = shutil.which("gitleaks")
     if binary is None:
@@ -182,6 +205,20 @@ def main(argv: list[str] | None = None) -> int:
                 zf.extractall(unpacked)
             findings += gitleaks(unpacked, wheel.name)
             print(f"prepublish: scanned {len(names)} files in {wheel.name}")
+
+            sdist = build_sdist(tmp)
+            if sdist is None:
+                print("prepublish: FAILED to build the sdist")
+                return 2
+            with tarfile.open(sdist) as tf:
+                members = [m for m in tf.getmembers() if m.isfile()]
+                for m in members:
+                    # scanned under its repository path, so the allow-list applies as in the tree
+                    repo_path = "packages/percept-vision/" + m.name.split("/", 1)[1]
+                    data = tf.extractfile(m).read()
+                    for finding in scan_file(repo_path, data, terms):
+                        findings.append(f"{sdist.name}!{finding}")
+            print(f"prepublish: scanned {len(members)} files in {sdist.name}")
 
     for finding in findings:
         print(f"  {finding}")
