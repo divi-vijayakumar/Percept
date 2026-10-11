@@ -24,7 +24,7 @@ from percept.contracts import (
     Trigger,
     Usage,
 )
-from percept import decide  # internal for now: the runtime drives it; not exported
+from percept import decide  # noqa: F401  internal for now: the runtime drives it; not exported
 from percept import judges
 from percept.delivery import MemoryStore, SqliteStore
 from percept.monitor import Monitor

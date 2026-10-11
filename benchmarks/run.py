@@ -368,7 +368,7 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               f"{m['cooldown_s']} s. Git `{m['git_sha'][:10]}`{' (dirty)' if m['git_dirty'] else ''}, "
               f"percept {m['percept']['version']}. Actual spend ${m['spent_usd']:.4f}, from the usage the judge "
               f"reported ({m['requests']} requests).", ""]
-    for arm, c in m["monitor_config"].items():
+    for _arm, c in m["monitor_config"].items():
         changed = c["changed_from_product_defaults"]
         conc = c.get("concurrency", {})
         lines.append(f"- {c['label']}: {c['max_requests_per_min']} attempts a minute per stream, "
@@ -385,7 +385,7 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
             "latency p50/p95 s", "missed", "cost", "$/monitored h", "$/true event", "requests")
     lines += ["", "## Every arm", "", "Values with a 95% case-bootstrap interval in brackets.", "",
               "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
-    for arm, s in table.items():
+    for _arm, s in table.items():
         ci = s["ci95"]
         cover = f"{s['cases']} cases, {s['source_hours']:.3f} h, {s['conditions']} conds" \
             + (f", {s['cases_skipped']} skipped" if s["cases_skipped"] else "") + (" (aborted)" if s["aborted"] else "")
@@ -405,7 +405,7 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               "## Judge failures", "",
               "| arm | looks | failed (rate) | failures by type | refused by the spend cap | unknown answers (rate) "
               "| empty clips |", "|---|---|---|---|---|---|---|"]
-    for arm, s in table.items():
+    for _arm, s in table.items():
         failed = sum(s["looks_failed_by_type"].values())
         by_type = ", ".join(f"{k} {v}" for k, v in s["looks_failed_by_type"].items()) or "–"
         lines.append(f"| {s['label']} | {s['looks_total']} | {failed} ({_fmt(s['failed_look_rate'], True)}) | "
@@ -417,7 +417,7 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               "because no frame was held in the window.", "", "## Losses and verification", "",
               "| arm | watched s | dropped looks | of which: budget / deadline | trigger never fired | "
               "verify rejected | unverified | uncertain |", "|---|---|---|---|---|---|---|---|"]
-    for arm, s in table.items():
+    for _arm, s in table.items():
         lines.append(f"| {s['label']} | {s['watched_s']:g} | {s['budget_drops']} | {s['drops_budget']} / "
                      f"{s['drops_deadline']} | {s['trigger_never_fired']} | {s['verify_rejected']} | "
                      f"{s['unverified']} | {s['uncertain']} |")
@@ -426,7 +426,7 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               "slot or for evidence (a look ended by the stream ending is neither). Trigger never fired and "
               "verify rejected count missed occurrences.", "", "## Misses by stage", "",
               "| arm | " + " | ".join(metrics.STAGES) + " |", "|" + "---|" * (len(metrics.STAGES) + 1)]
-    for arm, s in table.items():
+    for _arm, s in table.items():
         lines.append(f"| {s['label']} | " + " | ".join(str(s["misses_by_stage"][k]) for k in metrics.STAGES) + " |")
     lines += ["", "`budget_dropped` counts misses whose only looks the request budget refused or that expired "
               "waiting for it (Percept traces each dropped look).", "", "## Event survival funnel", "",
@@ -434,7 +434,7 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               "Counts (share of annotated); – marks a stage the arm does not have.", "",
               "| arm | " + " | ".join(metrics.FUNNEL) + " | matched outside the funnel |",
               "|" + "---|" * (len(metrics.FUNNEL) + 2)]
-    for arm, s in table.items():
+    for _arm, s in table.items():
         fn, total = s["funnel"], s["funnel"]["annotated"] or 1
         cells = ["–" if k in s["funnel_not_applicable"] else f"{fn[k]} ({100 * fn[k] / total:.1f}%)"
                  for k in metrics.FUNNEL]
@@ -448,7 +448,7 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               "| arm | CPU s per source-hour | process peak RSS MB | pre-roll frames | intentional sampling | "
               "unintended loss | real-time lag s |", "|---|---|---|---|---|---|---|"]
     detail = lambda d: ", ".join(f"{k} {v}" for k, v in d.items()) or "0"    # noqa: E731
-    for arm, s in table.items():
+    for _arm, s in table.items():
         f = s["footprint"]
         lines.append(f"| {s['label']} | {_fmt(f.get('cpu_s_per_source_hour'))} | {_fmt(f.get('peak_rss_mb'))} | "
                      f"{f.get('preroll_frames', '–')} | {detail(s['intentional_sampling'])} | "

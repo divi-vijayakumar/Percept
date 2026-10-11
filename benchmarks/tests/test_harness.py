@@ -7,7 +7,7 @@ import unittest
 try:
     import cv2  # noqa: F401
 except ImportError:  # the harness needs the video extra
-    raise unittest.SkipTest('benchmarks need OpenCV: pip install -r benchmarks/requirements.txt')
+    raise unittest.SkipTest('benchmarks need OpenCV: pip install -r benchmarks/requirements.txt') from None
 
 import numpy as np
 import pytest
