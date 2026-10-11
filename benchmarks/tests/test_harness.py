@@ -559,3 +559,9 @@ def test_percept_decisions_are_scored_on_their_yes_looks_frames_only():
     r.preds.append(Pred("a", 0.0, 10.0, 11.0, 0.9, (), (0.0, 10.0), ("m-9",)))
     arms.yes_frames(r)
     assert r.preds_without_yes_frames == 1
+
+
+def test_untraced_decisions_make_a_run_unpublishable():
+    assert run.not_publishable(*_meva_run(preds_without_yes_frames=0)) == []
+    why = run.not_publishable(*_meva_run(preds_without_yes_frames=2))
+    assert len(why) == 1 and "traced to the yes-looks" in why[0]

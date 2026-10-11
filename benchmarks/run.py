@@ -272,6 +272,10 @@ def not_publishable(m: dict, table: dict) -> list[str]:
     if failing:     # a judge that failed often measures the outage, not the pipeline
         why.append(f"more than {metrics.MAX_FAILED_LOOK_RATE:.0%} of an arm's looks failed ("
                    + ", ".join(f"{a} {r:.1%}" for a, r in failing.items()) + ")")
+    untraced = {arm: s["preds_without_yes_frames"] for arm, s in table.items() if s.get("preds_without_yes_frames")}
+    if untraced:    # scored at their evidence's ends, which may credit frames the judge said no to
+        why.append("some decisions could not be traced to the yes-looks behind them ("
+                   + ", ".join(f"{a} {n}" for a, n in untraced.items()) + ")")
     return why
 
 
