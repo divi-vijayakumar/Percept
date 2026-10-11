@@ -1,0 +1,57 @@
+name: release
+
+# Publishes percept-vision to PyPI when a version tag (v*) is pushed, and only then.
+# Publishing uses PyPI Trusted Publishing (OIDC): no API token is stored anywhere. It needs a
+# one-time setup on pypi.org (a trusted publisher for this repository, this workflow and the
+# `pypi` environment) and the `pypi` environment in the repository settings, with required
+# reviewers so every publish waits for an approval.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: the tag matches the package version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('packages/percept-vision/pyproject.toml','rb'))['project']['version'])")
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME != version $version"; exit 1; }
+      - run: pip install -e "packages/percept-vision[dev]" build
+      - name: validate (guardrails, tests, offline quickstart, clean-install wheel)
+        run: make validate
+      - name: build the wheel and sdist from a clean copy of the tracked tree
+        run: |
+          git archive --format=tar HEAD packages/percept-vision | tar -x -C "$RUNNER_TEMP"
+          python -m build --outdir dist "$RUNNER_TEMP/packages/percept-vision"
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/percept-vision/
+    permissions:
+      id-token: write          # Trusted Publishing: PyPI exchanges this OIDC token, no secret needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

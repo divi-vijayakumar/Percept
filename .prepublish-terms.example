@@ -1,0 +1,6 @@
+# Terms the pre-publication scan (make prepublish) must never find in the repository or the wheel.
+# Copy this file to .prepublish-terms (gitignored, never committed) and replace the placeholders.
+# One term per line; '#' starts a comment. Matching ignores case and respects word boundaries.
+example-codename
+example-customer
+example-internal-team
