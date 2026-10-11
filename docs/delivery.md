@@ -23,6 +23,9 @@
 | `evidence` | array | up to 8 frame references: `stream_id`, `stream_epoch`, `seq`, `t_wall`, `ephemeral` |
 | `keyframe_jpeg_b64` | string or null | one JPEG of at most 40 KB, base64 |
 
+The `Decision` object's `keyframe` attribute holds raw JPEG bytes; in the wire form it is the
+base64 string `keyframe_jpeg_b64`.
+
 Within contract 1.x, new top-level fields may be added and readers should ignore fields they
 don't know; nested objects don't change shape. `from_dict` refuses another major version. The
 rules that produce each field are in [decision-semantics.md](decision-semantics.md#14-decision-fields).
@@ -56,6 +59,10 @@ Acknowledgement:
 
 A consumer that never reads loses nothing: decisions accumulate in the store, and memory stays
 bounded.
+
+`percept.Sink` (an object with `async def emit(decision)`) is an interface only: no sinks ship
+in 0.9.0 and the monitor does not call one. Read decisions from `watch()` and forward them from
+your own loop.
 
 ## Stores
 

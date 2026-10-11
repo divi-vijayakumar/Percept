@@ -1,10 +1,12 @@
 # Quickstart
 
-Percept 0.9.0 is a Developer Preview. Install it from a checkout of this repository:
+Percept 0.9.0 is a Developer Preview; the API may change before 1.0.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -e "packages/percept-vision[video,gemini]"   # OpenCV for cameras, the Gemini SDK
+pip install "percept-vision[video,gemini]"        # OpenCV for cameras, the Gemini SDK
+# or, from a checkout of this repository:
+pip install -e "packages/percept-vision[video,gemini]"
 ```
 
 Extras: `video` (OpenCV, for cameras and files), `gemini`, `claude`, `openai` (one per judge).
@@ -19,10 +21,28 @@ python examples/quickstart.py
 It needs no camera, key or network. It draws a tiny synthetic scene, watches it with a scripted
 judge (`FakeJudge`) and prints:
 
+```text
+percept.MemoryStore keeps decisions in memory only: delivery is not crash-safe
+met        box_in_zone   a red box sits in the zone  (confidence 0.95)
+cleared    box_in_zone   the zone is empty  (confidence 0.90)
+uncertain  package_fell  the verifier could not tell from the original evidence  (first look's confidence 0.80)
+
+coverage: what was looked at, and what came of each look
+  box_in_zone   looked at 8 times; 0 of those looks couldn't tell
+  package_fell  looked at 2 times; 1 of those looks couldn't tell
+  time when nothing could be seen or judged: 0 intervals
+
+replay: 3 decisions from 10 inputs reproduced exactly
+```
+
 - a `met` and a `cleared` for a state;
 - an `uncertain` for an event the second look could not confirm;
 - coverage (what was looked at, and what came of each look);
 - a replay of the run's trace that reproduces every decision exactly.
+
+The first line is expected: the demo keeps decisions in a `MemoryStore`, which logs once that it
+is not crash-safe. A real monitor uses the default SQLite store. The look counts depend on
+timing and may differ slightly on a slow machine.
 
 `examples/frigate_semantic.py` and `examples/kitchen_watch.py` also run offline with no
 arguments.

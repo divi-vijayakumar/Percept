@@ -8,7 +8,7 @@ wheel freshly built from a clean copy of ``packages/percept-vision`` for:
 * the repository URL placeholder (``REPLACE`` + ``-ME``), which must be replaced by the public
   repository URL before a release;
 * media and dataset files, and any tracked file over 1 MB;
-* internal or strategy terms listed, one per line, in the untracked file ``.prepublish-terms``
+* private terms (names that must not be published) listed, one per line, in the untracked file ``.prepublish-terms``
   (copy ``.prepublish-terms.example`` to start; ``#`` starts a comment; matching ignores case and
   respects word boundaries).
 

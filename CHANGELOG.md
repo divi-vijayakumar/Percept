@@ -4,13 +4,11 @@ Notable changes to Percept.
 
 ## 0.9.0 — Developer Preview (unreleased)
 
-Percept 0.9.0, the Developer Preview, is a rewrite around one job: a decision layer that turns a live video stream and
-plain-language conditions into one decision per real occurrence, for an agent to act on. Cheap
-triggers decide when to look, a judge (a vision-language model) decides what is true, and a pure
-reducer decides whether the agent hears about it.
-
-The 0.x modules are removed. Releases `0.7.0` and the unreleased 0.8 previews came from an
-experimental line that is preserved in the project history but not continued.
+Percept 0.9.0, the Developer Preview, is a rewrite around one job: a decision layer that turns a
+live video stream and plain-language conditions into one decision per real occurrence, for an
+agent to act on. Cheap triggers decide when to look, a judge (a vision-language model) decides
+what is true, and a pure reducer decides whether the agent hears about it. The API may change
+before 1.0.
 
 ### API
 
@@ -30,6 +28,7 @@ experimental line that is preserved in the project history but not continued.
 - Judges: `percept.judges.gemini`, `claude`, `openai_compatible` (OpenAI and compatible local
   servers), `cascade`, and the scripted `FakeJudge`; `PriceModel` for cost reservation.
 - Stores: `SqliteStore` (the default, `percept.db`) and `MemoryStore` (opt-in, not crash-safe).
+- `Sink`: an interface only; no sinks ship in this release.
 - `percept.trace`: a JSON-lines trace of every runtime event, and `replay(path)`, which
   reproduces every decision without the video or the judge.
 
@@ -53,113 +52,63 @@ experimental line that is preserved in the project history but not continued.
   in `coverage()`.
 - **Deterministic replay.** The decision reducer is pure; a trace replays exactly.
 
+### Details
+
+- **One place configures a source.** `open_source()` owns capture (rate, size, reconnection) and
+  the source callbacks; `watch()` owns monitoring and delivery. `watch(source)` subscribes the
+  monitor to the source's link health (`add_health_listener` / `remove_health_listener`), so a
+  camera outage is a `link_down` blind interval and health event even when the app built the
+  source with its own `on_frame` / `on_health`.
+- **App-owned feeds.** `PushSource.set_link(up, detail="")` and
+  `Monitor.set_link(stream_id, up, detail="")` report a pushed feed as down or up, with the same
+  health and blind interval as a camera; a frame pushed while down marks it up again and starts a
+  new epoch. `set_link` and `push` are safe to call concurrently, and link health reported from
+  another thread is handled on the monitor's loop.
+- **Cost reporting.** `stats()` `cost_usd` is the settled cost the judge reported. A cancelled
+  request (no usage reported) settles at 0 for reporting; its worst-case reservation still counts
+  against `max_cost_per_hour` for the window and is shown as `cost_reserved_usd`. A judge that
+  raises is charged its whole reservation for the window and reports a settled cost of 0.
+- **Per-condition cost.** `stats()["streams"][id]["conditions"]` gives `requests`, `attempts` and
+  settled `cost_usd` per condition. Each provider request's usage goes to the conditions it
+  carried (`RequestUsage.condition_ids`), so in a cascade a condition pinned to an expensive
+  member is charged for that member; the same attribution feeds decision `cost`.
+- **Reservations follow routes.** Judges may provide `max_attempts_for(request)` and
+  `worst_case_cost_for(request)`; a cascade counts only the members a request can reach, each at
+  its own price.
+- **Reply limit.** A request's `max_output_tokens` grows with the conditions it carries (from 400
+  up to 4096 tokens), so a batched reply is not cut off; the cost reservation uses the same limit.
+- **Triggers are values.** `on_change(...)` and `every(n)` compare and hash by configuration, so
+  identical `Condition`s are equal and conditions with equal triggers share one trigger step.
+- The trace records each look given up unjudged (`kind: "drop"`, with the reason `budget`,
+  `deadline` or `ended`), besides the per-minute fate counts.
+- Documentation in `docs/`; offline examples for a quickstart, Frigate person events and a
+  kitchen state on a heartbeat; a benchmark harness in `benchmarks/` (no results are published
+  for this release).
+- Tooling: structural guardrails, `make validate` (clean-copy wheel build and an installed-wheel
+  quickstart), a pre-publication scan (`make prepublish`) and a tag-triggered release workflow
+  using PyPI Trusted Publishing.
+
 ### Known limits
 
 - **Static cameras only.** Moving cameras (PTZ, body-worn, vehicle, drone, phone) and screen
   content are out of scope; a camera that keeps moving fires change triggers on nearly every
   frame and the budget drops most looks.
+- **Small, distant or brief activity can be missed.** In busy surveillance scenes the change
+  trigger often does not fire on such activity, so the judge is never asked. Pair these
+  conditions with a heartbeat (`every`), a tighter zone or a lower `on_change` threshold, and
+  check `coverage()`.
+- **Slow providers can time out.** Each judge request has an 8 s deadline; sparse requests to a
+  slow provider can exceed it. They fail as `timeout`, are reported on health and coverage, and
+  change no decision.
+- Trigger thresholds and condition defaults are starting points, not calibrated values;
+  confidence is the judge's and is advisory.
 - **No audio.** Video frames only.
 - **No file lock on Windows.** The one-process-per-database and one-writer-per-trace locks use
   `fcntl`; on Windows that is up to you.
 - **Blur detection on noisy, low-detail scenes.** A defocused lens with visible sensor noise can
   read as sharp, so such frames are judged rather than dropped.
-- Trigger thresholds and condition defaults are starting points, not calibrated values.
+- No performance numbers (accuracy, latency or cost) are published for this release.
 
-### Changes during the pre-release builds (numbered `1.0.0.dev0` and `1.0.0.dev1` before the
-Developer Preview was named 0.9.0)
+## Earlier releases
 
-- **Link health of app-owned sources.** `watch(source)` now subscribes the monitor to any source
-  with `add_health_listener` (every `open_source` source and every `PushSource`), so a camera
-  outage is a `link_down` blind interval and health event even when the app built the source with
-  its own `on_frame` / `on_health`. Sources gain `add_health_listener` / `remove_health_listener`.
-  One place configures a source: `open_source()` owns capture (rate, size, reconnection) and the
-  source callbacks; `watch()` owns monitoring and delivery. To configure capture, write
-  `source = open_source(uri, on_frame=..., fps=5)` then `monitor.watch(source)`; `watch(uri)`
-  opens the source with its defaults.
-- **Push stream outages.** `PushSource.set_link(up, detail="")` and
-  `Monitor.set_link(stream_id, up, detail="")` report an app-owned feed as down or up, with the
-  same health and blind interval as a camera; a frame pushed while down marks it up again and
-  starts a new epoch.
-- **Cost reporting.** `stats()` `cost_usd` is now the settled cost the judge reported. A cancelled
-  request (no usage reported) settles at 0 for reporting; its worst-case reservation still counts
-  against `max_cost_per_hour` for the window, and is shown as `cost_reserved_usd` (per stream and
-  in total). Previously the reservation was reported as spend.
-- **Per-condition cost.** `stats()["streams"][id]["conditions"]` gives `requests`, `attempts` and
-  settled `cost_usd` per condition. Each provider request's usage goes to the conditions it
-  carried (new `RequestUsage.condition_ids`, additive), so in a cascade a condition pinned to an
-  expensive member is charged for that member; the same attribution feeds decision `cost`.
-- A judge that raises is charged its whole reservation against the request limit and dollar cap
-  for the window (it was charged nothing), and reports a settled cost of 0.
-- A request's reply limit (`max_output_tokens`) grows with the conditions it carries (room for
-  every full answer, from 400 up to 4096 tokens), so a batched reply is no longer cut off and
-  failed as malformed; the cost reservation uses the same limit.
-- The trace records each look given up unjudged (`kind: "drop"`: condition, subject, trigger
-  time, reason `budget` / `deadline` / `ended`, time waited), besides the per-minute fate counts.
-- `PushSource.set_link` and `push` are safe to call concurrently: link reports alternate strictly
-  and arrive in order. Link health reported from another thread is handled on the monitor's loop.
-- **Reservations follow routes.** Judges may provide `max_attempts_for(request)` and
-  `worst_case_cost_for(request)`; a cascade counts only the members a request can reach (a pinned
-  condition its member, a verification the last member, an unpinned condition every member), each
-  at its own price. Requests pinned to a cheap member no longer reserve every member's attempts.
-  The per-stream attempt limit and the monitor-wide dollar cap hold as before.
-- **Triggers are values.** `on_change(...)` and `every(n)` are frozen and compare and hash by
-  configuration, so identical `Condition`s are equal and re-adding one is a no-op. Conditions with
-  equal triggers share one trigger step.
-- Validation builds the wheel from a clean copy, checks its files against the tracked tree, and
-  runs the quickstart against the installed wheel.
-- Documentation in `docs/` (quickstart, concepts, conditions, judges, sources, delivery and the
-  decision semantics); examples for Frigate person events and a kitchen state on a heartbeat.
-- A release workflow (wheel and sdist from a clean tree, `make validate`, PyPI Trusted
-  Publishing on a `v*` tag) and a pre-publication scan, `make prepublish`.
-
-## 0.6.0 — Research preview (2026-06)
-
-### Packaging — one install
-- `percept-contracts` and `percept-harness` are now **bundled inside `percept-vision`** as the
-  `percept.contracts` and `percept.harness` subpackages. Install one package:
-  `pip install percept-vision`. Heavy deps stay opt-in via extras:
-  `[gemini] [claude] [openrouter] [deepgram] [runtime] [harness] [pose] [bench] [audio] [screen] [otel]`.
-- **Migration:** `from percept_harness.X import Y` → `from percept.harness.X import Y`;
-  `from percept_contracts import Z` → `from percept.contracts import Z`.
-- **Deprecated:** the standalone `percept-harness` PyPI package is deprecated in favor of
-  `percept-vision (>=0.6.0)`. `percept-contracts` was never published standalone.
-- The wheel ships **only the `percept` namespace** — the benchmark harness (top-level `eval`) is
-  repo/dev tooling and is no longer installed (no `eval` name squat in site-packages). `percept-bench`
-  from a bare wheel install prints a "run from a checkout" note instead of importing it.
-
-### Versioning
-- Package version is `0.6.0`. The **wire-contract** version is separate: `CONTRACT_VERSION = "1.2.0"`
-  (additive-only). A `percept-vision 0.6.0` install exporting contract `1.2.0` is expected, not a bug.
-
-### Security
-- **`WebhookSink` is SSRF-safe by default** (`UrlPolicy`): https-only, and any non-globally-routable
-  target (private, loopback, link-local incl. metadata `169.254.169.254`, CGNAT `100.64/10`) is
-  rejected; redirects are not followed. **Breaking:** a local sink (`http://localhost:8080` …) now
-  raises at construction — pass `url_policy=UrlPolicy.dev()` for it.
-- **Dead-letter records are redacted** — `{url(scheme://host only), body_sha256, error, attempts}`;
-  the raw body, signing HMAC, auth headers, and path/query secrets (Slack/Discord tokens, `?token=`)
-  are never persisted.
-
-### Observability
-- **Per-frame decision trace** (`on_trace`): `Percept.create(on_trace=…)` / `run(…, on_trace=…)` emit
-  `TraceEvent`s (`source.frame` · `judge.started/finished` · `gate.classified` · `incident.created`)
-  correlated by one `trace_id` per frame — answers "why did THIS frame fire/ask/stay silent?".
-  `percept.debug.print_trace` is a ready-made callback. Default off; a tracer that raises or is async
-  can't break the pipeline.
-- `RuntimeStats.frames_dropped` (bounded-queue drops) and `CircuitBreaker.snapshot()` telemetry.
-
-### Added
-- **OpenRouter** vision backend (`vision="openrouter"`) — cross-provider VLM judging (Qwen-VL, InternVL, GPT…).
-- **Gemini Live** backend (`vision="gemini-live"`) — the realtime/interactivity model, via
-  audio→transcript→verdict; `process_qa` runs over a spoken running answer.
-- `process_qa` (accumulating-answer questions) implemented on all three judge backends; the proactiveqa
-  bench track now measures the shipping SDK path.
-- Runtime worker is **cadence-aware** for brief-action goals; injectable `Clock` (+ `FakeClock`) for
-  deterministic, replayable temporal logic; CI import-lint enforcing a vendor-free pure-stdlib core.
-- Per-request timeout on the Gemini client so a stalled socket can't hang a run.
-
-### Benchmark fixes
-- Fixes to the 0.x benchmark harness's cadence, running-answer resolution, per-performer counting
-  and zero-width-window filtering. That harness and its results are not part of this release.
-
-`percept/gate.py` (the three-state firing gate) is **byte-for-byte stable** across this release.
+0.7.0 and earlier: a research preview with a different API; not continued.

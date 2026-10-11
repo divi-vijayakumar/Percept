@@ -52,6 +52,9 @@ same prompt, parsing, retry and failure code as a real judge; only the provider 
 - **Deadline and retries**: each request has 8 s. A rate limit (408, 429), a server error (5xx)
   or a dropped connection is retried once, after 0.25 to 0.5 s or the provider's retry-after hint,
   if that still fits in the deadline. Any other error fails the request as `unavailable`.
+  A provider that is slow to answer (a cold start, a long queue, a large model with few requests
+  to keep it warm) can exceed the 8 s deadline: the request fails as `timeout`, is reported on
+  the health channel (`judge_unavailable`) and in coverage (`failed`), and changes no decision.
 - **Reply limit.** A request's `max_output_tokens` grows with the conditions it carries, so a
   batched reply is not cut off: 64 tokens plus 80 per condition plus a third of the condition ids'
   length in characters, at least 400 and at most 4096. A reply cut off at the limit fails as

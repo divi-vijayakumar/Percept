@@ -29,6 +29,22 @@ Every stream runs the same three steps.
    confirms, verifies, holds, clears, rearms and suppresses. A timeout or outage is never taken as
    an answer. See [decision-semantics.md](decision-semantics.md).
 
+## Known limitation: small, distant or brief activity
+
+The change trigger compares blocks of a heavily downscaled frame (48×36 grey pixels in 8×6
+blocks) with a moving average. In a busy surveillance scene, an activity that is small, far from
+the camera or over in a moment often changes too little of any block to fire it, so the judge is
+never asked and the occurrence is missed. Nothing reports it as a "no"; coverage shows a
+condition that was rarely or never looked at. For such conditions:
+
+- give the condition a heartbeat, `trigger=percept.every(seconds)` (a state's default already
+  includes `every(300)`; a shorter period looks more often, within the request budget);
+- draw a tighter zone around where the activity happens, so it is a larger share of each block;
+- lower the change threshold, `trigger=percept.on_change(threshold=...)` (more looks, more cost);
+- or poke the condition from your own detector with `Monitor.poke`;
+
+and check `Monitor.coverage()` to see how often the condition was actually looked at.
+
 ## States and events
 
 A condition has a `kind`.
