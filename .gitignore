@@ -20,14 +20,14 @@ htmlcov/
 # OS
 .DS_Store
 
-# Benchmark results (may describe private footage; published deliberately, never committed)
+# Benchmark results (published deliberately, never committed)
 /results/
 benchmarks/results/
 
-# Harness-managed agent worktrees (never track)
+# Agent worktrees
 .claude/worktrees/
 
-# eval run artifacts
+# Local run outputs
 scorecard.json
 scorecard.txt
 scorecard-live-*.txt
@@ -38,103 +38,96 @@ benchmark.json
 **/results.json
 **/benchmark.json
 
-# calibration artifacts (derived from private fixtures)
+# Local run outputs
 calibration.json
 calibration_capture.json
 **/calibration*.json
 
-# categorical-judge experiment artifacts
+# Local run outputs
 categorical_capture.json
 exp_categorical.json
 **/categorical_capture.json
 
-# Perception Test raw data (CC-BY; heavy, regenerable via download)
+# Local datasets
 eval/bench-staging/perception_test/raw/
 
-# perception test prevalence artifact
+# Local run outputs
 perception_test_prevalence.json
 **/perception_test_prevalence.json
 
-# local-only scratch (never commit)
+# Local scratch
 scratch/
 handoff/
 
-# model A/B artifact
+# Local run outputs
 model_ab.json
 **/model_ab.json
 
-# e2e benchmark artifact
+# Local run outputs
 e2e_result.json
 **/e2e_result.json
 
-# e2e verdicts cache
+# Local run outputs
 e2e_verdicts.json
 **/e2e_verdicts.json
 
-# Charades data (non-commercial license) + artifacts
+# Local datasets and run outputs
 eval/bench-staging/charades/raw/
 charades_verdicts.json
 charades_result.json
 **/charades_*.json
 
-# ProactiveVideoQA data + artifacts
+# Local datasets and run outputs
 eval/bench-staging/proactiveqa/raw/
 proactiveqa_narrations.json
 proactiveqa_result.json
 **/proactiveqa_*.json
 
-# RepCount data (lmms-lab-eval lance mirror) + artifacts
+# Local datasets and run outputs
 eval/bench-staging/repcount/raw/
 repcount_*.json
 **/repcount_*.json
 
-# OmniPro data + code + artifacts
+# Local datasets and run outputs
 eval/bench-staging/omnipro/
 omnipro_*.json
 **/omnipro_*.json
 .worktrees/
 
-# Private eval corpus — UNCLEARED third-party (YouTube) sources, dev/eval fixture only, NEVER redistribute
-# (spec Principle 8). Lives at the canonical find_golden_root() path; also ignore a stray top-level drop.
-# (The tracked label layer under eval/fixtures-golden/ predates this rule and stays tracked; this guards
-# against new pixel/media drops. REVIEW_QUEUE.md is internal curation notes — excluded from the public tree.)
+# Local datasets
 **/eval/fixtures-golden/REVIEW_QUEUE.md
 **/eval/fixtures-private/
 /golden/
-# Phase-0 perception probe clips (may contain personal recordings)
 **/eval/perception_probe/
-# BlazePose model binary (downloaded on demand for the pose-openness edge skill)
+# Downloaded model binaries
 *.task
-# env backups (may contain secrets) — never commit
+# Backups
 *.bak
 .env.*
 
-# generated benchmark cards (regenerable; RELEASE cards committed deliberately)
+# Generated benchmark reports
 **/bench_card_*.txt
 
-# Perception Test raw data (CC-BY; range-fetched videos + annotations, regenerable)
+# Local datasets
 **/eval/bench-staging/perception_test/
 
-# RepCount-A range-fetched videos (lance blobs, regenerable)
+# Local datasets
 **/eval/bench-staging/repcount/
 
 # node
 node_modules/
 
-# persistent benchmark data cache (heavy/licensed; never commit)
+# Local datasets
 **/eval/bench-staging/
 docs/publish-readiness-plan.md
 
-# --- OSS publish: internal/confidential docs (kept local, never published) ---
+# Local documents (not part of the project)
 /Spec/
 /handoff/
 /review/
 internal-docs/
-# internal release-planning brief (rules of engagement) — never published
 RELEASE_BRIEF.md
-# release-run reports/scratch (resumable overnight runs) — never published
 docs/_release/
-# consolidated home for local run artifacts (verdicts/scorecards/signals) — never published
 out/
 docs/discussions/
 docs/enterprise-architecture.md
@@ -152,7 +145,7 @@ docs/updated-percept-sdk-architecture.md
 docs/perception-event-individuation-research.md
 docs/benchmark-scorecard-runbook.md
 
-# Internal material: never tracked (see AGENTS.md)
+# Local documents (not part of the project)
 Product-Execution/
 Product-Execution
 codewiki
@@ -167,3 +160,6 @@ eval/
 .pnpm-store/
 packages/percept-vision/build/
 packages/percept-vision/dist/
+
+# The pre-publication scan's local term list (see .prepublish-terms.example)
+.prepublish-terms

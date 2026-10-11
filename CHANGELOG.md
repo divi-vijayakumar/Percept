@@ -2,16 +2,70 @@
 
 Notable changes to Percept.
 
-## 1.0.0 — unreleased
+## 1.0.0 — unreleased (pre-release builds: `1.0.0.dev1`)
 
-Percept 1.0 is a rewrite around one job: a decision layer that turns a live video stream into one
-decision per real occurrence of a plain-language condition.
+Percept 1.0 is a rewrite around one job: a decision layer that turns a live video stream and
+plain-language conditions into one decision per real occurrence, for an agent to act on. Cheap
+triggers decide when to look, a judge (a vision-language model) decides what is true, and a pure
+reducer decides whether the agent hears about it.
 
-- New, small public API (`Monitor`, `Condition`, `Decision`), replacing the 0.x surface.
-- The 0.x modules are removed from `main`. Releases `0.7.0` and the unreleased 0.8 previews came
-  from an experimental line that is preserved in the project history but not continued.
+The 0.x modules are removed. Releases `0.7.0` and the unreleased 0.8 previews came from an
+experimental line that is preserved in the project history but not continued.
 
-### 1.0.0.dev1 — fixes found while migrating an application
+### API
+
+- `Monitor(judge, conditions, store=..., max_requests_per_min=6, max_cost_per_hour=None,
+  max_concurrent_requests=4, trace=None)`; `watch(source, ack="auto" | "manual", max_unacked=100,
+  fps=5)` yields `Delivery` envelopes; `poke`, `push`, `set_link`, `add`, `remove`, `pause`,
+  `resume`, `snooze`, `resolve`, `feedback`, `health`, `stats`, `coverage`, `aclose`.
+- `Condition` (state or event) with zones, `not_when`, confirmation, verification, rearm,
+  recheck, clearing, `max_open_s`, cooldown and per-condition judge routes.
+- `Decision`, the versioned wire contract (`contract_version` 1.0, `decision.schema.json`):
+  `met`, `uncertain`, `cleared`, `expired`, with a stable `decision_id`, `occurrence_id`, `cause`,
+  `reason`, `confidence`, `cost`, evidence references and a keyframe.
+- Sources: `open_source(uri, ...)` for RTSP, webcams, HLS/DASH and files, with reconnection and
+  stall detection; `PushSource` for app-owned capture. `open_source` owns capture and
+  `watch(source)` owns monitoring; `watch(uri)` opens a URI with the defaults.
+- Triggers: `on_change()` and `every(seconds)`, or any object with a pure `step()`.
+- Judges: `percept.judges.gemini`, `claude`, `openai_compatible` (OpenAI and compatible local
+  servers), `cascade`, and the scripted `FakeJudge`; `PriceModel` for cost reservation.
+- Stores: `SqliteStore` (the default, `percept.db`) and `MemoryStore` (opt-in, not crash-safe).
+- `percept.trace`: a JSON-lines trace of every runtime event, and `replay(path)`, which
+  reproduces every decision without the video or the judge.
+
+### Guarantees
+
+- **Failures are never answers.** A timeout, outage, refusal or malformed reply changes no
+  occurrence; it is reported as health and coverage. `min_confidence` applies to "yes" and "no"
+  alike.
+- **One decision per occurrence.** Confirm windows on evidence time; events verified on their
+  original frames; stale answers (older epoch, condition version, occurrence or evidence)
+  rejected; states held, rechecked and cleared on evidence only. The rules are in
+  `docs/decision-semantics.md`.
+- **At-least-once delivery.** Each decision is committed atomically with the state that produced
+  it before delivery, and redelivered with the same `decision_id` until acknowledged.
+- **Hard budgets.** No 60 s span holds more outbound attempts than `max_requests_per_min` per
+  stream; the dollar cap reserves each request's worst case first (guaranteed for judges with a
+  price). Reservations follow cascade routes. `stats()` reports settled `cost_usd`,
+  `cost_reserved_usd` and per-condition `requests`, `attempts` and `cost_usd`.
+- **Visible blindness.** Link outages (including app-reported ones via `set_link`), degraded
+  video, scene resets, budget exhaustion, judge outages and paused conditions are blind intervals
+  in `coverage()`.
+- **Deterministic replay.** The decision reducer is pure; a trace replays exactly.
+
+### Known limits
+
+- **Static cameras only.** Moving cameras (PTZ, body-worn, vehicle, drone, phone) and screen
+  content are out of scope; a camera that keeps moving fires change triggers on nearly every
+  frame and the budget drops most looks.
+- **No audio.** Video frames only.
+- **No file lock on Windows.** The one-process-per-database and one-writer-per-trace locks use
+  `fcntl`; on Windows that is up to you.
+- **Blur detection on noisy, low-detail scenes.** A defocused lens with visible sensor noise can
+  read as sharp, so such frames are judged rather than dropped.
+- Trigger thresholds and condition defaults are starting points, not calibrated values.
+
+### Changes during the 1.0.0.dev1 pre-release
 
 - **Link health of app-owned sources.** `watch(source)` now subscribes the monitor to any source
   with `add_health_listener` (every `open_source` source and every `PushSource`), so a camera
@@ -52,6 +106,10 @@ decision per real occurrence of a plain-language condition.
   equal triggers share one trigger step.
 - Validation builds the wheel from a clean copy, checks its files against the tracked tree, and
   runs the quickstart against the installed wheel.
+- Documentation in `docs/` (quickstart, concepts, conditions, judges, sources, delivery and the
+  decision semantics); examples for Frigate person events and a kitchen state on a heartbeat.
+- A release workflow (wheel and sdist from a clean tree, `make validate`, PyPI Trusted
+  Publishing on a `v*` tag) and a pre-publication scan, `make prepublish`.
 
 ## 0.6.0 — Research preview (2026-06)
 
@@ -100,8 +158,7 @@ decision per real occurrence of a plain-language condition.
 - Per-request timeout on the Gemini client so a stalled socket can't hang a run.
 
 ### Benchmark fixes
-- pt-action sensitive above-Nyquist cadence (edge recall 0→0.75); proactiveqa running-answer resolution
-  (unresolved 1.0→0.29, PAUC 25→55 on gemini-3.5-flash); per-performer counting (HERO; pommel 9→33==GT);
-  timespeak zero-width-window filter. See `docs/benchmark-methodology.md`.
+- Fixes to the 0.x benchmark harness's cadence, running-answer resolution, per-performer counting
+  and zero-width-window filtering. That harness and its results are not part of 1.0.
 
 `percept/gate.py` (the three-state firing gate) is **byte-for-byte stable** across this release.

@@ -66,9 +66,10 @@ bounded.
 | `MemoryStore()` | survives a consumer error, not a crash; logs a warning once | opt in for demos, tests and ephemeral workloads |
 
 - **One process per database.** The monitor locks `<path>.lock` when its first stream starts; a
-  second process on the same file fails with `percept.delivery.StoreLocked` when it starts watching. The lock uses `fcntl`, which Windows
-  doesn't have: there, keeping to one process per file is up to you.
-- The database file is created readable by its owner only, since it holds keyframes.
+  second process on the same file fails with `percept.delivery.StoreLocked` when it starts
+  watching. The lock uses `fcntl`, which Windows doesn't have: there, keeping to one process per
+  file is up to you.
+- The database file is created readable only by the user that created it, since it holds keyframes.
 - A slow disk delays delivery, never capture or judging; one writer thread makes every store call,
   and a failing call is retried (health `store_lag`).
 - Any object with `load(key) -> bytes | None` and an atomic `commit(writes)` (a `None` value
