@@ -49,3 +49,11 @@ def test_frigate_semantic_replays_a_file_of_frigate_payloads(tmp_path):
     out = run("frigate_semantic.py", "--replay", str(path), cwd=tmp_path).stdout
     assert decisions(out) == ["met"], out
     assert "(person x9)" in out and "w0" not in out and "y1" not in out
+
+
+def test_webhook_agent_posts_every_decision_and_acks_after_a_2xx():
+    # About 7 s: the example plays a 7 s drawn clip at a demo request budget.
+    out = run("webhook_agent.py", "--offline").stdout
+    assert sorted(decisions(out)) == ["cleared", "met", "met"], out
+    assert "met      person_fell" in out and "cleared  door_open" in out, out
+    assert "webhook received 3 decisions" in out, out
