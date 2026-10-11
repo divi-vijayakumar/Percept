@@ -171,7 +171,7 @@ loss on MEVA will be published too.
 Dense, continuously changing scenes (short handheld clips) were diagnosed separately with the
 oracle judge, which is a diagnostic, not a result. On such footage the change trigger fires on
 nearly every frame, so looks queue and the request budget drops them. Dense handheld scenes are
-outside Percept 1.0's envelope, which is static cameras; that is why MEVA, with fixed cameras,
+outside Percept's envelope, which is static cameras; that is why MEVA, with fixed cameras,
 is the primary public benchmark. Numbers are published only from a full run's report, with its
 coverage and configuration.
 

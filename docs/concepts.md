@@ -97,7 +97,7 @@ It also counts `frames_capped` (frames skipped by the processing rate) and `evid
 The same events appear on the health channel (`Monitor.health()`); see
 [delivery.md](delivery.md#health-stats-and-coverage).
 
-## What 1.0 assumes
+## What this release assumes
 
 - **Static cameras.** Fixed-viewpoint cameras only. A moving camera looks like a constant scene
   change. See [sources.md](sources.md#the-static-camera-assumption).

@@ -1,6 +1,6 @@
-"""block_max parity with the pre-1.0 implementation.
+"""block_max parity with the 0.x implementation.
 
-The expected values were produced once by the pre-1.0 salience gate (``motion_score(prev, cur,
+The expected values were produced once by the 0.x salience gate (``motion_score(prev, cur,
 stat="block_max", region=Box(...))``, 8x6 grid) on the frames built below, and are recorded as
 constants. The port must match within 1e-6.
 

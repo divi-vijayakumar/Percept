@@ -7,9 +7,9 @@ Video in, decisions out. Percept decides *when* it is worth asking a model, *wha
 *whether* your agent should hear about it. It doesn't replace your models, your cameras or your
 agent.
 
-> **Status: pre-release (`1.0.0.dev1`).** The API below is the 1.0 API. It is not on PyPI yet,
-> so install it from a checkout, and it may still change before 1.0.0. The last release on PyPI,
-> `percept-vision 0.7.0`, is a research preview with a different API.
+> **Status: 0.9.0 Developer Preview.** The API below may still change before 1.0. It is not on
+> PyPI yet, so install it from a checkout. The last release on PyPI, `percept-vision 0.7.0`, is a
+> research preview with a different API.
 
 ```python
 import percept
@@ -44,7 +44,7 @@ pip install -e "packages/percept-vision[video,gemini]"
 
 Extras: `video` (OpenCV), `gemini`, `claude`, `openai` (also OpenAI-compatible local servers).
 
-## What 1.0 assumes
+## What this release assumes
 
 1. **Static cameras.** Fixed-viewpoint cameras only. Not PTZ, body-worn, vehicle, drone or phone
    video, and not screen content. A bumped camera or a day/night IR switch is a scene reset, never
@@ -94,7 +94,7 @@ Examples: [quickstart](examples/quickstart.py), [Frigate person events](examples
 | Path | What |
 |---|---|
 | `packages/percept-vision/` | The Python SDK |
-| `packages/percept-edge/` | Earlier JavaScript edge package, frozen and outside 1.0 |
+| `packages/percept-edge/` | Earlier JavaScript edge package, frozen and outside this release |
 | `docs/`, `examples/` | Documentation and runnable examples |
 | `benchmarks/` | The reproducible benchmark harness |
 | `tools/` | Structural checks, validation and the pre-publication scan |

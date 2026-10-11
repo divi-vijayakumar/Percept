@@ -1,6 +1,6 @@
 # Contributing to Percept
 
-Percept 1.0 is under active development. Issues and discussion are welcome; please open an issue
+Percept is in Developer Preview (0.9.0) and under active development. Issues and discussion are welcome; please open an issue
 before a large pull request.
 
 ## Setup

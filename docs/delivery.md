@@ -7,7 +7,7 @@
 
 | Field | Type | Meaning |
 |---|---|---|
-| `contract_version` | string | `"1.0"` |
+| `contract_version` | string | `"1.0"`: the decision format's own version, separate from the package version |
 | `decision_id` | string | stable across redelivery: `{occurrence_id}/{k}` |
 | `occurrence_id` | string | groups every decision about one occurrence: `{stream_id}/{condition_id}/{incarnation}-{n}` |
 | `type` | string | `met`, `uncertain`, `cleared` or `expired` |

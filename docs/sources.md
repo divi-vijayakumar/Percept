@@ -105,7 +105,7 @@ report outages as health rather than raising. An optional `async aclose()` is ca
 
 ## The static-camera assumption
 
-Percept 1.0 is built for **fixed-viewpoint cameras**. It is not for PTZ, body-worn, vehicle,
+Percept is built for **fixed-viewpoint cameras**. It is not for PTZ, body-worn, vehicle,
 drone or phone video, or screen content.
 
 - When most of the picture changes at once (a bumped camera, a PTZ move, an infrared day/night

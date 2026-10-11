@@ -292,7 +292,7 @@ A decision is emitted only when no rule suppresses it. A suppressed decision is 
 - `evidence` (up to 8 frame references) and `keyframe` (one JPEG of at most 40 KB) are filled by
   the runtime from those requests.
 - Agents should branch on `type` and `cause`. `reason` is for people.
-- A `scene_return` cause is reserved for a future trigger and is not produced in 1.0.
+- A `scene_return` cause is reserved for a future trigger and is not produced in this release.
 
 ## 15. Application controls
 

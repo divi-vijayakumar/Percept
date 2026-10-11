@@ -5,7 +5,7 @@ Instructions for coding agents and contributors. Read this before creating any f
 ## What Percept is
 
 A decision layer for live video: a stream plus plain-language conditions in, one decision per real
-occurrence out. 1.0 is being rebuilt on `main` from a small core. The design is
+occurrence out. The 0.9 Developer Preview is being built on `main` from a small core, on the way to 1.0. The design is
 Trigger → Judge → Decide: cheap triggers decide when to look, a judge decides what is true, and a
 pure reducer decides whether the agent hears about it.
 
@@ -51,8 +51,9 @@ State capability limits plainly instead ("advisory", "not calibrated", "static c
 
 ## Porting from earlier versions
 
-Pre-1.0 code is preserved in the project history and is not continued. When an older module has
-something worth keeping, copy the minimum by hand, rewrite it against the 1.0 contracts, and cite the
+Code from the 0.x research line (0.7.0 and earlier) is preserved in the project history and is not
+continued. When an older module has something worth keeping, copy the minimum by hand, rewrite it
+against the current contracts, and cite the
 source commit and path in the PR description. Never restore an old module wholesale.
 
 ## Commands

@@ -1,6 +1,6 @@
 # Quickstart
 
-Percept 1.0 is in pre-release. Install it from a checkout of this repository:
+Percept 0.9.0 is a Developer Preview. Install it from a checkout of this repository:
 
 ```bash
 python -m venv .venv && . .venv/bin/activate

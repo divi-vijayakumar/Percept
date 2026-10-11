@@ -2,9 +2,9 @@
 
 Notable changes to Percept.
 
-## 1.0.0 — unreleased (pre-release builds: `1.0.0.dev1`)
+## 0.9.0 — Developer Preview (unreleased)
 
-Percept 1.0 is a rewrite around one job: a decision layer that turns a live video stream and
+Percept 0.9.0, the Developer Preview, is a rewrite around one job: a decision layer that turns a live video stream and
 plain-language conditions into one decision per real occurrence, for an agent to act on. Cheap
 triggers decide when to look, a judge (a vision-language model) decides what is true, and a pure
 reducer decides whether the agent hears about it.
@@ -65,7 +65,8 @@ experimental line that is preserved in the project history but not continued.
   read as sharp, so such frames are judged rather than dropped.
 - Trigger thresholds and condition defaults are starting points, not calibrated values.
 
-### Changes during the 1.0.0.dev1 pre-release
+### Changes during the pre-release builds (numbered `1.0.0.dev0` and `1.0.0.dev1` before the
+Developer Preview was named 0.9.0)
 
 - **Link health of app-owned sources.** `watch(source)` now subscribes the monitor to any source
   with `add_health_listener` (every `open_source` source and every `PushSource`), so a camera
@@ -159,6 +160,6 @@ experimental line that is preserved in the project history but not continued.
 
 ### Benchmark fixes
 - Fixes to the 0.x benchmark harness's cadence, running-answer resolution, per-performer counting
-  and zero-width-window filtering. That harness and its results are not part of 1.0.
+  and zero-width-window filtering. That harness and its results are not part of this release.
 
 `percept/gate.py` (the three-state firing gate) is **byte-for-byte stable** across this release.

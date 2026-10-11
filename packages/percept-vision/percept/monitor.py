@@ -35,7 +35,7 @@ look that needs the current frame waits while the stream has no recent frame (an
 ``link_down`` interval, or no frame for ``STALE_FRAME_S``) rather than judging an old one as
 current; such waits are counted as ``evidence_unavailable``.
 
-Scene return (decide's ``SceneReturn`` input, cause ``"scene_return"``) is reserved in 1.0: no
+Scene return (decide's ``SceneReturn`` input, cause ``"scene_return"``) is reserved in this release: no
 trigger reports it, so the runtime never feeds it.
 
 Time: decide sees wall-clock time; timers run on the loop's monotonic clock, converted from
