@@ -34,6 +34,7 @@ from typing import Optional
 from percept import Condition, JudgeItem, JudgeRequest, MemoryStore, Monitor, PushSource
 from percept import trace as ptrace
 from percept.clips import PreRoll
+from percept.monitor import _max_output_tokens   # the Monitor's reply sizing, held fixed across arms
 
 from benchmarks.cases import Feed, VideoCase
 
@@ -183,8 +184,11 @@ class Baseline:
             return
         t0, t1 = frames[0][0], frames[-1][0]
         r = self.result
-        request = JudgeRequest(f"{r.arm}-{r.case_id}-{r.requests}", r.case_id, 0,
-                               tuple(JudgeItem(self.conds[i]) for i in ids), tuple(f[1] for f in frames), (t0, t1))
+        items = tuple(JudgeItem(self.conds[i]) for i in ids)
+        request = JudgeRequest(f"{r.arm}-{r.case_id}-{r.requests}", r.case_id, 0, items,
+                               tuple(f[1] for f in frames), (t0, t1),
+                               max_output_tokens=_max_output_tokens(len(items),
+                                                                    sum(len(i.condition.id) for i in items)))
         result = await self.judge.judge(request)
         r.requests += 1
         r.cost_usd += sum(u.usage.cost_usd for u in result.usage)

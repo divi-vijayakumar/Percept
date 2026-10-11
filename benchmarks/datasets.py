@@ -134,7 +134,7 @@ def long_sparse(pool: list[VideoCase], *, occupancies=(0.05, 0.2, 0.5), length_s
 # --------------------------------------------------------------------------- MEVA
 
 
-_ACT = re.compile(r"'?act2'?\s*:\s*\{\s*'?([A-Za-z_]+)'?")
+_ACT = re.compile(r"'?act2'?\s*:\s*\{\s*'?([A-Za-z0-9_]+)'?")
 _SPAN = re.compile(r"'?tsr0'?\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\]")
 
 
@@ -143,7 +143,7 @@ def meva_activities(text: str, fps: float) -> list[Occurrence]:
     out = []
     for line in text.splitlines():
         name, spans = _ACT.search(line), _SPAN.findall(line)
-        if name and spans:
+        if name and spans and not name.group(1).startswith("empty"):   # ``empty_N`` marks no activity
             start = min(int(a) for a, _ in spans) / fps
             end = max(int(b) for _, b in spans) / fps
             out.append(Occurrence(name.group(1), start, end))

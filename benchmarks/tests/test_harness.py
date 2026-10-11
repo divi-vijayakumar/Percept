@@ -309,6 +309,21 @@ def test_meva_activity_lines_parse():
             "[{'tsr0': [919, 938]}]}], 'id2': 1, 'src_status': 'good', 'timespan': [{'tsr0': [915, 940]}]}}")
     assert datasets.meva_activities("- { meta: x }\n" + line, fps=10.0) == \
         [Occurrence("person_picks_up_object", 91.5, 94.0)]
+    empty = line.replace("person_picks_up_object", "empty_37")
+    assert datasets.meva_activities(empty, fps=10.0) == []
+
+
+def test_baseline_reply_limit_grows_with_the_batch(clips):
+    many = VideoCase("m", "t", clips[0].segments, tuple(CondSpec(f"cond_{i}", f"c {i}") for i in range(25)), ())
+    guard, timelines = oracle_guard([many])
+    sent, judge = [], guard.judge
+
+    async def spy(request):
+        sent.append(request)
+        return await judge(request)
+    guard.judge = spy
+    asyncio.run(arms.run_chunk(many, guard, timelines, 5.0))
+    assert sent and all(r.max_output_tokens > 400 for r in sent)    # 400 truncated a 25-condition reply
 
 
 def test_configs():
