@@ -87,11 +87,14 @@ async def main(args) -> None:
                 await offline()
 
         detecting = asyncio.create_task(detector())
-        async for delivery in monitor.watch(source, ack="manual"):
-            d = delivery.decision
-            print(f"{d.type:<9} {d.condition_id} ({d.subject}): {d.reason}  [{d.confidence:.2f}]")
-            await delivery.ack()                        # after your agent has acted on it
-        await detecting
+        try:
+            async for delivery in monitor.watch(source, ack="manual"):
+                d = delivery.decision
+                print(f"{d.type:<9} {d.condition_id} ({d.subject}): {d.reason}  [{d.confidence:.2f}]")
+                await delivery.ack()                    # after your agent has acted on it
+            await detecting
+        finally:
+            detecting.cancel()                          # the watch failed or ended: stop the detector too
 
 
 if __name__ == "__main__":

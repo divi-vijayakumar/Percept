@@ -1447,7 +1447,9 @@ class Monitor:
                     monitor.poke("cam", "package_left", reason=event.reason)
 
         ``timeout`` (seconds) raises ``asyncio.TimeoutError`` if the stream is not registered
-        in time. Raises ``RuntimeError`` if the monitor is closed, or closes while waiting.
+        in time. Raises ``RuntimeError`` if the monitor is closed, or closes while waiting. A
+        ``watch()`` that fails before registering (a store in use, a bad source) wakes no one
+        until the monitor closes: pass a ``timeout`` if your monitor may stay open after that.
         """
         self._on_loop()
         self._bind()
