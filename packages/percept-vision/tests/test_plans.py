@@ -505,3 +505,147 @@ def test_compiled_plan_runs_and_a_plan_record_still_replays(tmp_path):
     assert records[0]["kind"] == "plan" and records[0]["plan_hash"] == c.plan_hash
     result = tr.replay(path)
     assert result.matches, result.differences
+
+
+# --------------------------------------------------------------------------- review follow-ups
+
+
+def two_events(zones_a, zones_b, exclude_a=None):
+    def concern(cid, zones, exclude):
+        judgment = {"route": "fast", "zones": zones}
+        if exclude:
+            judgment["exclude_zones"] = exclude
+        return {"id": cid, "source": "lobby", "description": f"{cid} happens",
+                "attention": {"any": [{"every": 5}]}, "judgment": judgment, "decision": {"kind": "event"}}
+    return base([concern("a", zones_a, exclude_a), concern("b", zones_b, None)])
+
+
+def test_feasibility_groups_on_the_crop_not_on_exclude_zones():
+    corner = [[[0.6, 0.6], [0.7, 0.6], [0.6, 0.7]]]
+    s = compile_(two_events([DOOR], [DOOR], exclude_a=corner)).feasibility()["sources"]["lobby"]
+    assert len(s["groups"]) == 1
+
+
+def test_feasibility_groups_polygons_with_the_same_bounding_box():
+    square = [[0.5, 0.1], [0.9, 0.1], [0.9, 0.9], [0.5, 0.9]]
+    triangle = [[0.5, 0.1], [0.9, 0.9], [0.5, 0.9], [0.9, 0.1]]
+    s = compile_(two_events([square], [triangle])).feasibility()["sources"]["lobby"]
+    assert len(s["groups"]) == 1
+
+
+def test_verified_events_make_a_source_at_best_best_effort():
+    plan = base([{"id": "fell", "source": "lobby", "description": "a person falls",
+                  "attention": {"any": [{"every": 60}]}, "judgment": {"route": "fast"}, "decision": {"kind": "event"}}],
+                budget={"max_requests_per_min": 6})
+    s = compile_(plan).feasibility()["sources"]["lobby"]
+    assert s["periodic_attempts_per_min"] == 2 and s["verdict"] == "best_effort"
+    assert any("verify" in n and "unknown" in n for n in s["notes"])
+    plan["concerns"][0]["judgment"]["verification"] = "off"
+    assert compile_(plan).feasibility()["sources"]["lobby"]["verdict"] == "feasible"
+
+
+def test_a_cost_cap_without_a_price_is_noted_not_refused():
+    plan = mutate(lambda p: p.update(budget={"max_cost_per_hour": 1.5}))
+    c = compile_(plan)
+    note = "cost cap not enforced: judge has no price"
+    assert note in c.explain()["notes"] and note in c.feasibility()["notes"]
+    assert note in c.feasibility()["sources"]["lobby"]["notes"]
+    priced = plans.compile(plan, {"fast": fake(price=percept.PriceModel(0.1, 0.4, 258))})
+    assert note not in priced.explain()["notes"]
+
+
+def test_explain_reports_source_origins_and_the_route_as_plan():
+    report = compile_(state_plan()).explain()
+    assert report["sources"] == [{"id": {"value": "dock", "origin": "plan"}, "kind": {"value": "video", "origin": "plan"},
+                                  "max_side": {"value": 320, "origin": "plan"}}]
+    assert compile_(poke_plan()).explain()["sources"][0]["max_side"] == {"value": 640, "origin": "sdk_default"}
+    assert report["concerns"][0]["fields"]["judge"]["origin"] == "plan"
+
+
+def test_hash_ignores_the_order_of_concerns_sources_and_events():
+    plan = doorway_plan()
+    plan["sources"].append({"id": "yard", "kind": "video"})
+    plan["concerns"][0]["attention"]["any"].append({"external_event": "bell"})
+    plan["concerns"][1]["attention"]["any"].append({"external_event": "bell"})
+    plan["concerns"][1]["attention"]["any"].append({"external_event": "alarm"})
+    h = compile_(plan).plan_hash
+    reordered = copy.deepcopy(plan)
+    reordered["sources"].reverse()
+    reordered["concerns"].reverse()
+    reordered["concerns"][0]["attention"]["any"].reverse()
+    assert compile_(reordered).plan_hash == h
+
+
+@pytest.mark.parametrize("name, value", [("EVENT_CLIP_S", 5.0), ("CLIP_FRAMES", 6),
+                                         ("DEADLINES", {"event": 1.0, "state": 10.0}),
+                                         ("DEFAULT_TRIGGERS", {"event": (on_change(),), "state": (on_change(),)})])
+def test_hash_covers_the_runtime_fixed_values(monkeypatch, name, value):
+    before = compile_(poke_plan()).plan_hash
+    monkeypatch.setattr(plans, name, value)
+    assert compile_(poke_plan()).plan_hash != before
+
+
+@pytest.mark.parametrize("change, message", [
+    (lambda p: p.update(budget={"max_requests_per_min": 10**6 + 1}),
+     "budget.max_requests_per_min: expected an integer <= 1000000"),
+    (lambda p: p.update(budget={"max_concurrent_requests": 10**9}), "budget.max_concurrent_requests: expected an integer <="),
+    (lambda p: p["concerns"][0]["decision"].update(rearm_s=1e8), "concerns[0].decision.rearm_s: expected at most"),
+    (lambda p: p["concerns"][0]["decision"].update(rearm_s=float("inf")), "concerns[0].decision.rearm_s: expected a finite"),
+    (lambda p: p["concerns"][0].update(attention={"any": [{"every": 1e9}]}),
+     "concerns[0].attention.any[0].every: expected at most"),
+    (lambda p: p["sources"][0].update(max_side=10**7), "sources[0].max_side: expected an integer <="),
+])
+def test_absurd_numbers_are_refused(change, message):
+    with pytest.raises(PlanError) as err:
+        compile_(mutate(change))
+    assert message in str(err.value), str(err.value)
+
+
+def test_a_poked_plan_runs_end_to_end():
+    c = plans.compile(poke_plan(), {"fast": FakeJudge({"package_fell": Y})})
+
+    async def main():
+        async with percept.Monitor(**dict(c.monitor_kwargs, max_requests_per_min=600),
+                                   store=percept.MemoryStore()) as m:
+            src = PushSource("lobby")
+            watch = m.watch(src, fps=None)
+            for i in range(10):
+                src.push(image(i))
+                await asyncio.sleep(0.03)
+                if i == 5:
+                    m.poke("lobby", c.events["shelf_sensor"], reason="shelf sensor tripped")
+            await asyncio.sleep(0.3)
+            src.close()
+            return await collect(watch)
+
+    got = run(main())
+    assert [(d.decision.type, d.decision.condition_id) for d in got] == [("met", "package_fell")]
+
+
+def test_a_cascade_pinned_plan_sends_each_concern_to_its_judge():
+    plan = state_plan()
+    second = copy.deepcopy(plan["concerns"][0])
+    second.update(id="door_open", description="the door is open")
+    second["judgment"]["route"] = "strong"
+    plan["concerns"].append(second)
+    plan["judges"] = {"order": ["fast", "strong"]}
+    a, b = FakeJudge({"lamp_on": Y, "door_open": Y}, name="a"), FakeJudge({"lamp_on": Y, "door_open": Y}, name="b")
+    c = plans.compile(plan, {"fast": a, "strong": b})
+
+    async def main():
+        async with percept.Monitor(**c.monitor_kwargs, store=percept.MemoryStore()) as m:
+            src = PushSource("dock")
+            watch = m.watch(src, fps=None)
+            for i in range(4):
+                src.push(image(i))
+                await asyncio.sleep(0.05)
+            src.close()
+            return await collect(watch)
+
+    got = run(main())
+    assert sorted(d.decision.condition_id for d in got) == ["door_open", "lamp_on"]
+
+    def asked(judge):
+        return {i.condition.id for *_, r in judge.sent if r.purpose == "detect" for i in r.items}
+
+    assert asked(a) == {"lamp_on"} and asked(b) == {"door_open"}

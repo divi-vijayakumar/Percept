@@ -12,8 +12,13 @@ Each concern becomes one :class:`~percept.contracts.Condition`. :class:`Compiled
 the plan will do: :meth:`~Compiled.explain` lists every effective setting and where it came from
 (the plan, an SDK default, or a value the runtime fixes), :meth:`~Compiled.feasibility` checks the
 periodic demand against the request budget, and :meth:`~Compiled.provenance` names the SDK, the
-judges and the prompt a run used. ``plan_hash`` covers every effective setting, so two plans with
-the same hash watch the same way; ``metadata`` is free-form and not hashed.
+judges and the prompt a run used. ``plan_hash`` covers every effective setting, the runtime's fixed
+values and the judges' names, whatever the order of keys, concerns, sources or events, so two
+plans with the same hash watch the same way with judges of the same names; ``metadata`` is
+free-form and not hashed.
+
+Nothing in ``monitor_kwargs`` sets a source's resolution: open each source with
+``max_side=compiled.sources[i]["max_side"]`` yourself.
 
 A concern whose attention is only ``external_event`` entries is judged only when the app calls
 ``monitor.poke(stream_id, condition_id)``; ``Compiled.events`` maps each event name to the
@@ -40,6 +45,8 @@ __all__ = ["SCHEMA_VERSION", "Compiled", "PlanError", "compile"]
 
 SCHEMA_VERSION = "percept.watch/v1alpha1"
 MAX_SIDE = 640
+MAX_COUNT = 10**6           # largest integer a plan may give (counts, sizes)
+MAX_SECONDS = 10**7         # longest duration a plan may give
 # Runtime values a plan can't change (mirrors of percept.monitor and Monitor's defaults; a test
 # pins them, so they can't drift apart).
 EVENT_CLIP_S = 4.0
@@ -52,11 +59,11 @@ DEFAULT_TRIGGERS = {"event": (OnChange(),), "state": (OnChange(), Every(300))}
 _JUDGMENT = {"verification": ("verify", "str"), "min_confidence": ("min_confidence", "num"),
              "fast_path_confidence": ("fast_path_confidence", "num?"), "zones": ("zones", "polys"),
              "exclude_zones": ("exclude_zones", "polys"), "not_when": ("not_when", "strs")}
-_DECISION = {"confirm": ("confirm", "int"), "confirm_window_s": ("confirm_window_s", "num"),
-             "rearm_s": ("rearm_s", "num"), "recheck_every_s": ("recheck_every_s", "num"),
-             "clear_after_no": ("clear_after_no", "int"), "max_open_s": ("max_open_s", "num?"),
-             "cooldown_s": ("cooldown_s", "num"), "emit_cleared": ("emit_cleared", "bool"),
-             "on_unverified": ("on_unverified", "str"), "candidate_deadline_s": ("candidate_deadline_s", "num")}
+_DECISION = {"confirm": ("confirm", "int"), "confirm_window_s": ("confirm_window_s", "sec"),
+             "rearm_s": ("rearm_s", "sec"), "recheck_every_s": ("recheck_every_s", "sec"),
+             "clear_after_no": ("clear_after_no", "int"), "max_open_s": ("max_open_s", "sec?"),
+             "cooldown_s": ("cooldown_s", "sec"), "emit_cleared": ("emit_cleared", "bool"),
+             "on_unverified": ("on_unverified", "str"), "candidate_deadline_s": ("candidate_deadline_s", "sec")}
 
 
 class PlanError(ValueError):
@@ -97,9 +104,11 @@ def _str(value: Any, path: str) -> str:
     return value
 
 
-def _int(value: Any, path: str, minimum: int = 0) -> int:
+def _int(value: Any, path: str, minimum: int = 0, maximum: int | None = MAX_COUNT) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         _fail(path, f"expected an integer >= {minimum}")
+    if maximum is not None and value > maximum:
+        _fail(path, f"expected an integer <= {maximum}")
     return value
 
 
@@ -120,6 +129,11 @@ def _value(kind: str, value: Any, path: str) -> Any:
         return None if value is None else _value(kind[:-1], value, path)
     if kind == "num":
         return _num(value, path)
+    if kind == "sec":
+        seconds = _num(value, path)
+        if abs(seconds) > MAX_SECONDS:
+            _fail(path, f"expected at most {MAX_SECONDS} seconds")
+        return seconds
     if kind == "int":
         return _int(value, path)
     if kind == "bool":
@@ -156,6 +170,14 @@ class _External:
         return "external_event()"
 
 
+def _bbox(zones: tuple) -> tuple[float, ...] | None:
+    """The crop a judge sees for ``zones``: their bounding box (None: the whole frame)."""
+    if not zones:
+        return None
+    xs, ys = [p[0] for poly in zones for p in poly], [p[1] for poly in zones for p in poly]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def _describe(trigger: Any) -> dict:
     if isinstance(trigger, OnChange):
         return {"type": "on_change", "threshold": trigger.threshold, "exit_threshold": trigger.exit_threshold,
@@ -182,10 +204,10 @@ def _attention(value: Any, path: str) -> tuple[Any, tuple[str, ...]]:
             if key == "external_event":
                 events.append(_str(arg, where))
             elif key == "every":
-                triggers.append(Every(_num(arg, where)))
+                triggers.append(Every(_value("sec", arg, where)))
             else:
                 args = _obj(arg, where, (), ("threshold", "exit_threshold", "baseline_s"))
-                kinds = {"threshold": "num", "exit_threshold": "num?", "baseline_s": "num"}
+                kinds = {"threshold": "num", "exit_threshold": "num?", "baseline_s": "sec"}
                 triggers.append(OnChange(**{k: _value(kinds[k], v, _at(where, k)) for k, v in args.items()}))
         except PlanError:
             raise
@@ -203,7 +225,11 @@ def _attention(value: Any, path: str) -> tuple[Any, tuple[str, ...]]:
 
 @dataclass(frozen=True, eq=False)
 class Compiled:
-    """A compiled plan. ``Monitor(**monitor_kwargs, store=..., trace=...)`` runs it."""
+    """A compiled plan. ``Monitor(**monitor_kwargs, store=..., trace=...)`` runs it.
+
+    ``sources`` holds each source's normalized settings. Open source ``i`` with
+    ``max_side=sources[i]["max_side"]``: nothing in ``monitor_kwargs`` enforces it.
+    """
 
     conditions: tuple[Condition, ...]
     monitor_kwargs: dict
@@ -220,6 +246,11 @@ class Compiled:
 
     def _verifier(self) -> str:
         return self._judge.members[-1].name if self._info["cascade"] else self._judge.name  # type: ignore[attr-defined]
+
+    def _cost_notes(self) -> list[str]:
+        if self.monitor_kwargs["max_cost_per_hour"] is not None and self._judge.price is None:
+            return ["cost cap not enforced: judge has no price"]
+        return []
 
     def explain(self) -> dict:
         """Every effective setting, each with its origin: ``plan``, ``sdk_default`` or ``sdk_fixed``."""
@@ -248,7 +279,7 @@ class Compiled:
                 "verification_judge": {"value": None if verify_mode == "off" else self._verifier(),
                                        "origin": "sdk_fixed"},
             })
-        notes = []
+        notes = self._cost_notes()
         if info["cascade"]:
             notes.append(f"detection asks each concern's route; every verification request goes to the last "
                          f"judge in judges.order ({self._verifier()})")
@@ -257,7 +288,9 @@ class Compiled:
             "plan_hash": self.plan_hash, "judge": self._judge.name, "judges": [j["name"] for j in info["judges"]],
             "budget": {k: {"value": self.monitor_kwargs[k], "origin": "plan" if k in info["budget_given"]
                            else "sdk_default"} for k in BUDGET},
-            "sources": [dict(s) for s in self.sources], "concerns": concerns,
+            "sources": [{k: {"value": v, "origin": "plan" if k in info["sources_given"][s["id"]] else "sdk_default"}
+                         for k, v in s.items()} for s in self.sources],
+            "concerns": concerns,
             "events": {k: list(v) for k, v in self.events.items()}, "notes": notes,
         }
 
@@ -265,8 +298,10 @@ class Compiled:
         """A static check of each source's periodic demand against the request budget.
 
         Concerns share one request only when the judge batches and they get identical evidence
-        (same period, kind and zones). Change-triggered and poked demand depends on the footage
-        and is not counted.
+        (same period and kind, and the same crop: the bounding box of the include zones; exclude
+        zones don't change the crop). Change-triggered and poked demand depends on the footage and
+        is not counted, nor is verification: a source with verified events is at best
+        ``best_effort``.
         """
         judge, info = self._judge, self._info
         attempts = max_attempts(judge)
@@ -288,7 +323,7 @@ class Compiled:
                 verifies = verifies or (cond.kind == "event" and cond.verify_mode != "off")
                 for t in triggers:
                     if isinstance(t, Every):
-                        key = ((t.seconds, cond.kind, cond.zones, cond.exclude_zones) if judge.can_batch
+                        key = ((t.seconds, cond.kind, _bbox(cond.zones)) if judge.can_batch
                                else ("one", cond.id, t.seconds))
                         groups.setdefault(key, []).append(cond.id)
                         periods[key] = t.seconds
@@ -299,8 +334,10 @@ class Compiled:
             if unknown:
                 notes.append("change-triggered demand is unknown until measured on representative video")
             if verifies:
-                notes.append("every event candidate costs one more request to verify it")
-            verdict = "infeasible" if demand > ceiling else ("best_effort" if unknown else "feasible")
+                notes.append("every event candidate costs one more request to verify it, against the same "
+                             "ceiling; the candidate rate is unknown until measured")
+            notes += self._cost_notes()
+            verdict = "infeasible" if demand > ceiling else ("best_effort" if unknown or verifies else "feasible")
             out[sid] = {"verdict": verdict, "ceiling_requests_per_min": ceiling, "max_attempts": attempts,
                         "periodic_requests_per_min": round(requests, 6),
                         "periodic_attempts_per_min": round(demand, 6),
@@ -308,7 +345,7 @@ class Compiled:
                                     "conditions": ids} for k, ids in groups.items()],
                         "notes": notes}
         worst = max((s["verdict"] for s in out.values()), key=rank.__getitem__, default="feasible")
-        return {"verdict": worst, "sources": out}
+        return {"verdict": worst, "sources": out, "notes": self._cost_notes()}
 
     def provenance(self) -> dict:
         """What a run used: SDK version, plan identity and hash, judges and prompt hash. No secrets."""
@@ -357,11 +394,12 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
     if plan["schema_version"] != SCHEMA_VERSION:
         _fail("schema_version", f"unsupported {plan['schema_version']!r}; this SDK reads {SCHEMA_VERSION!r}")
     plan_id = _str(plan["plan_id"], "plan_id")
-    revision = _int(plan["revision"], "revision", 1)
+    revision = _int(plan["revision"], "revision", 1, None)
     if "metadata" in plan and not isinstance(plan["metadata"], dict):
         _fail("metadata", "expected an object")
 
     sources: dict[str, dict] = {}
+    sources_given: dict[str, tuple[str, ...]] = {}
     for i, raw in enumerate(_list(plan["sources"], "sources", nonempty=True)):
         path = f"sources[{i}]"
         _obj(raw, path, ("id", "kind"), ("max_side",))
@@ -370,6 +408,7 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
             _fail(f"{path}.id", f"duplicate source id {sid!r}")
         if raw["kind"] != "video":
             _fail(f"{path}.kind", "only 'video' sources are supported")
+        sources_given[sid] = ("id", "kind", *(("max_side",) if "max_side" in raw else ()))
         sources[sid] = {"id": sid, "kind": "video", "max_side": _int(raw.get("max_side", MAX_SIDE),
                                                                      f"{path}.max_side", 1)}
 
@@ -409,14 +448,14 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
             if "pre_seconds" in evidence:
                 if kind == "state":
                     _fail(f"{where}.pre_seconds", "a state is judged on the newest frame, not a clip")
-                if _num(evidence["pre_seconds"], f"{where}.pre_seconds") != EVENT_CLIP_S:
+                if _value("sec", evidence["pre_seconds"], f"{where}.pre_seconds") != EVENT_CLIP_S:
                     _fail(f"{where}.pre_seconds", f"must be {EVENT_CLIP_S}: per-condition evidence windows "
                                                   "are not supported yet")
         events: tuple[str, ...] = ()
         if "attention" in raw:
             kwargs["trigger"], events = _attention(raw["attention"], f"{path}.attention")
         concerns[cid] = {"kwargs": kwargs, "route": route, "source": sid, "events": events,
-                         "given": set(kwargs) - {"id", "text", "version"} | {"id", "text", "kind"}, "path": path}
+                         "given": set(kwargs) - {"version"} | {"judge"}, "path": path}
 
     # Judges: one distinct judge is used as is; more need an order and become a cascade.
     used = _dedupe([routes[c["route"]] for c in concerns.values()])
@@ -454,8 +493,8 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
                 budget[key] = _int(raw[key], f"budget.{key}", 1)
         if raw.get("max_cost_per_hour") is not None:
             cost = _num(raw["max_cost_per_hour"], "budget.max_cost_per_hour")
-            if cost <= 0:
-                _fail("budget.max_cost_per_hour", "must be positive, or null for no cap")
+            if cost <= 0 or cost > MAX_COUNT:
+                _fail("budget.max_cost_per_hour", f"must be positive and at most {MAX_COUNT}, or null for no cap")
             budget["max_cost_per_hour"] = cost
     if budget["max_requests_per_min"] < max_attempts(judge):
         _fail("budget.max_requests_per_min", f"{budget['max_requests_per_min']} is below the "
@@ -477,12 +516,17 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
     judges_info = [_judge_info(j, routes) for j in members]
     effective = {
         "schema_version": SCHEMA_VERSION, "plan_id": plan_id, "revision": revision,
-        "sources": list(sources.values()), "budget": budget, "judges": [j["name"] for j in judges_info],
-        "conditions": [{**encode_condition(cond), "trigger": _describe(cond.trigger)} for cond in conditions],
-        "events": {k: list(v) for k, v in events.items()},
+        "sources": sorted(sources.values(), key=lambda s: s["id"]), "budget": budget,
+        "judges": [j["name"] for j in judges_info],
+        "conditions": sorted(({**encode_condition(cond), "trigger": _describe(cond.trigger)} for cond in conditions),
+                             key=lambda c: c["id"]),
+        "events": {k: sorted(v) for k, v in events.items()},
+        "sdk_fixed": {"event_clip_s": EVENT_CLIP_S, "clip_frames": CLIP_FRAMES, "deadlines": DEADLINES,
+                      "default_triggers": {k: [_describe(t) for t in v] for k, v in DEFAULT_TRIGGERS.items()}},
     }
     canonical = json.dumps(effective, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    info = {"concerns": concerns, "judges": judges_info, "cascade": is_cascade, "budget_given": budget_given}
+    info = {"concerns": concerns, "judges": judges_info, "cascade": is_cascade, "budget_given": budget_given,
+            "sources_given": sources_given}
     return Compiled(
         conditions=tuple(conditions),
         monitor_kwargs={"judge": judge, "conditions": tuple(conditions), **budget},
