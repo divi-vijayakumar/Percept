@@ -81,8 +81,8 @@ def attention_only(compiled: Compiled, labels: Labels, clips: Sequence[str], *, 
                    fps: Optional[float] = None, label_of: Optional[Mapping[str, str]] = None) -> list[ClipRun]:
     """The trigger stage alone: one :class:`ClipRun` per clip whose ``fires`` are the looks the
     attention step makes due (trigger looks and the settled look after a scene reset), at the clip
-    time of their frame. No judge is called; ``cost_usd`` is 0 and ``compute_s`` is process CPU
-    seconds. Score it with :func:`~percept.plans.score.evaluate`: ``funnel["candidate"]`` counts
+    time of their frame. No judge is called; ``cost_usd`` is 0 and ``compute_s`` is the CPU
+    seconds of the whole process while the clip ran. Score it with :func:`~percept.plans.score.evaluate`: ``funnel["candidate"]`` counts
     the occurrences a look would have seen."""
     rate, max_side, names = _setup(compiled, labels, clips, fps, label_of)
     root = os.fspath(video_root)
@@ -267,13 +267,14 @@ def _base_id(request_id: str) -> str:
 
 async def _watch(compiled: Compiled, path: str, rate: float, max_side: int, names: Mapping[str, str],
                  guard: CachingJudge, trace_path: Path, speed: Optional[float]) -> ClipRun:
-    shown, clock, start = _Shown(guard), [], time.time()    # clock: [anchor, last clip time]
+    shown, clock, start = _Shown(guard), [], []    # clock: [anchor, last clip time]; start: first arrival
 
     def on_frame(frame: Any) -> None:     # on the capture thread: pacing slows only decoding
         clock[:] = [frame.t_wall if not clock else clock[0], frame.t_wall - (clock[0] if clock else frame.t_wall)]
         shown.note(frame.image, clock[1])
+        start[:] = start or [time.time()]       # paced from the first frame, not from startup
         if speed:
-            time.sleep(max(0.0, start + clock[1] / speed - time.time()))
+            time.sleep(max(0.0, start[0] + clock[1] / speed - time.time()))
 
     met, cpu, paid, refused = [], time.process_time(), guard.spent, guard.refused
     source = open_source(path, fps=rate, max_side=max_side, on_frame=on_frame)
