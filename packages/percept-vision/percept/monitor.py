@@ -272,6 +272,7 @@ class _Stream:
         self.totals: Counter = Counter()
         self.judge_failures = 0
         self.budget_blocked = False
+        self.budget_reason: Optional[str] = None     # the budget_exhausted reason last reported
         self.eof = False
         self.traced_versions: Optional[dict] = None     # the condition set last written to the trace
         self.traced_fates: Counter = Counter()          # runtime fates of this minute, not yet traced
@@ -603,7 +604,7 @@ class _Stream:
                 del self.pending[key]               # the stream ended: no frame will come
                 self.starve(w)
                 self.drop(w, "ended", now)
-        refused = False
+        refused = held = False
         if self.verify_task is None and self.verifies:
             for key in [k for k in self.verifies if k[0] not in m._conds]:
                 del self.verifies[key]
@@ -623,18 +624,24 @@ class _Stream:
             later = [w.not_before - now for w in self.verifies.values() if w.not_before > now]
             wait = min([wait] + later)
         if self.detect_task is None and self.pending:
-            group = self.group()
-            if group and self.start(group, "detect", now, headroom=self.verify_headroom(group)) == "budget":
+            headroom = self.verify_headroom()
+            group = self.group(headroom)
+            why = self.start(group, "detect", now, headroom=headroom) if group else None
+            if why in ("budget", "held"):
                 refused = True
+                held = why == "held"
                 for w in group:
                     w.blocked = True
             deadlines = [w.deadline - now for w in self.pending.values() if w.deadline is not None]
             wait = min([wait] + deadlines)
+        reason = ("attempts are held for a waiting or likely verification" if held
+                  else f"more than {m.max_requests_per_min} attempts a minute are due") if refused else None
         if refused != self.budget_blocked:
             self.budget_blocked = refused
             self.blind_set("budget_exhausted", refused)
-            if refused:
-                self.health("budget_exhausted", f"more than {m.max_requests_per_min} attempts a minute are due")
+        if reason is not None and reason != self.budget_reason:   # reported again when the reason changes
+            self.health("budget_exhausted", reason)
+        self.budget_reason = reason
         changes = [c for c in (self.budget.next_change(now), m._cost.next_change(now)) if c is not None]
         if refused and changes:
             wait = min([wait] + changes)
@@ -645,14 +652,14 @@ class _Stream:
             m._release()
         return max(0.005, wait)
 
-    def group(self) -> list[_Work]:
+    def group(self, headroom: int = 0) -> list[_Work]:
         """The most urgent look that can be judged now, plus every waiting look with identical
         evidence (a look whose evidence is unavailable doesn't hold up the others)."""
         order = sorted(self.pending.values(), key=lambda w: (w.priority, w.created))
         top, top_ev = next(((w, ev) for w in order if (ev := self.evidence(w)) is not None), (None, None))
         if top is None:
             return []
-        cap = len(order) if self.m.judge.can_batch else max(1, self.m.max_requests_per_min // self.m._attempts)
+        cap = len(order) if self.m.judge.can_batch else max(1, (self.m.max_requests_per_min - headroom) // self.m._attempts)
         group = [top]
         for w in order[order.index(top) + 1:]:
             if len(group) >= cap:
@@ -662,22 +669,25 @@ class _Stream:
                 group.append(w)
         return group
 
-    def verify_headroom(self, group: list[_Work]) -> int:
+    def verify_headroom(self) -> int:
         """Attempts a detection must leave free in the window: verification comes before new
-        detection, so a look that could open a candidate needing verification (or one made while a
-        verification waits) keeps room for that verification. Applied only when the ceiling can hold
-        a detection and a verification together; a smaller ceiling keeps first-come order."""
+        detection, so while a verification waits, or a pending look could open a candidate that
+        needs one, a detection keeps room for it. Not applied when the ceiling can't hold a
+        detection and a verification together (first-come order then), or while this stream waits
+        on the dollar cap (holding attempts would not let the verification run)."""
         m = self.m
-        if m.max_requests_per_min < 2 * m._attempts:
+        if m.max_requests_per_min < 2 * m._attempts or self.id in m._cost_waiters:
             return 0
         inflight = self.verify_work if self.verify_task is not None else None
         waiting = any(not w.gone and w is not inflight for w in self.verifies.values())
-        needs = any(m._conds[w.condition_id].verify_mode != "off" for w in group if w.condition_id in m._conds)
-        return m._attempts if waiting or needs else 0
+        likely = any(m._conds[w.condition_id].verify_mode != "off" for w in self.pending.values()
+                     if w.condition_id in m._conds)
+        return m._attempts if waiting or likely else 0
 
     def start(self, works: list[_Work], purpose: str, now: float, headroom: int = 0) -> Optional[str]:
-        """Send one request, or say why not: "pool", "budget" or "gone". ``headroom`` attempts
-        must stay free in the window after this request's reservation."""
+        """Send one request, or say why not: "pool", "budget", "held" (the room kept for
+        verification) or "gone". ``headroom`` attempts must stay free in the window after this
+        request's reservation."""
         m = self.m
         if not self.granted and m._slots >= m.max_concurrent_requests:
             m._waiters[self.id] = self      # first come, first served when a slot frees
@@ -710,8 +720,10 @@ class _Stream:
             cost_ok = False             # another stream has waited longer for the shared dollar cap
         if not cost_ok:
             m._cost_waiters.setdefault(self.id, None)
-        if not (cost_ok and self.budget.fits(reserve + headroom, now)):
+        if not (cost_ok and self.budget.fits(reserve, now)):
             return "budget"
+        if not self.budget.fits(reserve + headroom, now):
+            return "held"               # it fits, but only by taking the room kept for verification
         m._cost_waiters.pop(self.id, None)
         self.budget.take(reserve)       # both ledgers are checked and taken in one step on the loop:
         m._cost.take(cost)              # atomic across every stream

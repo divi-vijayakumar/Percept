@@ -1863,8 +1863,70 @@ def test_verification_comes_before_new_detection_under_a_full_budget(monkeypatch
     assert [d.decision.type for d in got] == ["met"] * 3, [(d.decision.type, d.decision.reason) for d in got]
 
 
+def _bare_stream(m):
+    stream = rt._Stream.__new__(rt._Stream)
+    stream.m, stream.id, stream.verify_task, stream.verify_work = m, "cam", None, None
+    stream.verifies, stream.pending = {}, {}
+    return stream
+
+
 def test_a_ceiling_too_small_for_both_keeps_first_come_order():
     m = percept.Monitor(FakeJudge(answers({"detect": [Y], "verify": [Y]})), [], store=mem(), max_requests_per_min=3)
-    stream = rt._Stream.__new__(rt._Stream)
-    stream.m, stream.verify_task, stream.verify_work, stream.verifies = m, None, None, {}
-    assert stream.verify_headroom([]) == 0          # 3 < 2 x 2 attempts: no reserve
+    assert _bare_stream(m).verify_headroom() == 0          # 3 < 2 x 2 attempts: no reserve
+
+
+def test_no_attempts_are_held_while_the_stream_waits_on_the_dollar_cap():
+    fall = Condition("fall", "a person falls", kind="event")
+    m = percept.Monitor(FakeJudge(answers({"detect": [Y], "verify": [Y]})), [fall], store=mem(), max_requests_per_min=6)
+    stream = _bare_stream(m)
+    stream.pending[("fall", "scene")] = rt._Work(rt.EVENT, "fall", "scene", 0.0)
+    assert stream.verify_headroom() == m._attempts
+    m._cost_waiters["cam"] = None                          # a verification refused for money
+    assert stream.verify_headroom() == 0
+
+
+def test_a_full_group_for_a_non_batching_judge_still_fits_with_the_verification_room(monkeypatch):
+    # Without the group cap a full group (limit // attempts items) plus the kept room could never
+    # fit, even in an empty window, and detection stopped for good.
+    monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
+    conds = [Condition(c, f"event {c}", kind="event", trigger=At(1), rearm_s=60.0) for c in "abcd"]
+    judge = FakeJudge(answers({"detect": [N], "verify": [Y]}), can_batch=False)    # max_attempts 2
+
+    async def main():
+        async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=6) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            await push_frames(src, 30, pause=0.05)
+            return m.stats(), m.coverage("cam")
+
+    stats, cov = run(main())
+    looked = {r.items[0].condition.id for _, _, _, r in judge.sent if r.purpose == "detect"}
+    assert looked == set("abcd")                         # every look was judged, none starved
+    assert all(len(r.items) <= 2 for _, _, _, r in judge.sent)   # (6 - 2) // 2 items a request
+
+
+def test_a_detection_held_for_verification_says_so(monkeypatch):
+    monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
+    thirds = [((x, 0.0), (x + 1 / 3, 0.0), (x + 1 / 3, 1.0), (x, 1.0)) for x in (0.0, 1 / 3, 2 / 3)]
+    conds = [Condition(c, f"event {c}", kind="event", trigger=Always(), zones=(z,), rearm_s=60.0)
+             for c, z in zip("abc", thirds)]
+    judge = FakeJudge(answers({"detect": [Y], "verify": [Y]}), latency_s=0.15)
+    seen = []
+
+    async def main():
+        async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=4) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            feeder = asyncio.create_task(push_frames(src, 60, pause=0.05))
+
+            async def health():
+                async for h in m.health():
+                    seen.append(h)
+            ht = asyncio.create_task(health())
+            await asyncio.wait_for(collect(watch, limit=3), 15.0)
+            feeder.cancel()
+            ht.cancel()
+
+    run(main())
+    details = [h.detail for h in seen if h.kind == "budget_exhausted"]
+    assert any("held for a waiting or likely verification" in d for d in details), details
