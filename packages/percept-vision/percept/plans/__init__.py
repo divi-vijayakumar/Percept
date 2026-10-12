@@ -39,9 +39,12 @@ from percept.contracts import MAX_CLIP_FRAMES, Condition, Due, Frame, Judge
 from percept.judges._cascade import cascade
 from percept.judges.base import EVENT_RULE, STATE_RULE, SYSTEM, VERIFY_NOTE, max_attempts
 from percept.replay import TRACE_FORMAT, encode_condition
+from percept.plans.labels import LabelError, Labels, SplitManifest, load_labels, split
 from percept.triggers import Every, OnChange
 
-__all__ = ["SCHEMA_VERSION", "Compiled", "PlanError", "compile"]
+__all__ = ["SCHEMA_VERSION", "Compiled", "PlanError", "compile",
+           # evaluation (experimental): labels, frozen splits
+           "LabelError", "Labels", "SplitManifest", "load_labels", "split"]
 
 SCHEMA_VERSION = "percept.watch/v1alpha1"
 MAX_SIDE = 640
