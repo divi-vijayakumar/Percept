@@ -687,3 +687,11 @@ def test_feasibility_counts_every_members_of_a_combined_trigger():
     g = compile_(combined([{"on_change": {}}, {"every": 1}])).feasibility()["sources"]["dock"]
     assert g["periodic_requests_per_min"] == 60 and g["verdict"] == "best_effort"
     assert "change-triggered demand is unknown until measured on representative video" in g["notes"]
+
+
+def test_single_trigger_plan_hashes_are_unchanged_by_combined_triggers():
+    # Golden values from before tuple triggers existed: a plan without combined attention keeps
+    # its hash. Update deliberately if an effective setting or a fixed runtime value changes.
+    assert compile_(doorway_plan()).plan_hash == "f1228c4d54ebbe112eec0e38a68e21b8b83e8b148ac334d25a1806fe7e68770b"
+    assert compile_(state_plan()).plan_hash == "c4a8292f40551a134f8d5aa845322bab0cd3113893f1af12935ef54c6d9172c4"
+    assert compile_(poke_plan()).plan_hash == "7b82367febe7ac6dca12d88de06a9fc133e98c9457ab893b303da25063bcccc6"

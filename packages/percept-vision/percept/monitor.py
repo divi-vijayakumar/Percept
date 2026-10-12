@@ -241,6 +241,7 @@ class _Work:
     not_before: float = 0.0                     # verify retries
     blocked: bool = False                       # waited on the budget
     held: bool = False                          # waited because attempts were kept for verification
+    admitted: bool = False                      # sent to the judge at least once (counted once per look)
     gone: bool = False                          # the original evidence is no longer held
     starved: bool = False                       # counted once as evidence_unavailable
     frames: tuple = ()                          # an original-interval verification's frames
@@ -775,7 +776,9 @@ class _Stream:
         for w in works:
             if w.verify is None:
                 del self.pending[(w.condition_id, w.subject)]
-            self.tcount(w.condition_id, w.trigger, "admitted")
+            if not w.admitted:     # a verification retried is still one look
+                w.admitted = True
+                self.tcount(w.condition_id, w.trigger, "admitted")
         refs = tuple(EvidenceRef(self.id, self.epoch_map.get(f.stream_epoch, epoch), f.seq, f.t_wall) for f in frames)
         self.remember(self.req_refs, request.request_id, refs, 256)
         self.remember(self.req_frames, request.request_id, frames, KEEP_REQUEST_FRAMES)
@@ -900,6 +903,7 @@ class _Stream:
                     old.cancel()
             elif t is decide.RequestVerify:
                 w = _Work(VERIFY, e.condition_id, e.subject, self.m._mono(), verify=e, trigger="verify")
+                self.tcount(e.condition_id, "verify", "due")
                 if e.mode == "original":    # pinned now: frames are ephemeral
                     w.frames = self.original(e)
                 self.verifies[(e.condition_id, e.subject)] = w
@@ -1555,7 +1559,9 @@ class Monitor:
         as ``on_change(0.2)`` or ``every(5)``, or ``poke``, ``settled``, ``recheck``, ``verify``):
         ``due``, ``admitted`` (sent to the judge), ``coalesced`` (merged into a look already
         waiting, which keeps its first label), ``dropped_budget`` and ``dropped_for_verification``.
-        Reporting only: every trigger draws on the stream's one budget."""
+        A verification is one look however often it is retried. A look still waiting, or discarded
+        because its condition was removed or paused, is in ``due`` only. Reporting only: every
+        trigger draws on the stream's one budget."""
         stream = self._streams.get(stream_id)
         if stream is None:
             raise ValueError(f"unknown stream {stream_id!r}")

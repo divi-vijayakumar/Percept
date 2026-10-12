@@ -2145,3 +2145,49 @@ def test_a_storm_of_tuple_triggers_never_exceeds_the_window(monkeypatch):
     for cid, per in cov["triggers"].items():
         coalesced = sum(p["coalesced"] for p in per.values())
         assert coalesced == cov["fates"][cid].get("coalesced", 0)
+
+
+def test_each_tuple_member_keeps_its_own_priority(monkeypatch):
+    # A state with (every, change-like) members: the heartbeat member's looks are HEARTBEAT, the
+    # other member's are STATE, exactly as the 0.9 default pair (on_change, every(300)) is.
+    seen = []
+    original = rt._Stream.enqueue
+
+    def spy(self, cid, subject, prio, **kw):
+        seen.append((kw.get("trigger"), prio))
+        return original(self, cid, subject, prio, **kw)
+
+    monkeypatch.setattr(rt._Stream, "enqueue", spy)
+    door = Condition("door", "the door is open", trigger=(percept.every(100), At(3)))
+    judge = FakeJudge(answers({"detect": [N], "verify": [N]}))
+
+    async def main():
+        async with percept.Monitor(judge, [door], store=mem()) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            await push_frames(src, 5)
+
+    run(main())
+    prios = {label: prio for label, prio in seen if label is not None}
+    assert prios["every(100)"] == rt.HEARTBEAT and prios["At"] == rt.STATE, seen
+
+
+def test_a_retried_verification_counts_as_one_due_and_one_admitted_look(monkeypatch):
+    monkeypatch.setattr(rt, "VERIFY_RETRY_S", 0.05)
+    fall = Condition("fall", "a person falls", kind="event", trigger=At(1))
+    judge = FakeJudge(answers({"detect": [Y], "verify": [RetryableError("down"), RetryableError("down"), Y]}),
+                      retries=0)
+
+    async def main():
+        async with percept.Monitor(judge, [fall], store=mem()) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            await push_frames(src, 3)
+            got = await asyncio.wait_for(watch.__anext__(), 5.0)
+            return got, m.coverage("cam")
+
+    got, cov = run(main())
+    assert got.decision.type == "met"
+    assert sum(1 for *_, r in judge.sent if r.purpose == "verify") == 3        # sent three times
+    assert cov["triggers"]["fall"]["verify"]["due"] == 1
+    assert cov["triggers"]["fall"]["verify"]["admitted"] == 1
