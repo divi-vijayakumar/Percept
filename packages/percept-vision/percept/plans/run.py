@@ -151,7 +151,9 @@ class CachingJudge:
     they did live, and with ``replay_latency`` the reply waits the original latency divided by
     ``speed``. ``spent`` is what was actually paid; ``hits`` and ``saved_usd`` count the replays.
     Failed replies are not kept. ``cache``: True for a new cache, a mapping to share one across
-    runs, None for none.
+    runs, None for none. The cache assumes the wrapped judge answers from the prompt and pixels
+    alone: a judge that reads other request fields (say, the wall-clock evidence times), or has
+    generation settings outside its identity, should define ``cache_key``.
     """
 
     def __init__(self, inner: Any, *, cap_usd: Optional[float], spend_log: Union[None, str, os.PathLike] = None,
@@ -393,8 +395,9 @@ def score_split(compiled: Compiled, labels: Labels, manifest: SplitManifest, *, 
 
     With ``ledger`` (the path given to :func:`register`), the registration must be in it, the
     test scoring is appended to it, and a second test scoring of the same registration is refused
-    unless ``rescore=True`` (then it is recorded as a rescore). Without a ledger, scoring the
-    test split once is the caller's responsibility."""
+    unless ``rescore=True`` (then it is recorded as a rescore). The ledger is an append-only text
+    file, a record you can audit rather than a lock: two scorers running at once can both pass the
+    check. Without a ledger, scoring the test split once is the caller's responsibility."""
     if split not in SPLITS:
         raise ValueError(f"split must be one of {', '.join(SPLITS)}, got {split!r}")
     if manifest.labels_hash != labels.labels_hash:
