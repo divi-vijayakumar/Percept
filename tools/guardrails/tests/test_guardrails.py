@@ -94,6 +94,17 @@ def test_plans_package_is_core(tmp_path, path, bad_import):
     assert problems and path.split("/")[1] in problems[0], bad_import
 
 
+def test_plans_run_is_shell_and_core_may_not_import_it(tmp_path):
+    files = {**CLEAN, "plans/__init__.py": "x = 1\n", "plans/labels.py": "x = 1\n",
+             "plans/run.py": "import asyncio\nfrom percept.monitor import x\nfrom percept.plans import labels\n"}
+    assert g.check_boundaries(make_tree(tmp_path, files)) == []
+    for path in ("plans/__init__.py", "plans/labels.py", "decide.py"):
+        root = make_tree(tmp_path, {**files, path: "from percept.plans import run\n"})
+        problems = g.check_boundaries(root)
+        assert problems and "run" in problems[0], path
+        make_tree(tmp_path, files)
+
+
 def test_plans_may_build_a_cascade_but_other_core_may_not(tmp_path):
     files = {**CLEAN, "plans/__init__.py": "from percept.judges._cascade import cascade\n",
              "judges/_cascade.py": "import time\n"}

@@ -32,6 +32,9 @@ from percept import plans  # experimental: watch plans, compiled to Monitor argu
 from percept import trace  # TraceWriter, read, replay(path); the pure replay is percept.replay
 from percept.sources import PushSource, open_source
 from percept.triggers import every, on_change
+from percept.plans import run as _evaluation  # noqa: E402  experimental: percept.plans.run, not exported
+
+del _evaluation
 
 __version__ = "0.9.0"
 
