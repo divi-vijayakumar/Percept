@@ -63,3 +63,10 @@ def test_watch_plan_compiles_explains_and_runs():
     out = run("watch_plan.py").stdout
     assert "feasibility: \"best_effort\"" in out and "{'shelf_sensor': ('package_fell',)}" in out, out
     assert decisions(out) == ["met", "cleared"], out
+
+
+def test_plan_evaluation_runs_attention_only_a_sweep_and_a_registered_test_split():
+    out = run("plan_evaluation.py").stdout
+    assert "dev, attention only: candidate 1/1, $0.0000" in out, out
+    assert "validation, on_change (default):" in out and "validation, every 3 s:" in out, out
+    assert "test: recall" in out and "registration " in out, out

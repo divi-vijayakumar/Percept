@@ -6,6 +6,17 @@ Notable changes to Percept.
 
 ### API
 
+- Evaluation driver `percept.plans.run` (experimental; reached as a module, no new top-level
+  names): `attention_only(compiled, labels, clips, video_root=)` runs the Monitor's attention step
+  over labelled clips with no judge calls and records the looks made due as `Fire`s (the candidate
+  stage); `run(...)` runs a Monitor per clip with the plan's judge behind `CachingJudge` (a hard
+  dollar cap that reserves the worst case and refuses with `budget`, a per-request spend log, and
+  a reply cache so an identical re-run costs nothing) and turns decisions and the trace into a
+  `ClipRun`; `sweep(configs, ...)` scores the configurations you declare on dev or validation in
+  your order, without ranking them; `register(...)` freezes a plan (plan, manifest and labels
+  hashes, provenance) and `score_split(split=test, ...)` refuses the test split without a
+  matching registration. `examples/plan_evaluation.py` runs the whole flow offline. The
+  benchmark's `CostGuard` is now `CachingJudge` with the cache off; its behaviour is unchanged.
 - Evaluation in `percept.plans` (experimental): `load_labels(doc)` checks ground truth for your
   own clips (the format of the benchmark's `local:` datasets, plus an optional recording `group`)
   and raises `LabelError` with the field path; overlapping occurrences of a label merge;
