@@ -35,7 +35,7 @@ import math
 from dataclasses import dataclass, field, fields
 from typing import Any, Mapping
 
-from percept.contracts import Condition, Due, Frame, Judge
+from percept.contracts import MAX_CLIP_FRAMES, Condition, Due, Frame, Judge
 from percept.judges._cascade import cascade
 from percept.judges.base import EVENT_RULE, STATE_RULE, SYSTEM, VERIFY_NOTE, max_attempts
 from percept.replay import TRACE_FORMAT, encode_condition
@@ -49,8 +49,9 @@ MAX_COUNT = 10**6           # largest integer a plan may give (counts, sizes)
 MAX_SECONDS = 10**7         # longest duration a plan may give
 # Runtime values a plan can't change (mirrors of percept.monitor and Monitor's defaults; a test
 # pins them, so they can't drift apart).
-EVENT_CLIP_S = 4.0
+EVENT_CLIP_S = 4.0          # an event's evidence window unless judgment.evidence sets it
 CLIP_FRAMES = 4
+PREROLL_S = 8.0             # the SDK's default pre-roll: the longest window a plan may ask for
 DEADLINES = {"event": 3.0, "state": 10.0}
 BUDGET = {"max_requests_per_min": 6, "max_cost_per_hour": None, "max_concurrent_requests": 4}
 DEFAULT_TRIGGERS = {"event": (OnChange(),), "state": (OnChange(), Every(300))}
@@ -276,13 +277,16 @@ class Compiled:
         concerns = []
         for cond in self.conditions:
             c, encoded = info["concerns"][cond.id], encode_condition(cond)
-            report = {f.name: {"value": encoded[f.name], "origin": "plan" if f.name in c["given"] else "sdk_default"}
+            report = {f.name: {"value": encoded.get(f.name), "origin": "plan" if f.name in c["given"] else "sdk_default"}
                       for f in fields(Condition) if f.name not in ("trigger", "version")}
             triggers = _members(cond)
             if cond.kind == "event":
-                evidence = {"clip_s": EVENT_CLIP_S, "frames": CLIP_FRAMES, "ends": "at the trigger"}
+                evidence = {"clip_s": EVENT_CLIP_S if cond.clip_s is None else cond.clip_s,
+                            "frames": CLIP_FRAMES if cond.clip_frames is None else cond.clip_frames,
+                            "ends": "at the trigger"}
             else:
                 evidence = {"frames": 1, "which": "the newest frame"}
+            window_given = bool({"clip_s", "clip_frames"} & c["given"])
             verify_mode = cond.verify_mode
             concerns.append({
                 "id": cond.id, "source": c["source"], "route": c["route"], "judge": c["judge"],
@@ -292,7 +296,8 @@ class Compiled:
                 "external_events": list(c["events"]),
                 "version": {"value": cond.version, "origin": "plan"},
                 "verify_mode": {"value": verify_mode, "origin": "plan" if "verify" in c["given"] else "sdk_default"},
-                "evidence": {"value": evidence, "origin": "sdk_fixed"},
+                "evidence": {"value": evidence, "origin": "plan" if window_given
+                             else "sdk_default" if cond.kind == "event" else "sdk_fixed"},
                 "detection_deadline_s": {"value": DEADLINES[cond.kind], "origin": "sdk_fixed"},
                 "verification_judge": {"value": None if verify_mode == "off" else self._verifier(),
                                        "origin": "sdk_fixed"},
@@ -400,6 +405,16 @@ def _dedupe(judges: list) -> list:
     return out
 
 
+def _effective(cond: Condition) -> dict:
+    """A condition as hashed: an evidence window equal to the default is left out, so a plan that
+    spells out the default hashes as one that doesn't."""
+    data = encode_condition(cond)
+    for name, default in (("clip_s", EVENT_CLIP_S), ("clip_frames", CLIP_FRAMES)):
+        if data.get(name) == default:
+            del data[name]
+    return data
+
+
 def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 - the verb is the API
     """Check ``plan`` and compile it; ``routes`` maps the plan's route names to judges."""
     if not isinstance(routes, Mapping) or not routes:
@@ -457,18 +472,26 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
                     kwargs[name] = _value(typ, value, f"{path}.{section}.{key}")
         if "evidence" in judgment:
             where = f"{path}.judgment.evidence"
-            evidence = _obj(judgment["evidence"], where, (), ("pre_seconds", "post_seconds", "max_side"))
+            evidence = _obj(judgment["evidence"], where, (), ("pre_seconds", "frames", "post_seconds", "max_side"))
             if "post_seconds" in evidence:
                 _fail(f"{where}.post_seconds", "not supported: evidence ends at the trigger")
             if "max_side" in evidence and evidence["max_side"] != sources[sid]["max_side"]:
                 _fail(f"{where}.max_side", f"resolution is set per source: sources {sid!r} has max_side "
                                            f"{sources[sid]['max_side']}")
+            for key in ("pre_seconds", "frames"):
+                if key in evidence and kind == "state":
+                    _fail(f"{where}.{key}", "a state is judged on the newest frame, not a clip")
             if "pre_seconds" in evidence:
-                if kind == "state":
-                    _fail(f"{where}.pre_seconds", "a state is judged on the newest frame, not a clip")
-                if _value("sec", evidence["pre_seconds"], f"{where}.pre_seconds") != EVENT_CLIP_S:
-                    _fail(f"{where}.pre_seconds", f"must be {EVENT_CLIP_S}: per-condition evidence windows "
-                                                  "are not supported yet")
+                clip_s = _value("sec", evidence["pre_seconds"], f"{where}.pre_seconds")
+                if not 0 < clip_s <= PREROLL_S:
+                    _fail(f"{where}.pre_seconds", f"must be positive and at most the {PREROLL_S:g} s pre-roll "
+                                                  "(a source with its own PreRoll needs one at least this long)")
+                kwargs["clip_s"] = clip_s
+            if "frames" in evidence:
+                clip_frames = _int(evidence["frames"], f"{where}.frames", 1)
+                if clip_frames > MAX_CLIP_FRAMES:
+                    _fail(f"{where}.frames", f"expected an integer <= {MAX_CLIP_FRAMES}")
+                kwargs["clip_frames"] = clip_frames
         events: tuple[str, ...] = ()
         if "attention" in raw:
             kwargs["trigger"], events = _attention(raw["attention"], f"{path}.attention")
@@ -536,10 +559,10 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
         "schema_version": SCHEMA_VERSION, "plan_id": plan_id, "revision": revision,
         "sources": sorted(sources.values(), key=lambda s: s["id"]), "budget": budget,
         "judges": [j["name"] for j in judges_info],
-        "conditions": sorted(({**encode_condition(cond), "trigger": _describe_any(cond.trigger)} for cond in conditions),
+        "conditions": sorted(({**_effective(cond), "trigger": _describe_any(cond.trigger)} for cond in conditions),
                              key=lambda c: c["id"]),
         "events": {k: sorted(v) for k, v in events.items()},
-        "sdk_fixed": {"event_clip_s": EVENT_CLIP_S, "clip_frames": CLIP_FRAMES, "deadlines": DEADLINES,
+        "sdk_fixed": {"event_clip_s": EVENT_CLIP_S, "clip_frames": CLIP_FRAMES, "deadlines": DEADLINES,  # clip: defaults
                       "default_triggers": {k: [_describe(t) for t in v] for k, v in DEFAULT_TRIGGERS.items()}},
     }
     canonical = json.dumps(effective, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

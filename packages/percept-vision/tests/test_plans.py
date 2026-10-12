@@ -82,7 +82,7 @@ def test_doorway_events_compile_to_their_conditions():
     c = compile_(doorway_plan())
     assert c.conditions == (
         Condition("enters", "a person enters through the doorway", kind="event", trigger=on_change(0.25),
-                  zones=(tup(DOORWAY),), rearm_s=30.0),
+                  zones=(tup(DOORWAY),), rearm_s=30.0, clip_s=4.0),   # evidence.pre_seconds, as written
         Condition("opens", "a person opens the door", kind="event", trigger=on_change(), zones=(tup(DOOR),),
                   not_when=("the door is already open",), min_confidence=0.7),
     )
@@ -164,8 +164,10 @@ INVALID = [
     (lambda p: p["sources"][0].update(kind="audio"), "sources[0].kind: only 'video'"),
     (lambda p: j0(p)["evidence"].update(post_seconds=2), "concerns[0].judgment.evidence.post_seconds: not supported"),
     (lambda p: j0(p)["evidence"].update(max_side=320), "concerns[0].judgment.evidence.max_side: resolution is set per source"),
-    (lambda p: j0(p)["evidence"].update(pre_seconds=2.0), "concerns[0].judgment.evidence.pre_seconds: must be 4.0: "
-                                                          "per-condition evidence windows are not supported yet"),
+    (lambda p: j0(p)["evidence"].update(pre_seconds=9.0), "concerns[0].judgment.evidence.pre_seconds: must be positive "
+                                                          "and at most the 8 s pre-roll"),
+    (lambda p: j0(p)["evidence"].update(frames=17), "concerns[0].judgment.evidence.frames: expected an integer <= 16"),
+    (lambda p: j0(p)["evidence"].update(frames=0), "concerns[0].judgment.evidence.frames: expected an integer >="),
     (lambda p: p["concerns"][0]["attention"]["any"].append({"sometimes": 5}), "concerns[0].attention.any[1].sometimes: unknown"),
     (lambda p: p["concerns"][0]["attention"].update(any=[{"every": -1}]), "concerns[0].attention.any[0].every:"),
     (lambda p: p["concerns"][0]["attention"].update(any=[{"on_change": {"threshold": 2}}]),
@@ -193,6 +195,28 @@ def test_condition_errors_carry_the_concern_path():
     plan = state_plan()
     plan["concerns"][0]["judgment"]["verification"] = "original"
     with pytest.raises(PlanError, match=r"^concerns\[0\]: states verify on a fresh frame or not at all"):
+        compile_(plan)
+
+
+def test_an_event_evidence_window_compiles_to_clip_s_and_clip_frames():
+    plan = doorway_plan()
+    j0(plan)["evidence"] = {"pre_seconds": 2.5, "frames": 6}
+    c = compile_(plan)
+    assert (c.conditions[0].clip_s, c.conditions[0].clip_frames) == (2.5, 6)
+    concern = c.explain()["concerns"][0]
+    assert concern["evidence"] == {"value": {"clip_s": 2.5, "frames": 6, "ends": "at the trigger"}, "origin": "plan"}
+    assert concern["fields"]["clip_s"] == {"value": 2.5, "origin": "plan"}
+    assert concern["fields"]["clip_frames"] == {"value": 6, "origin": "plan"}
+    assert c.plan_hash != compile_(doorway_plan()).plan_hash
+    spelled = doorway_plan()
+    j0(spelled)["evidence"] = {"pre_seconds": 4.0, "frames": 4}     # the defaults, written out
+    assert compile_(spelled).plan_hash == compile_(doorway_plan()).plan_hash
+
+
+def test_frames_on_a_state_is_refused():
+    plan = state_plan()
+    plan["concerns"][0]["judgment"]["evidence"] = {"frames": 2}
+    with pytest.raises(PlanError, match=r"evidence\.frames: a state is judged on the newest frame"):
         compile_(plan)
 
 
@@ -278,8 +302,11 @@ def test_explain_reports_every_condition_field_with_an_origin():
         assert set(concern["fields"]) == expected
         assert all(v["origin"] in ("plan", "sdk_default") for v in concern["fields"].values())
         assert concern["trigger"]["origin"] == "plan" and concern["version"] == {"value": 1, "origin": "plan"}
+        given = "pre_seconds" in doorway_plan()["concerns"][report["concerns"].index(concern)]["judgment"].get(
+            "evidence", {})
         assert concern["evidence"] == {"value": {"clip_s": rt.EVENT_CLIP_S, "frames": rt.CLIP_FRAMES,
-                                                 "ends": "at the trigger"}, "origin": "sdk_fixed"}
+                                                 "ends": "at the trigger"},
+                                       "origin": "plan" if given else "sdk_default"}
         assert concern["detection_deadline_s"] == {"value": rt.DEADLINES[rt.EVENT], "origin": "sdk_fixed"}
         assert concern["verification_judge"] == {"value": "fake", "origin": "sdk_fixed"}
     enters = report["concerns"][0]["fields"]
