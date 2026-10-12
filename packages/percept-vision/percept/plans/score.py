@@ -308,8 +308,9 @@ def bootstrap(tallies: Sequence[Mapping], seed: int = 0, n: int = BOOTSTRAP_N,
 @dataclass(frozen=True)
 class ClipRun:
     """What a run did on one labelled clip: ``seconds`` of it watched, its predictions, looks,
-    drops and detector fires, the API dollars it spent, the local compute seconds it used, and
-    the cooldown one report imposes on the next of its condition."""
+    drops and detector fires, the API dollars it spent (``cost_usd``: as live, a cached reply at its
+    original cost; ``paid_usd``: actually paid), the local compute seconds it used, and the
+    cooldown one report imposes on the next of its condition."""
 
     file: str
     seconds: float
@@ -320,6 +321,7 @@ class ClipRun:
     cost_usd: float = 0.0
     compute_s: float = 0.0
     cooldown_s: float = 0.0
+    paid_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -354,6 +356,7 @@ class Score:
     compute_s: float
     compute_s_per_true_event: Optional[float]
     ci95: Mapping[str, Any] = field(default_factory=dict)
+    paid_usd: float = 0.0
 
 
 def evaluate(labels: Labels, runs: Sequence[ClipRun], *, tol: float = TOLERANCE_S, seed: int = 0,
@@ -424,4 +427,5 @@ def evaluate(labels: Labels, runs: Sequence[ClipRun], *, tol: float = TOLERANCE_
         funnel_not_applicable=tuple(s for s, on in (("admitted", judged), ("evaluated", judged),
                                                     ("verified", verifies)) if not on),
         cost_usd=cost, cost_per_true_event=_ratio(cost, tp), compute_s=compute,
-        compute_s_per_true_event=_ratio(compute, tp), ci95=bootstrap(tallies, seed, n))
+        compute_s_per_true_event=_ratio(compute, tp), ci95=bootstrap(tallies, seed, n),
+        paid_usd=sum(r.paid_usd for r in runs))

@@ -40,7 +40,7 @@ from typing import Any, Mapping, MutableMapping, Optional, Sequence, Union
 import numpy as np
 
 from percept import attention
-from percept.contracts import JudgeRequest, JudgeResult, Observation
+from percept.contracts import JudgeRequest, JudgeResult
 from percept.delivery import MemoryStore
 from percept.judges import base
 from percept.monitor import DEFAULT_FPS, Monitor
@@ -113,6 +113,11 @@ def attention_only(compiled: Compiled, labels: Labels, clips: Sequence[str], *, 
 # --------------------------------------------------------------------------- the judge
 
 
+def _rebase(old: str, new: str) -> str:
+    """``old`` request id moved onto ``new``, keeping a per-condition suffix (``id/condition``)."""
+    return new + old[len(old.split("/")[0]):]
+
+
 class CachingJudge:
     """Wraps a judge with a hard dollar cap, a spend log and a reply cache. Implements the Judge
     protocol.
@@ -125,15 +130,20 @@ class CachingJudge:
     Spend log: with ``spend_log`` (a path), one JSON line per request sent, so spend survives a
     killed run.
 
-    Cache: replies are kept by the images (sha256 of their pixels), the conditions (id, text,
-    version, kind, subject, counter-example notes), the purpose and the judge's name; an identical
-    request is answered from the cache, sends nothing and costs $0 (and uses no request attempts).
+    Cache: replies are kept with their usage, by the images (sha256 of their pixels), the conditions (id, text,
+    version, kind, subject, counter-example notes), the purpose and the judge's name. An identical
+    request is answered from the cache and sends nothing, but is replayed as it happened: the
+    original usage (attempts, tokens, cost) is returned, so the Monitor's budget and cost settle as
+    they did live, and with ``replay_latency`` the reply waits the original latency divided by
+    ``speed``. ``spent`` is what was actually paid; ``hits`` and ``saved_usd`` count the replays.
     Failed replies are not kept. ``cache``: True for a new cache, a mapping to share one across
     runs, None for none.
     """
 
     def __init__(self, inner: Any, *, cap_usd: Optional[float], spend_log: Union[None, str, os.PathLike] = None,
-                 cache: Union[bool, None, MutableMapping[str, tuple[Observation, ...]]] = True) -> None:
+                 cache: Union[bool, None, MutableMapping[str, tuple]] = True, replay_latency: bool = True,
+                 speed: Optional[float] = 1.0) -> None:
+        self.replay_latency, self.speed, self.saved_usd = replay_latency, speed, 0.0
         if cap_usd is not None and (not math.isfinite(cap_usd) or cap_usd < 0):
             raise ValueError(f"cap_usd must be a finite number >= 0 or None, got {cap_usd!r}")
         if cap_usd is not None and getattr(inner, "price", None) is None:
@@ -171,12 +181,20 @@ class CachingJudge:
     async def judge(self, request: JudgeRequest) -> JudgeResult:
         key = None if self.cache is None else self.key(request)
         cached = None if key is None else self.cache.get(key)  # type: ignore[union-attr]
-        if cached is not None:
+        if cached is not None:      # replayed as it happened live: same usage, same latency
+            observations, usage = cached
             self.hits += 1
+            self.saved_usd += sum(u.usage.cost_usd for u in usage)
+            latency = sum(u.usage.latency_s for u in usage)
+            if self.replay_latency and self.speed and latency:
+                await asyncio.sleep(latency / self.speed)
             gen = {i.condition.id: i.occurrence_gen for i in request.items}
-            return JudgeResult(tuple(dataclasses.replace(
-                o, request_id=request.request_id, stream_id=request.stream_id, stream_epoch=request.stream_epoch,
-                evidence_t=request.evidence_t, occurrence_gen=gen[o.condition_id]) for o in cached), ())
+            rid = request.request_id
+            return JudgeResult(
+                tuple(dataclasses.replace(o, request_id=_rebase(o.request_id, rid), stream_id=request.stream_id,
+                                          stream_epoch=request.stream_epoch, evidence_t=request.evidence_t,
+                                          occurrence_gen=gen[o.condition_id]) for o in observations),
+                tuple(dataclasses.replace(u, request_id=_rebase(u.request_id, rid)) for u in usage))
         reserve = self.reservation(request)
         if self.cap is not None and self.spent + self.held + reserve > self.cap:
             self.refused += 1
@@ -187,7 +205,7 @@ class CachingJudge:
         try:
             result = await self.inner.judge(request)
             if key is not None and not any(o.failed for o in result.observations):
-                self.cache[key] = result.observations  # type: ignore[index]
+                self.cache[key] = (result.observations, result.usage)  # type: ignore[index]
             return result
         finally:
             self.held -= reserve
@@ -242,7 +260,7 @@ async def _watch(compiled: Compiled, path: str, rate: float, max_side: int, name
         if speed:
             time.sleep(max(0.0, start + clock[1] / speed - time.time()))
 
-    met, cpu = [], time.process_time()
+    met, cpu, paid = [], time.process_time(), guard.spent
     source = open_source(path, fps=rate, max_side=max_side, on_frame=on_frame)
     async with Monitor(**dict(compiled.monitor_kwargs, judge=shown), store=MemoryStore(), trace=trace_path) as m:
         async for delivery in m.watch(source, fps=rate):
@@ -271,7 +289,7 @@ async def _watch(compiled: Compiled, path: str, rate: float, max_side: int, name
                       and lk.answer == "yes" and lk.confidence >= MIN_CONFIDENCE for t in lk.frames})
         preds.append(Prediction(names[d.condition_id], ev[0], ev[-1], ev[-1], d.confidence, tuple(yes)))
     return ClipRun(_basename(path), (clock[1] if clock else 0.0) + 1.0 / rate, tuple(preds),
-                   tuple(lk for _, _, lk in looks), tuple(drops), cost_usd=cost,
+                   tuple(lk for _, _, lk in looks), tuple(drops), cost_usd=cost, paid_usd=guard.spent - paid,
                    compute_s=time.process_time() - cpu, cooldown_s=_cooldown(compiled))
 
 
@@ -283,8 +301,9 @@ def run(compiled: Compiled, labels: Labels, clips: Sequence[str], *, video_root:
     (a fresh ``MemoryStore`` and a temporary trace), its judge wrapped in one :class:`CachingJudge`
     for the whole call (``judge_cap_usd`` in dollars; pass the same ``cache`` mapping to reuse
     replies across calls). Decisions become predictions, and the trace's looks and dropped looks
-    the records misses are attributed with. ``cost_usd``: what the judge reported; ``compute_s``:
-    process CPU seconds.
+    the records misses are attributed with. ``cost_usd``: what the run would have cost live (a
+    cached reply counts its original cost); ``paid_usd``: what was actually paid; ``compute_s``:
+    CPU seconds of the whole process while the clip ran (decoding and the runtime included).
 
     Frames are fed at ``speed`` times real time (None: as fast as the Monitor takes them, which
     leaves it little time to look). The Monitor's request budget, deadlines and timers run on the
@@ -296,7 +315,7 @@ def run(compiled: Compiled, labels: Labels, clips: Sequence[str], *, video_root:
         raise ValueError(f"judge_cap_usd must be a finite number >= 0, got {judge_cap_usd!r}")
     rate, max_side, names = _setup(compiled, labels, clips, fps, label_of)
     guard = CachingJudge(compiled.monitor_kwargs["judge"], cap_usd=judge_cap_usd, spend_log=spend_log,
-                         cache=True if cache is None else cache)
+                         cache=True if cache is None else cache, speed=speed)
 
     async def main(tmp: str) -> list[ClipRun]:
         return [await _watch(compiled, os.path.join(os.fspath(video_root), f), rate, max_side, names, guard,

@@ -126,16 +126,22 @@ def counting(sent):
     return FakeJudge(answer, price=PRICE)
 
 
-def test_run_finds_the_square_and_a_second_identical_run_costs_nothing(clip):
+def test_run_finds_the_square_and_a_second_identical_run_replays_it_exactly_for_nothing(clip):
     root, name = clip
     sent, cache, labels = [], {}, labels_for([name])
     c = compiled(counting(sent))
     first = ev.run(c, labels, [name], video_root=root, judge_cap_usd=1.0, cache=cache, speed=SPEED)
     score = plans.evaluate(labels, first)
     assert score.tp == 1 and score.fp == 0 and score.cost_usd > 0 and first[0].looks and sent
+    assert score.paid_usd == score.cost_usd
     n = len(sent)
     second = ev.run(c, labels, [name], video_root=root, judge_cap_usd=1.0, cache=cache, speed=SPEED)
-    assert len(sent) == n and sum(r.cost_usd for r in second) == 0 and plans.evaluate(labels, second).tp == 1
+    again = plans.evaluate(labels, second)
+    assert len(sent) == n and again.paid_usd == 0 and second[0].paid_usd == 0
+    for a, b in zip(first, second):     # the same looks, drops and decisions, at the live cost
+        assert (a.predictions, a.looks, a.drops, a.cost_usd) == (b.predictions, b.looks, b.drops, b.cost_usd)
+    skip = {"compute_s", "compute_s_per_true_event", "paid_usd"}
+    assert {k: v for k, v in vars(score).items() if k not in skip} == {k: v for k, v in vars(again).items() if k not in skip}
 
 
 def request(i: int, image=None) -> percept.JudgeRequest:
@@ -200,7 +206,9 @@ def test_caching_judge_sends_nothing_for_an_identical_request():
     guard = ev.CachingJudge(counting(sent), cap_usd=1.0)
     a = asyncio.run(guard.judge(request(1)))
     b = asyncio.run(guard.judge(request(2, image=np.full((8, 8, 3), 1, np.uint8))))
-    assert sent == ["r1"] and guard.requests == 1 and guard.hits == 1 and b.usage == ()
+    assert sent == ["r1"] and guard.requests == 1 and guard.hits == 1
+    assert [u.usage for u in b.usage] == [u.usage for u in a.usage] and b.usage[0].request_id == "r2"
+    assert guard.spent == a.usage[0].usage.cost_usd and guard.saved_usd == guard.spent > 0
     assert b.observations[0].request_id == "r2" and b.observations[0].answer == a.observations[0].answer
 
 
