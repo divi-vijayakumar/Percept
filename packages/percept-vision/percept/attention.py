@@ -19,12 +19,68 @@ effects (health, blind intervals, fates, the look queue).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from percept.contracts import Condition, Frame
-from percept.triggers import Every, QualityGate, SceneMonitor
+from percept.triggers import Every, OnChange, QualityGate, SceneMonitor
 
 EVENT, HEARTBEAT, STATE = "event", "heartbeat", "state"     # the priority kind of a look
+# The runtime's queue priority for each kind of look, lower first (verifications come before
+# all of them, rechecks after).
+PRIORITY = {EVENT: 2, STATE: 3, HEARTBEAT: 4}
+
+
+def trigger_key(trigger: Any) -> Any:
+    """Triggers group (and keep their state) by value when hashable, else by identity: two
+    conditions with equal triggers share one step and one state."""
+    try:
+        hash(trigger)
+    except TypeError:
+        return ("id", id(trigger))
+    return trigger
+
+
+def trigger_label(trigger: Any) -> str:
+    """A short, stable name for a trigger in coverage: ``on_change(0.2)``, ``every(5)``, or the
+    class name of a custom trigger. Runtime looks use ``poke``, ``settled`` (the look after a
+    scene reset), ``recheck`` and ``verify``."""
+    if isinstance(trigger, OnChange):
+        extra = "" if trigger.exit_threshold == trigger.threshold / 2 else f", exit={trigger.exit_threshold:g}"
+        extra += "" if trigger.baseline_s == 5.0 else f", baseline_s={trigger.baseline_s:g}"
+        return f"on_change({trigger.threshold:g}{extra})"
+    if isinstance(trigger, Every):
+        return repr(trigger)
+    return type(trigger).__name__
+
+
+def build(conditions: Iterable[Condition], *, default_change: Any, default_heartbeat: Any,
+          paused: Iterable[str] = ()) -> tuple[list[tuple[Any, Any, tuple[Condition, ...]]], dict[Any, str]]:
+    """The trigger groups and their labels for :func:`step`, from the conditions in order.
+
+    A condition's trigger, or each member of a tuple of triggers, joins the group of its
+    :func:`trigger_key`; a condition without a trigger uses ``default_change`` (an event) or
+    ``default_change`` and ``default_heartbeat`` (a state). Pass the same default instances every
+    time so their groups keep their state. Conditions whose id is in ``paused`` are left out.
+    Returns ``(groups, labels)``: ``(key, trigger, conditions)`` per group, and each group's label."""
+    skip = set(paused)
+    groups: dict[Any, tuple[Any, list[Condition]]] = {}
+    for cond in conditions:
+        if cond.id in skip:
+            continue
+        if isinstance(cond.trigger, tuple):     # any of them
+            triggers: tuple = cond.trigger
+        elif cond.trigger is not None:
+            triggers = (cond.trigger,)
+        elif cond.kind == "event":
+            triggers = (default_change,)
+        else:
+            triggers = (default_change, default_heartbeat)
+        for trigger in triggers:
+            group = groups.setdefault(trigger_key(trigger), (trigger, []))[1]
+            if cond not in group:       # a trigger listed twice in one tuple steps once
+                group.append(cond)
+    return ([(k, t, tuple(cs)) for k, (t, cs) in groups.items()],
+            {k: trigger_label(t) for k, (t, _) in groups.items()})
 
 
 @dataclass(frozen=True)

@@ -90,13 +90,14 @@ from percept.judges.encode import to_jpeg
 from percept.replay import decision_record, encode_condition, encode_input
 from percept.sources import PushSource, open_source
 from percept.trace import FORMAT as TRACE_FORMAT, TraceWriter, scrub
-from percept.triggers import Every, OnChange, QualityGate, SceneMonitor, every, on_change
+from percept.triggers import QualityGate, SceneMonitor, every, on_change
 from percept.zones import crop_box
 
 log = logging.getLogger("percept")
 
-VERIFY, EVENT, STATE, HEARTBEAT, RECHECK = 1, 2, 3, 4, 5      # priorities, highest first
-_LOOK_PRIORITY = {attention.EVENT: EVENT, attention.HEARTBEAT: HEARTBEAT, attention.STATE: STATE}
+EVENT, STATE, HEARTBEAT = (attention.PRIORITY[k] for k in (attention.EVENT, attention.STATE, attention.HEARTBEAT))
+VERIFY, RECHECK = 1, 5      # priorities, highest first: VERIFY, EVENT, STATE, HEARTBEAT, RECHECK
+_LOOK_PRIORITY = attention.PRIORITY
 _PRIORITY_NAMES = {VERIFY: "verify", EVENT: "event", STATE: "state", HEARTBEAT: "heartbeat", RECHECK: "recheck"}
 DEADLINES = {EVENT: 3.0, STATE: 10.0}   # seconds a detection may wait before dropped_budget
 BUDGET_WINDOW_S = 60.0
@@ -155,17 +156,7 @@ def _spread(frames: tuple[Frame, ...], n: int) -> tuple[Frame, ...]:
 _TRIGGER_COUNTS = ("due", "admitted", "coalesced", "dropped_budget", "dropped_for_verification")
 
 
-def _trigger_label(trigger: Any) -> str:
-    """A short, stable name for a trigger in coverage: ``on_change(0.2)``, ``every(5)``, or the
-    class name of a custom trigger. Runtime looks use ``poke``, ``settled`` (the look after a
-    scene reset), ``recheck`` and ``verify``."""
-    if isinstance(trigger, OnChange):
-        extra = "" if trigger.exit_threshold == trigger.threshold / 2 else f", exit={trigger.exit_threshold:g}"
-        extra += "" if trigger.baseline_s == 5.0 else f", baseline_s={trigger.baseline_s:g}"
-        return f"on_change({trigger.threshold:g}{extra})"
-    if isinstance(trigger, Every):
-        return repr(trigger)
-    return type(trigger).__name__
+_trigger_label = attention.trigger_label
 
 
 def _keyframe_jpeg(image: np.ndarray) -> Optional[bytes]:
@@ -1243,37 +1234,14 @@ class Monitor:
     def _active(self) -> list[str]:
         return [cid for cid in self._conds if cid not in self._paused]
 
-    @staticmethod
-    def _trigger_key(trigger: Any) -> Any:
-        """Triggers group (and keep their state) by value when hashable, else by identity: two
-        conditions with equal triggers share one step and one state."""
-        try:
-            hash(trigger)
-        except TypeError:
-            return ("id", id(trigger))
-        return trigger
+    _trigger_key = staticmethod(attention.trigger_key)
 
     def _regroup(self) -> None:
-        groups: dict[Any, tuple[Any, list[Condition]]] = {}
-        for cond in self._conds.values():
-            if cond.id in self._paused:
-                continue
-            if isinstance(cond.trigger, tuple):     # any of them
-                triggers: tuple = cond.trigger
-            elif cond.trigger is not None:
-                triggers = (cond.trigger,)
-            elif cond.kind == "event":
-                triggers = (self._default_change,)
-            else:
-                triggers = (self._default_change, self._default_heartbeat)
-            for trigger in triggers:
-                group = groups.setdefault(self._trigger_key(trigger), (trigger, []))[1]
-                if cond not in group:       # a trigger listed twice in one tuple steps once
-                    group.append(cond)
-        self._groups = [(k, t, tuple(cs)) for k, (t, cs) in groups.items()]
-        self._labels = {k: _trigger_label(t) for k, (t, _) in groups.items()}
+        self._groups, self._labels = attention.build(
+            self._conds.values(), default_change=self._default_change,
+            default_heartbeat=self._default_heartbeat, paused=self._paused)
         for stream in getattr(self, "_streams", {}).values():    # forget replaced triggers' state
-            stream.tstates = {k: v for k, v in stream.tstates.items() if k in groups}
+            stream.tstates = {k: v for k, v in stream.tstates.items() if k in self._labels}
 
     def _bind(self) -> None:
         loop = asyncio.get_running_loop()
