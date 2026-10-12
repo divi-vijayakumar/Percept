@@ -147,12 +147,17 @@ class Condition:
     ``kind="state"`` is something that stays true for a while (a door is open) and is
     held, rechecked and cleared on evidence. ``kind="event"`` happens at a moment (a person
     falls); it is verified on the moment's own evidence, reported once, then rearms.
+
+    ``trigger`` decides when the condition is worth judging: one ``Trigger``, ``None`` for the
+    default of the kind, or a tuple of triggers. A tuple means any of them: the condition is
+    due when any member fires. Members that are equal to another condition's trigger share
+    its state, and every look is still drawn from the one budget of the stream.
     """
 
     id: str
     text: str
     kind: Kind = "state"
-    trigger: Trigger | None = None           # None: the default for the kind
+    trigger: Trigger | tuple[Trigger, ...] | None = None  # None: the default; a tuple: any of them
     judge: str | None = None                 # route name inside a cascade judge
     zones: tuple[Polygon, ...] = ()
     exclude_zones: tuple[Polygon, ...] = ()
@@ -176,7 +181,7 @@ class Condition:
         _require(bool(self.id) and self.id.strip() == self.id, "Condition.id must be a non-empty token")
         _require("/" not in self.id, "Condition.id may not contain '/'")
         _require(bool(self.text.strip()), "Condition.text must not be empty")
-        _require(self.trigger is None or isinstance(self.trigger, Trigger), "Condition.trigger must be a Trigger")
+        _check_trigger(self.trigger)
         _require(self.kind in ("state", "event"), f"Condition.kind must be 'state' or 'event', got {self.kind!r}")
         _require(self.verify in ("auto", "original", "fresh", "off"), f"unknown verify mode {self.verify!r}")
         _require(not (self.kind == "event" and self.verify == "fresh"),
@@ -510,6 +515,20 @@ class BlindInterval:
         _require(_finite(self.t_start_wall), "t_start_wall must be finite")
         _require(self.t_end_wall is None or (_finite(self.t_end_wall) and self.t_end_wall >= self.t_start_wall),
                  "t_end_wall is None or >= t_start_wall")
+
+
+def _check_trigger(trigger: Any) -> None:
+    if trigger is None:
+        return
+    if isinstance(trigger, list):
+        raise ValueError("Condition.trigger takes a tuple of triggers, not a list")
+    if isinstance(trigger, tuple):
+        _require(len(trigger) > 0, "Condition.trigger: a tuple of triggers must not be empty")
+        for member in trigger:
+            _require(not isinstance(member, (tuple, list)), "Condition.trigger: tuples of triggers don't nest")
+            _require(isinstance(member, Trigger), f"Condition.trigger: {member!r} is not a Trigger")
+        return
+    _require(isinstance(trigger, Trigger), "Condition.trigger must be a Trigger or a tuple of triggers")
 
 
 # --------------------------------------------------------------------------- protocols

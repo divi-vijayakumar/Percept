@@ -88,7 +88,7 @@ from percept.judges.encode import to_jpeg
 from percept.replay import decision_record, encode_condition, encode_input
 from percept.sources import PushSource, open_source
 from percept.trace import FORMAT as TRACE_FORMAT, TraceWriter, scrub
-from percept.triggers import Every, QualityGate, SceneMonitor, every, on_change
+from percept.triggers import Every, OnChange, QualityGate, SceneMonitor, every, on_change
 from percept.zones import crop_box
 
 log = logging.getLogger("percept")
@@ -135,6 +135,23 @@ def _spread(frames: tuple[Frame, ...], n: int) -> tuple[Frame, ...]:
     if m <= n:
         return frames
     return tuple(frames[round(i * (m - 1) / (n - 1))] for i in range(n))
+
+
+# what coverage()["triggers"] counts per (condition, trigger label)
+_TRIGGER_COUNTS = ("due", "admitted", "coalesced", "dropped_budget", "dropped_for_verification")
+
+
+def _trigger_label(trigger: Any) -> str:
+    """A short, stable name for a trigger in coverage: ``on_change(0.2)``, ``every(5)``, or the
+    class name of a custom trigger. Runtime looks use ``poke``, ``settled`` (the look after a
+    scene reset), ``recheck`` and ``verify``."""
+    if isinstance(trigger, OnChange):
+        extra = "" if trigger.exit_threshold == trigger.threshold / 2 else f", exit={trigger.exit_threshold:g}"
+        extra += "" if trigger.baseline_s == 5.0 else f", baseline_s={trigger.baseline_s:g}"
+        return f"on_change({trigger.threshold:g}{extra})"
+    if isinstance(trigger, Every):
+        return repr(trigger)
+    return type(trigger).__name__
 
 
 def _keyframe_jpeg(image: np.ndarray) -> Optional[bytes]:
@@ -227,6 +244,7 @@ class _Work:
     gone: bool = False                          # the original evidence is no longer held
     starved: bool = False                       # counted once as evidence_unavailable
     frames: tuple = ()                          # an original-interval verification's frames
+    trigger: Optional[str] = None               # label of what made it due (see _trigger_label)
 
 
 class _Stream:
@@ -270,7 +288,9 @@ class _Stream:
         self.blind: deque[BlindInterval] = deque(maxlen=MAX_BLIND)
         self.blind_dropped = 0
         self.fates: deque[tuple[int, Counter]] = deque(maxlen=COVERAGE_BUCKETS)
+        self.tcounts: deque[tuple[int, Counter]] = deque(maxlen=COVERAGE_BUCKETS)  # (cid, label, count)
         self.totals: Counter = Counter()
+        self.totals_by_trigger: Counter = Counter()     # (trigger label, count) -> n
         self.judge_failures = 0
         self.budget_blocked = False
         self.budget_reason: Optional[str] = None     # the budget_exhausted reason last reported
@@ -320,6 +340,16 @@ class _Stream:
             self.fates.append((bucket, Counter()))
         self.fates[-1][1][(condition_id, fate)] += n
         self.totals[fate] += n
+
+    def tcount(self, condition_id: str, label: Optional[str], what: str) -> None:
+        """Count a look per (condition, trigger label): reporting only, the budget is the stream's."""
+        if label is None:
+            return
+        bucket = int(self.m._wall() // COVERAGE_BUCKET_S)
+        if not self.tcounts or self.tcounts[-1][0] != bucket:
+            self.tcounts.append((bucket, Counter()))
+        self.tcounts[-1][1][(condition_id, label, what)] += 1
+        self.totals_by_trigger[(label, what)] += 1
 
     def trace_fates(self) -> None:
         """Write the runtime fates counted in the current minute."""
@@ -456,28 +486,33 @@ class _Stream:
             except Exception:  # noqa: BLE001 - a broken custom trigger skips this frame
                 log.exception("percept: trigger %r failed", trigger)
                 continue
+            label = m._labels.get(key)
             for cid in due:
                 cond = m._conds.get(cid)
                 if cond is not None:
                     prio = EVENT if cond.kind == "event" else HEARTBEAT if isinstance(trigger, Every) else STATE
-                    self.enqueue(cid, decide.SCENE, prio, t_trigger=frame.t_wall)
+                    self.enqueue(cid, decide.SCENE, prio, t_trigger=frame.t_wall, trigger=label)
         if signal.ended:  # one batched "settled look" on this frame for every condition
             for cid in m._active():
-                self.enqueue(cid, decide.SCENE, STATE, frame=frame)
+                self.enqueue(cid, decide.SCENE, STATE, frame=frame, trigger="settled")
 
     # ----------------------------------------------------------------- work
 
     def enqueue(self, cid: str, subject: str, prio: int, *, t_trigger: Optional[float] = None,
-                frame: Optional[Frame] = None, images: Optional[tuple] = None) -> None:
+                frame: Optional[Frame] = None, images: Optional[tuple] = None,
+                trigger: Optional[str] = None) -> None:
         if cid in self.m._paused or cid not in self.m._conds:
             return
         now = self.m._mono()
         deadline = now + DEADLINES[prio] if prio in DEADLINES else None
         w = self.pending.get((cid, subject))
+        self.tcount(cid, trigger, "due")
         if w is None:
-            self.pending[(cid, subject)] = _Work(prio, cid, subject, now, deadline, t_trigger, frame, images)
-        else:  # merged into the look already waiting
+            self.pending[(cid, subject)] = _Work(prio, cid, subject, now, deadline, t_trigger, frame, images,
+                                                 trigger=trigger)
+        else:  # merged into the look already waiting; it keeps the label of what made it due first
             self.fate(cid, "coalesced")
+            self.tcount(cid, trigger, "coalesced")
             w.priority = min(w.priority, prio)
             if deadline is not None:
                 w.deadline = deadline if w.deadline is None else min(w.deadline, deadline)
@@ -507,7 +542,9 @@ class _Stream:
         budget refused it; ``verification``: attempts were kept for a verification until its
         deadline; ``deadline``: it waited past its deadline for a concurrency slot or for evidence;
         ``ended``: the stream ended)."""
-        self.fate(w.condition_id, "dropped_for_verification" if reason == "verification" else "dropped_budget")
+        fate = "dropped_for_verification" if reason == "verification" else "dropped_budget"
+        self.fate(w.condition_id, fate)
+        self.tcount(w.condition_id, w.trigger, fate)
         self.m._rec("drop", self.id, condition_id=w.condition_id, subject=w.subject, reason=reason,
                     purpose="verify" if w.verify is not None else "detect", priority=_PRIORITY_NAMES[w.priority],
                     t_trigger=w.t_trigger, waited_s=max(0.0, now - w.created))
@@ -738,6 +775,7 @@ class _Stream:
         for w in works:
             if w.verify is None:
                 del self.pending[(w.condition_id, w.subject)]
+            self.tcount(w.condition_id, w.trigger, "admitted")
         refs = tuple(EvidenceRef(self.id, self.epoch_map.get(f.stream_epoch, epoch), f.seq, f.t_wall) for f in frames)
         self.remember(self.req_refs, request.request_id, refs, 256)
         self.remember(self.req_frames, request.request_id, frames, KEEP_REQUEST_FRAMES)
@@ -861,7 +899,7 @@ class _Stream:
                 if old is not None:
                     old.cancel()
             elif t is decide.RequestVerify:
-                w = _Work(VERIFY, e.condition_id, e.subject, self.m._mono(), verify=e)
+                w = _Work(VERIFY, e.condition_id, e.subject, self.m._mono(), verify=e, trigger="verify")
                 if e.mode == "original":    # pinned now: frames are ephemeral
                     w.frames = self.original(e)
                 self.verifies[(e.condition_id, e.subject)] = w
@@ -874,7 +912,7 @@ class _Stream:
                     if self.verify_task is not None and self.verify_work is w:
                         self.verify_task.cancel()
             elif t is decide.RequestRecheck:
-                self.enqueue(e.condition_id, e.subject, RECHECK)
+                self.enqueue(e.condition_id, e.subject, RECHECK, trigger="recheck")
             elif t is decide.EmitHealth:
                 m._report(e.health)
             elif t is decide.StoreCounterExample:
@@ -993,12 +1031,20 @@ class _Stream:
                         unavailable[cid] += n
                     else:
                         fates.setdefault(cid, Counter())[fate] += n
+        triggers: dict[str, dict[str, Counter]] = {}
+        for bucket, counts in self.tcounts:
+            if bucket >= first:
+                for (cid, label, what), n in counts.items():
+                    triggers.setdefault(cid, {}).setdefault(label, Counter())[what] += n
         now = self.m._wall()
         blind = [b for b in self.blind if b.t_end_wall is None or b.t_end_wall >= since_wall]
         blind += [BlindInterval(kind, self.id, start, None, detail, cid)  # type: ignore[arg-type]
                   for (kind, cid), (start, detail) in self.blind_open.items()]
         return {"stream_id": self.id, "since_wall": since_wall, "until_wall": now,
                 "fates": {cid: dict(c) for cid, c in sorted(fates.items())},
+                "triggers": {cid: {label: {what: c[what] for what in _TRIGGER_COUNTS}
+                                   for label, c in sorted(per.items())}
+                             for cid, per in sorted(triggers.items())},
                 "frames_capped": capped, "evidence_unavailable": dict(sorted(unavailable.items())),
                 "blind_intervals": sorted(blind, key=lambda b: b.t_start_wall),
                 "blind_intervals_dropped": self.blind_dropped}
@@ -1010,8 +1056,11 @@ class _Stream:
         fates = {k: v for k, v in t.items() if k not in counts}
         conditions = {cid: {"requests": r, "attempts": a, "cost_usd": c}
                       for cid, (r, a, c) in sorted(self.per_condition.items())}
+        by_label: dict[str, dict[str, int]] = {}
+        for (label, what), n in sorted(self.totals_by_trigger.items()):
+            by_label.setdefault(label, {w: 0 for w in _TRIGGER_COUNTS})[what] = n
         return dict(counts, cost_usd=self.cost_usd, cost_reserved_usd=self.held_cost.used(self.m._mono()),
-                    conditions=conditions, fates=fates, decisions=ob.committed,
+                    conditions=conditions, fates=fates, triggers=by_label, decisions=ob.committed,
                     delivered=ob.delivered, redelivered=ob.redelivered, acked=ob.acked, unacked=ob.pending(),
                     pending_looks=len(self.pending), pending_verifications=len(self.verifies),
                     halted=self.halted)
@@ -1137,15 +1186,20 @@ class Monitor:
         for cond in self._conds.values():
             if cond.id in self._paused:
                 continue
-            if cond.trigger is not None:
-                triggers: tuple = (cond.trigger,)
+            if isinstance(cond.trigger, tuple):     # any of them
+                triggers: tuple = cond.trigger
+            elif cond.trigger is not None:
+                triggers = (cond.trigger,)
             elif cond.kind == "event":
                 triggers = (self._default_change,)
             else:
                 triggers = (self._default_change, self._default_heartbeat)
             for trigger in triggers:
-                groups.setdefault(self._trigger_key(trigger), (trigger, []))[1].append(cond)
+                group = groups.setdefault(self._trigger_key(trigger), (trigger, []))[1]
+                if cond not in group:       # a trigger listed twice in one tuple steps once
+                    group.append(cond)
         self._groups = [(k, t, tuple(cs)) for k, (t, cs) in groups.items()]
+        self._labels = {k: _trigger_label(t) for k, (t, _) in groups.items()}
         for stream in getattr(self, "_streams", {}).values():    # forget replaced triggers' state
             stream.tstates = {k: v for k, v in stream.tstates.items() if k in groups}
 
@@ -1356,7 +1410,7 @@ class Monitor:
                   evidence_images=0 if images is None else len(images))
         for cid in ids:
             prio = EVENT if self._conds[cid].kind == "event" else STATE
-            stream.enqueue(cid, subject or decide.SCENE, prio, t_trigger=observed_at, images=images)
+            stream.enqueue(cid, subject or decide.SCENE, prio, t_trigger=observed_at, images=images, trigger="poke")
 
     # ----------------------------------------------------------------- conditions and feedback
 
@@ -1495,7 +1549,13 @@ class Monitor:
 
     def coverage(self, stream_id: str, since_wall: float = 0.0) -> dict:
         """Fates per condition (counted per minute, from the minute holding ``since_wall``) and
-        the blind intervals that overlap it: what was evaluated, what wasn't, and why."""
+        the blind intervals that overlap it: what was evaluated, what wasn't, and why.
+
+        ``triggers`` splits the looks per condition by what made them due (a trigger's label, such
+        as ``on_change(0.2)`` or ``every(5)``, or ``poke``, ``settled``, ``recheck``, ``verify``):
+        ``due``, ``admitted`` (sent to the judge), ``coalesced`` (merged into a look already
+        waiting, which keeps its first label), ``dropped_budget`` and ``dropped_for_verification``.
+        Reporting only: every trigger draws on the stream's one budget."""
         stream = self._streams.get(stream_id)
         if stream is None:
             raise ValueError(f"unknown stream {stream_id!r}")
