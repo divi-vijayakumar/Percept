@@ -58,7 +58,7 @@ from typing import Any, Callable, Iterable, Optional, Sequence, Union
 
 import numpy as np
 
-from percept import decide
+from percept import attention, decide
 from percept.clips import PreRoll
 from percept.contracts import (
     DEFAULT_CLIP_FRAMES,
@@ -96,6 +96,7 @@ from percept.zones import crop_box
 log = logging.getLogger("percept")
 
 VERIFY, EVENT, STATE, HEARTBEAT, RECHECK = 1, 2, 3, 4, 5      # priorities, highest first
+_LOOK_PRIORITY = {attention.EVENT: EVENT, attention.HEARTBEAT: HEARTBEAT, attention.STATE: STATE}
 _PRIORITY_NAMES = {VERIFY: "verify", EVENT: "event", STATE: "state", HEARTBEAT: "heartbeat", RECHECK: "recheck"}
 DEADLINES = {EVENT: 3.0, STATE: 10.0}   # seconds a detection may wait before dropped_budget
 BUDGET_WINDOW_S = 60.0
@@ -468,47 +469,45 @@ class _Stream:
                 del self.epoch_map[next(iter(self.epoch_map))]
         if self.own_ring:
             self.ring.add(frame)
-        if self.period:     # the processing cap: capture and the pre-roll are not slowed
-            if self.due is not None and frame.t < self.due - 0.1 * self.period:
-                self.fate("*", "frames_capped")
-                return
-            self.due = (frame.t if self.due is None or frame.t - self.due > self.period else self.due) + self.period
+        s, a = attention.step(frame, attention.State(self.due, self.qstate, self.sstate, self.tstates, self.degraded),
+                              groups=m._groups, conditions=m._conds, labels=m._labels,
+                              quality=m._quality, scene=m._scene, period=self.period)
+        if s.capped:    # the processing cap: capture and the pre-roll are not slowed
+            self.fate("*", "frames_capped")
+            return
+        self.due = a.due
         self.latest, self.latest_mono, self.latest_rx = frame, m._mono(), m._wall()
-        verdict, self.qstate = m._quality.check(frame, self.qstate, frame.t)
-        if verdict.reseeded:
+        self.qstate = a.quality
+        if s.reseeded:
             self.health("degraded", "a lasting blur became the new normal (refocused, or a lens out of focus)")
-        if verdict.degraded != self.degraded:
-            self.degraded = verdict.degraded
-            self.blind_set("degraded_video", verdict.degraded)
-            if verdict.degraded:
+        if s.degraded is not None:
+            self.degraded = s.degraded
+            self.blind_set("degraded_video", s.degraded)
+            if s.degraded:
                 self.health("degraded", "too many corrupt or blurry frames")
-        if not verdict.ok:
+        if s.vetoed:
             self.totals["frames_vetoed"] += 1
             for cid in m._active():
                 self.fate(cid, "dropped_quality")
             return
-        signal, self.sstate = m._scene.step(frame, self.sstate, frame.t)
-        if signal.reset:
+        self.sstate = a.scene
+        if s.scene_reset:
             self.blind_set("scene_reset", True)
-            self.health("scene_reset", f"{signal.changed:.0%} of the frame changed at once")
-        if signal.suppressed:
+            self.health("scene_reset", f"{s.changed:.0%} of the frame changed at once")
+        if s.suppressed:
             return
-        if signal.ended:
+        if s.scene_ended:
             self.blind_set("scene_reset", False)
-            self.tstates = {}
-        for key, trigger, conds in m._groups:
-            try:
-                due, self.tstates[key] = trigger.step(frame, conds, self.tstates.get(key), frame.t)
-            except Exception:  # noqa: BLE001 - a broken custom trigger skips this frame
-                log.exception("percept: trigger %r failed", trigger)
-                continue
-            label = m._labels.get(key)
-            for cid in due:
-                cond = m._conds.get(cid)
-                if cond is not None:
-                    prio = EVENT if cond.kind == "event" else HEARTBEAT if isinstance(trigger, Every) else STATE
-                    self.enqueue(cid, decide.SCENE, prio, t_trigger=frame.t_wall, trigger=label)
-        if signal.ended:  # one batched "settled look" on this frame for every condition
+        self.tstates = dict(a.triggers)
+        failed = list(s.failed_triggers)
+        for i, look in enumerate(s.looks + (None,)):
+            while failed and failed[0].before == i:     # reported where it happened
+                f = failed.pop(0)
+                log.error("percept: trigger %r failed", f.trigger, exc_info=f.error)
+            if look is not None:
+                self.enqueue(look.condition_id, decide.SCENE, _LOOK_PRIORITY[look.kind],
+                             t_trigger=look.t_trigger, trigger=look.trigger)
+        if s.settled:  # one batched "settled look" on this frame for every condition
             for cid in m._active():
                 self.enqueue(cid, decide.SCENE, STATE, frame=frame, trigger="settled")
 

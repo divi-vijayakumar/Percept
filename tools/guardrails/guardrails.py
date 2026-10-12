@@ -32,6 +32,7 @@ CONTRACTS = "percept.contracts"
 CORE = {
     "percept.contracts",
     "percept.decide",
+    "percept.attention",
     "percept.triggers",
     "percept.zones",
     "percept.clips",
