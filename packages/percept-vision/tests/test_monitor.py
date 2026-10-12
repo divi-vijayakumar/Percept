@@ -2191,3 +2191,94 @@ def test_a_retried_verification_counts_as_one_due_and_one_admitted_look(monkeypa
     assert sum(1 for *_, r in judge.sent if r.purpose == "verify") == 3        # sent three times
     assert cov["triggers"]["fall"]["verify"]["due"] == 1
     assert cov["triggers"]["fall"]["verify"]["admitted"] == 1
+
+
+# ----------------------------------------------------------------- ready()
+
+def test_a_detector_started_before_the_watch_waits_for_ready_and_never_pokes_an_unknown_stream():
+    fell = Condition("fell", "a box fell", kind="event", trigger=Never())
+
+    async def once(i: int) -> list:
+        async with percept.Monitor(FakeJudge(answers({"detect": [N], "verify": [N]})), [fell], store=mem(),
+                                   max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+
+            async def detector() -> None:
+                try:
+                    await m.ready("cam")
+                    m.poke("cam", "fell", reason="sensor")
+                finally:
+                    src.close()                             # a failure fails the test, not hangs it
+
+            async def consume() -> None:
+                await asyncio.sleep(0.001 * (i % 3))        # the watch starts after the detector
+                async for _ in m.watch(src):
+                    pass
+
+            return await asyncio.gather(asyncio.create_task(detector()), consume(), return_exceptions=True)
+
+    async def main() -> int:
+        results = [await once(i) for i in range(100)]
+        return sum(isinstance(r, BaseException) for rs in results for r in rs)
+
+    assert run(main(), timeout=60) == 0
+
+
+def test_ready_returns_at_once_for_a_registered_stream():
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [N]})), [], store=mem()) as m:
+            m.watch(PushSource("cam"))
+            await asyncio.wait_for(m.ready("cam"), 0.05)
+            assert m._ready == {}
+
+    run(main())
+
+
+def test_ready_raises_when_the_monitor_closes_before_the_stream_registers():
+    async def main():
+        m = percept.Monitor(FakeJudge(answers({"detect": [N]})), [], store=mem())
+        waiter = asyncio.create_task(m.ready("cam"))
+        await asyncio.sleep(0.01)
+        await m.aclose()
+        with pytest.raises(RuntimeError, match="closed"):
+            await waiter
+        with pytest.raises(RuntimeError, match="closed"):
+            await m.ready("cam")
+        assert m._ready == {}
+
+    run(main())
+
+
+def test_ready_times_out_and_leaves_no_waiter_behind():
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [N]})), [], store=mem()) as m:
+            with pytest.raises(asyncio.TimeoutError):
+                await m.ready("cam", timeout=0.01)
+            assert m._ready == {}
+            later = asyncio.create_task(m.ready("cam", timeout=5))
+            await asyncio.sleep(0.01)
+            m.watch(PushSource("cam"))
+            await later                                     # a later waiter is still woken
+            assert m._ready == {}
+
+    run(main())
+
+
+def test_ready_from_another_thread_raises_like_other_methods():
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [N]})), [], store=mem()) as m:
+            m.watch(PushSource("cam"))
+            errors = []
+
+            def other() -> None:
+                try:
+                    asyncio.run(m.ready("cam"))
+                except RuntimeError as e:
+                    errors.append(str(e))
+
+            worker = threading.Thread(target=other)
+            worker.start()
+            worker.join()
+            assert errors and "event loop" in errors[0]
+
+    run(main())
