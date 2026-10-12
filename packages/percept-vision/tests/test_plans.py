@@ -166,8 +166,6 @@ INVALID = [
     (lambda p: j0(p)["evidence"].update(max_side=320), "concerns[0].judgment.evidence.max_side: resolution is set per source"),
     (lambda p: j0(p)["evidence"].update(pre_seconds=2.0), "concerns[0].judgment.evidence.pre_seconds: must be 4.0: "
                                                           "per-condition evidence windows are not supported yet"),
-    (lambda p: p["concerns"][0]["attention"]["any"].append({"every": 5}),
-     "concerns[0].attention.any: at most one on_change or every trigger per concern; combined triggers are not supported yet"),
     (lambda p: p["concerns"][0]["attention"]["any"].append({"sometimes": 5}), "concerns[0].attention.any[1].sometimes: unknown"),
     (lambda p: p["concerns"][0]["attention"].update(any=[{"every": -1}]), "concerns[0].attention.any[0].every:"),
     (lambda p: p["concerns"][0]["attention"].update(any=[{"on_change": {"threshold": 2}}]),

@@ -189,6 +189,24 @@ def _describe(trigger: Any) -> dict:
     return {"type": "sdk_default"}
 
 
+def _members(cond: Condition) -> tuple:
+    """The triggers a condition is due on: its own, each member of a combined one, or the defaults."""
+    if cond.trigger is None:
+        return DEFAULT_TRIGGERS[cond.kind]
+    return cond.trigger if isinstance(cond.trigger, tuple) else (cond.trigger,)
+
+
+def _key(trigger: Any) -> str:
+    return json.dumps(_describe(trigger), sort_keys=True, separators=(",", ":"))
+
+
+def _describe_any(trigger: Any) -> Any:
+    """A trigger's description; a combined trigger is the list of its members' (in canonical order)."""
+    if isinstance(trigger, tuple):
+        return [_describe(t) for t in sorted(trigger, key=_key)]
+    return _describe(trigger)
+
+
 def _attention(value: Any, path: str) -> tuple[Any, tuple[str, ...]]:
     """(trigger, external event names) of one concern's ``attention``."""
     entries = _list(_obj(value, path, ("any",), ())["any"], _at(path, "any"), nonempty=True)
@@ -213,10 +231,10 @@ def _attention(value: Any, path: str) -> tuple[Any, tuple[str, ...]]:
             raise
         except ValueError as exc:
             _fail(where, str(exc))
-    if len(triggers) > 1:
-        _fail(_at(path, "any"), "at most one on_change or every trigger per concern; "
-                                "combined triggers are not supported yet")
-    trigger = triggers[0] if triggers else _External()
+    # several on_change/every entries combine: the concern is due when any of them fires. Members
+    # are deduplicated and kept in a canonical order, so the entries' order changes nothing.
+    unique = sorted({_key(t): t for t in triggers}.values(), key=_key)
+    trigger = _External() if not unique else unique[0] if len(unique) == 1 else tuple(unique)
     return trigger, tuple(dict.fromkeys(events))
 
 
@@ -260,7 +278,7 @@ class Compiled:
             c, encoded = info["concerns"][cond.id], encode_condition(cond)
             report = {f.name: {"value": encoded[f.name], "origin": "plan" if f.name in c["given"] else "sdk_default"}
                       for f in fields(Condition) if f.name not in ("trigger", "version")}
-            triggers = DEFAULT_TRIGGERS[cond.kind] if cond.trigger is None else (cond.trigger,)
+            triggers = _members(cond)
             if cond.kind == "event":
                 evidence = {"clip_s": EVENT_CLIP_S, "frames": CLIP_FRAMES, "ends": "at the trigger"}
             else:
@@ -317,7 +335,7 @@ class Compiled:
                 c = info["concerns"][cond.id]
                 if c["source"] != sid:
                     continue
-                triggers = DEFAULT_TRIGGERS[cond.kind] if cond.trigger is None else (cond.trigger,)
+                triggers = _members(cond)       # each member of a combined trigger counts
                 unknown = unknown or cond.trigger is None or bool(c["events"]) \
                     or any(isinstance(t, (OnChange, _External)) for t in triggers)
                 verifies = verifies or (cond.kind == "event" and cond.verify_mode != "off")
@@ -518,7 +536,7 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
         "schema_version": SCHEMA_VERSION, "plan_id": plan_id, "revision": revision,
         "sources": sorted(sources.values(), key=lambda s: s["id"]), "budget": budget,
         "judges": [j["name"] for j in judges_info],
-        "conditions": sorted(({**encode_condition(cond), "trigger": _describe(cond.trigger)} for cond in conditions),
+        "conditions": sorted(({**encode_condition(cond), "trigger": _describe_any(cond.trigger)} for cond in conditions),
                              key=lambda c: c["id"]),
         "events": {k: sorted(v) for k, v in events.items()},
         "sdk_fixed": {"event_clip_s": EVENT_CLIP_S, "clip_frames": CLIP_FRAMES, "deadlines": DEADLINES,
