@@ -61,6 +61,8 @@ import numpy as np
 from percept import decide
 from percept.clips import PreRoll
 from percept.contracts import (
+    DEFAULT_CLIP_FRAMES,
+    DEFAULT_CLIP_S,
     BlindInterval,
     Condition,
     CounterExample,
@@ -98,8 +100,9 @@ _PRIORITY_NAMES = {VERIFY: "verify", EVENT: "event", STATE: "state", HEARTBEAT: 
 DEADLINES = {EVENT: 3.0, STATE: 10.0}   # seconds a detection may wait before dropped_budget
 BUDGET_WINDOW_S = 60.0
 COST_WINDOW_S = 3600.0
-EVENT_CLIP_S = 4.0          # an event is judged on the pre-roll from this long before its trigger
-CLIP_FRAMES = 4
+EVENT_CLIP_S = DEFAULT_CLIP_S         # an event is judged on the pre-roll from this long before its trigger,
+CLIP_FRAMES = DEFAULT_CLIP_FRAMES     # unless its condition sets clip_s / clip_frames
+SHORT_FRACTION = 0.9        # a clip covering less than this share of its window is evidence_short
 VERIFY_RETRY_S = 1.0        # a failed or weak verification is asked again after this, until its deadline
 JUDGE_DOWN_AFTER = 3        # consecutive fully failed requests that open a judge_down blind interval
 HEALTH_RING = 256
@@ -127,6 +130,16 @@ def _max_output_tokens(n_items: int, id_chars: int = 0) -> int:
     reads the same number from the request."""
     want = OUTPUT_TOKENS_BASE + n_items * OUTPUT_TOKENS_PER_ITEM + math.ceil(id_chars / 3)
     return max(MIN_OUTPUT_TOKENS, min(MAX_OUTPUT_TOKENS, want))
+
+
+def _short(clip: Optional[tuple]) -> bool:
+    """Whether an event clip ``(held_s, clip_s, frames, clip_frames)`` is short: the frames held
+    reach back less than ``SHORT_FRACTION`` of ``clip_s`` before its anchor, or fewer frames than
+    ``clip_frames`` were held in the window."""
+    if clip is None:
+        return False
+    held_s, clip_s, frames, n = clip
+    return held_s < SHORT_FRACTION * clip_s or frames < n
 
 
 def _spread(frames: tuple[Frame, ...], n: int) -> tuple[Frame, ...]:
@@ -244,6 +257,7 @@ class _Work:
     admitted: bool = False                      # sent to the judge at least once (counted once per look)
     gone: bool = False                          # the original evidence is no longer held
     starved: bool = False                       # counted once as evidence_unavailable
+    clip: Optional[tuple] = None                # an event clip's (held_s, clip_s, frames, clip_frames)
     frames: tuple = ()                          # an original-interval verification's frames
     trigger: Optional[str] = None               # label of what made it due (see _trigger_label)
 
@@ -283,6 +297,7 @@ class _Stream:
         self.dirty = False
         self.req_frames: OrderedDict[str, tuple[Frame, ...]] = OrderedDict()
         self.req_refs: OrderedDict[str, tuple[EvidenceRef, ...]] = OrderedDict()
+        self.req_window: OrderedDict[str, tuple] = OrderedDict()  # request id -> its event clip's coverage
         self.keyframes: OrderedDict[str, bytes] = OrderedDict()   # occurrence id -> latest keyframe
         self.counter: dict[str, list[CounterExample]] = {}
         self.blind_open: dict[tuple[str, Optional[str]], tuple[float, str]] = {}
@@ -573,12 +588,24 @@ class _Stream:
                 if v.interval[0] <= f.t_wall <= v.interval[1] and self.epoch_map.get(f.stream_epoch) == v.stream_epoch}
         held.update({(f.stream_epoch, f.seq): f for f in self.frames_of(v.interval, v.stream_epoch)})
         frames = sorted(held.values(), key=lambda f: (f.t_wall, f.seq))
-        return _spread(tuple(frames), CLIP_FRAMES) if frames and frames[0].t_wall <= v.interval[0] else ()
+        cond = self.m._conds.get(v.condition_id)
+        n = cond.clip_window[1] if cond is not None else CLIP_FRAMES
+        return _spread(tuple(frames), n) if frames and frames[0].t_wall <= v.interval[0] else ()
 
     def evidence(self, w: _Work) -> Optional[tuple]:
-        """(frames, images, evidence_t, crop) for a look, or None when there is nothing to judge."""
+        """(frames, images, evidence_t, crop) for a look, or None when there is nothing to judge.
+
+        An event is judged on its condition's window: ``clip_frames`` frames spread over the
+        ``clip_s`` seconds before its anchor (the trigger, or the newest frame), the newest frame
+        always included. The window is never shortened silently: when the pre-roll holds less of
+        it than asked (the stream just started or reconnected), the event is judged on what is held
+        and ``w.clip`` records how much was held. Short (see ``_short``) means the frames held reach back less than
+        ``SHORT_FRACTION`` (90%) of ``clip_s`` before the anchor, or fewer frames than
+        ``clip_frames`` were held in the window; ``start`` counts it as ``evidence_short``.
+        """
         cond = self.m._conds.get(w.condition_id)
         latest = self.current()
+        w.clip = None
         if cond is None:
             return None
         if w.images is not None:
@@ -603,10 +630,15 @@ class _Stream:
             self.starve(w)
             return None
         elif cond.kind == "event":
+            clip_s, n = cond.clip_window
             anchor = latest.t_wall if w.t_trigger is None else min(w.t_trigger, latest.t_wall)
-            start = max(anchor - EVENT_CLIP_S, latest.t_wall - self.ring.seconds)
-            held = tuple(f for f in self.frames_of((start, latest.t_wall), self.epoch) if f.seq != latest.seq)
-            frames = _spread(held + (latest,), CLIP_FRAMES)    # the newest frame is always judged
+            start = max(anchor - clip_s, latest.t_wall - self.ring.seconds)
+            ring = self.frames_of((latest.t_wall - self.ring.seconds, latest.t_wall), self.epoch)
+            held = tuple(f for f in ring if f.t_wall >= start and f.seq != latest.seq)
+            frames = _spread(held + (latest,), n)    # the newest frame is always judged
+            oldest = ring[0].t_wall if ring else latest.t_wall
+            held_s = clip_s if oldest <= anchor - clip_s else min(clip_s, max(0.0, anchor - oldest))
+            w.clip = (held_s, clip_s, len(frames), n)
         else:
             frames = (latest,)
         h, w_ = frames[0].image.shape[:2]
@@ -776,12 +808,16 @@ class _Stream:
         for w in works:
             if w.verify is None:
                 del self.pending[(w.condition_id, w.subject)]
+                if _short(w.clip):          # judged on less of its window than asked: counted, never hidden
+                    self.fate(w.condition_id, "evidence_short")
             if not w.admitted:     # a verification retried is still one look
                 w.admitted = True
                 self.tcount(w.condition_id, w.trigger, "admitted")
         refs = tuple(EvidenceRef(self.id, self.epoch_map.get(f.stream_epoch, epoch), f.seq, f.t_wall) for f in frames)
         self.remember(self.req_refs, request.request_id, refs, 256)
         self.remember(self.req_frames, request.request_id, frames, KEEP_REQUEST_FRAMES)
+        if purpose == "detect" and works[0].clip is not None:
+            self.remember(self.req_window, request.request_id, works[0].clip, 256)
         task = self.spawn(self.call(request, works, reserve, cost))
         if purpose == "verify":
             self.verify_task, self.verify_work = task, works[0]
@@ -837,10 +873,15 @@ class _Stream:
             usage = [dict(asdict(u.usage), judge=u.judge, failure=u.failure) for u in result.usage]
             failed = [o.failure for o in result.observations if o.failed]
             failure = failed[0] if failed and len(failed) == len(result.observations) else None
+        window = {}
+        clip = self.req_window.pop(request.request_id, None)
+        if clip is not None:        # an event clip: the seconds held against those asked for
+            window = {"evidence_s": round(clip[0], 3), "clip_s": clip[1], "frames": clip[2],
+                      "clip_frames": clip[3], "evidence_short": _short(clip)}
         self.m._rec("request", self.id, request_id=request.request_id, judge=self.m.judge.name,
                     purpose=request.purpose, stream_epoch=request.stream_epoch,
                     condition_ids=[i.condition.id for i in request.items], usage=usage,
-                    latency_s=latency, failure=failure)
+                    latency_s=latency, failure=failure, **window)
 
     def absorb(self, request: JudgeRequest, result: JudgeResult, works: list[_Work]) -> None:
         failed = [u for u in result.usage if u.failure is not None]
@@ -962,7 +1003,9 @@ class _Stream:
             if image is None and frames:
                 image = min(frames, key=lambda f: abs(f.t_wall - d.t_observed)).image
         if image is None:
-            interval = (min(d.t_observed, d.t_decided) - EVENT_CLIP_S, max(d.t_observed, d.t_decided))
+            cond = self.m._conds.get(d.condition_id)
+            clip_s = cond.clip_window[0] if cond is not None else EVENT_CLIP_S
+            interval = (min(d.t_observed, d.t_decided) - clip_s, max(d.t_observed, d.t_decided))
             f = (self.ring.keyframe(interval, d.t_observed) if self.own_ring else self.source.keyframe(interval, d.t_observed))
             f = f or self.latest
             image = None if f is None else f.image
@@ -1024,6 +1067,7 @@ class _Stream:
     def coverage(self, since_wall: float) -> dict:
         fates: dict[str, Counter] = {}
         unavailable: Counter = Counter()
+        short: Counter = Counter()
         capped = 0
         first = int(since_wall // COVERAGE_BUCKET_S)
         for bucket, counts in self.fates:
@@ -1033,6 +1077,8 @@ class _Stream:
                         capped += n
                     elif fate == "evidence_unavailable":
                         unavailable[cid] += n
+                    elif fate == "evidence_short":
+                        short[cid] += n
                     else:
                         fates.setdefault(cid, Counter())[fate] += n
         triggers: dict[str, dict[str, Counter]] = {}
@@ -1050,13 +1096,14 @@ class _Stream:
                                    for label, c in sorted(per.items())}
                              for cid, per in sorted(triggers.items())},
                 "frames_capped": capped, "evidence_unavailable": dict(sorted(unavailable.items())),
+                "evidence_short": dict(sorted(short.items())),
                 "blind_intervals": sorted(blind, key=lambda b: b.t_start_wall),
                 "blind_intervals_dropped": self.blind_dropped}
 
     def stats(self) -> dict:
         t, ob = self.totals, self.outbox
         counts = {k: t[k] for k in ("frames", "frames_capped", "frames_vetoed", "requests", "attempts",
-                                    "evidence_unavailable")}
+                                    "evidence_unavailable", "evidence_short")}
         fates = {k: v for k, v in t.items() if k not in counts}
         conditions = {cid: {"requests": r, "attempts": a, "cost_usd": c}
                       for cid, (r, a, c) in sorted(self.per_condition.items())}
@@ -1171,6 +1218,17 @@ class Monitor:
             routes = {j.name for j in getattr(self.judge, "members", ())}
             if cond.judge not in routes:
                 raise ValueError(f"condition {cond.id!r}: unknown judge route {cond.judge!r}")
+        for stream in getattr(self, "_streams", {}).values():     # none yet while constructing
+            self._check_window([cond], stream.ring.seconds, stream.id)
+
+    def _check_window(self, conds: Iterable[Condition], seconds: float, stream_id: str) -> None:
+        """Refuse an event window the stream's pre-roll can never hold: judging a shorter clip
+        while claiming the asked-for one is not allowed."""
+        for cond in conds:
+            if cond.kind == "event" and cond.clip_window[0] > seconds:
+                raise ValueError(f"condition {cond.id!r}: clip_s={cond.clip_window[0]:g} is longer than the "
+                                 f"pre-roll of stream {stream_id!r} ({seconds:g} s); shorten clip_s or give "
+                                 f"the source a PreRoll of at least {cond.clip_window[0]:g} s")
 
     def _active(self) -> list[str]:
         return [cid for cid in self._conds if cid not in self._paused]
@@ -1325,6 +1383,7 @@ class Monitor:
         if isinstance(source, str):
             stream = self._streams.get(stream_id or source)
             if stream is None:
+                self._check_window(self._conds.values(), PreRoll().seconds, stream_id or source)
                 opened = open_source(source, stream_id=stream_id, preroll=PreRoll())
                 stream = self._streams.get(opened.stream_id) or self._add(opened, fps)
         elif isinstance(source, Source):
@@ -1343,6 +1402,9 @@ class Monitor:
         lock = getattr(self.store, "lock", None)
         if callable(lock):
             lock()      # one owner per database: raises StoreLocked if another process has it
+        own = getattr(source, "preroll", None)
+        self._check_window(self._conds.values(), own.seconds if own is not None else PreRoll().seconds,
+                           source.stream_id)
         if getattr(source, "preroll", 0) is None:
             source.preroll = PreRoll()  # sources that accept one are fed at capture rate
         stream = self._streams[source.stream_id] = _Stream(self, source, fps)
