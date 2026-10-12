@@ -376,3 +376,24 @@ def test_trace_dropped_is_a_health_kind():
     from percept.contracts import HEALTH_KINDS
     assert "trace_dropped" in HEALTH_KINDS
     assert Health("trace_dropped", "cam", 1.0, detail="trace: 3 records dropped").kind == "trace_dropped"
+
+
+def test_condition_trigger_may_be_a_tuple_meaning_any_of_them():
+    from percept.triggers import every, on_change
+
+    class T:
+        def step(self, frame, conditions, state, now): return {}, state
+
+    a, b = T(), T()
+    assert Condition("c", "x", trigger=(a, b)).trigger == (a, b)
+    pair = Condition("c", "x", trigger=(on_change(), every(5)))
+    assert pair == Condition("c", "x", trigger=(on_change(), every(5)))
+    assert hash(pair) == hash(Condition("c", "x", trigger=(on_change(), every(5))))
+    with pytest.raises(ValueError, match="must not be empty"):
+        Condition("c", "x", trigger=())
+    with pytest.raises(ValueError, match="not a Trigger"):
+        Condition("c", "x", trigger=(a, "nonsense"))
+    with pytest.raises(ValueError, match="don't nest"):
+        Condition("c", "x", trigger=(a, (b,)))
+    with pytest.raises(ValueError, match="not a list"):
+        Condition("c", "x", trigger=[a, b])

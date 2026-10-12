@@ -1963,3 +1963,185 @@ def test_a_full_group_for_a_non_batching_judge_still_fits_with_the_verification_
     looked = {r.items[0].condition.id for _, _, _, r in judge.sent if r.purpose == "detect"}
     assert looked == set("abcd")                         # every look was judged, none starved
     assert all(len(r.items) <= 2 for _, _, _, r in judge.sent)   # (6 - 2) // 2 items a request
+
+
+# --------------------------------------------------------------------------- combined triggers
+
+
+class Counting:
+    """Due on the given seqs; counts its steps (shared by value: equal instances are one trigger)."""
+
+    steps: list = []
+
+    def __init__(self, *seqs: int) -> None:
+        self.seqs = seqs
+
+    def __eq__(self, other):
+        return isinstance(other, Counting) and other.seqs == self.seqs
+
+    def __hash__(self):
+        return hash(("Counting", self.seqs))
+
+    def step(self, frame, conditions, state, now):
+        Counting.steps.append((frame.seq, tuple(c.id for c in conditions)))
+        return ({c.id: "at" for c in conditions} if frame.seq in self.seqs else {}), None
+
+
+async def _drive(conds, n, judge=None, limit=1000, pause=0.0):
+    """Push ``n`` frames and drain; returns (coverage, stats, judge)."""
+    judge = judge or FakeJudge(answers({"detect": [N], "verify": [Y]}))
+    async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=limit) as m:
+        src = PushSource("cam")
+        watch = m.watch(src, fps=None)
+        await push_frames(src, n, pause=pause)
+        src.close()
+        await collect(watch)
+        return m.coverage("cam"), m.stats(), judge
+
+
+def test_a_tuple_trigger_is_due_when_any_member_fires():
+    cond = Condition("door", "the door is open", trigger=(At(2), At(5)))
+    cov, stats, judge = run(_drive([cond], 8, pause=0.02))
+    counts = cov["triggers"]["door"]["At"]
+    assert counts["due"] == 2 and counts["admitted"] + counts["coalesced"] == 2
+    assert counts["dropped_budget"] == counts["dropped_for_verification"] == 0
+    assert cov["fates"]["door"].get("judged", 0) + cov["fates"]["door"].get("coalesced", 0) == 2
+
+
+def test_both_on_change_and_every_members_make_a_look_due():
+    zone = (((0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)),)
+    cond = Condition("door", "the door is open", trigger=(percept.on_change(), percept.every(1000)), zones=zone)
+
+    async def main():
+        judge = FakeJudge(answers({"detect": [N], "verify": [Y]}))
+        async with percept.Monitor(judge, [cond], store=mem(), max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            base = image(0)
+            for _ in range(4):
+                src.push(base)
+                await asyncio.sleep(0.02)
+            changed = base.copy()
+            changed[5:40, 5:55] = 255   # inside the zone, a small part of the frame
+            for _ in range(3):
+                src.push(changed)
+                await asyncio.sleep(0.05)
+            src.close()
+            await collect(watch)
+            return m.coverage("cam"), m.stats()
+
+    cov, stats = run(main())
+    per = cov["triggers"]["door"]
+    assert per["every(1000)"]["due"] == 1 and per["on_change(0.2)"]["due"] >= 1
+    assert set(per["every(1000)"]) == {"due", "admitted", "coalesced", "dropped_budget", "dropped_for_verification"}
+    assert stats["streams"]["cam"]["triggers"]["every(1000)"]["due"] == 1
+
+
+def test_equal_triggers_across_conditions_share_one_state_and_step():
+    Counting.steps = []
+    conds = [Condition("door", "the door is open", trigger=(Counting(1), Never())),
+             Condition("gate", "the gate is open", trigger=Counting(1)),
+             Condition("fire", "there is fire", trigger=(Counting(1), Counting(3)))]
+    m = percept.Monitor(FakeJudge({}), conds, store=mem())
+    keyed = {k: cs for k, _, cs in m._groups}
+    assert [c.id for c in keyed[Counting(1)]] == ["door", "gate", "fire"]
+    assert [c.id for c in keyed[Counting(3)]] == ["fire"]
+    cov, _, _ = run(_drive(conds, 5))
+    assert sum(1 for seq, ids in Counting.steps if ids == ("door", "gate", "fire")) == 5   # once a frame
+    assert cov["triggers"]["fire"]["Counting"]["due"] == 2
+    assert cov["triggers"]["door"]["Counting"]["due"] == cov["triggers"]["gate"]["Counting"]["due"] == 1
+
+
+def test_a_trigger_listed_twice_in_one_tuple_counts_once():
+    m = percept.Monitor(FakeJudge({}), [Condition("door", "the door is open", trigger=(At(1),) * 2)], store=mem())
+    assert [len(cs) for _, _, cs in m._groups] == [1]
+
+
+def test_coalesced_looks_keep_their_first_label_and_fates_match_a_single_trigger():
+    # deterministic: enqueue directly, then let the drop path count them
+    cond = Condition("door", "the door is open", trigger=Never())
+
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [N]})), [cond], store=mem()) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            src.push(image())
+            await asyncio.sleep(0.1)
+            stream = m._streams["cam"]
+            before = dict(m.coverage("cam")["fates"].get("door", {}))
+            stream.detect_task = asyncio.get_running_loop().create_future()   # nothing dispatches
+            stream.enqueue("door", "s", rt.STATE, trigger="every(5)")
+            stream.enqueue("door", "s", rt.STATE, trigger="on_change(0.2)")
+            w = stream.pending[("door", "s")]
+            assert w.trigger == "every(5)"
+            w.deadline, w.blocked = m._mono() - 1.0, True
+            stream.dispatch(m._mono())
+            stream.detect_task = None
+            cov = m.coverage("cam")
+            return before, cov
+
+    before, cov = run(main())
+    per = cov["triggers"]["door"]
+    assert per["every(5)"] == {"due": 1, "admitted": 0, "coalesced": 0, "dropped_budget": 1,
+                               "dropped_for_verification": 0}
+    assert per["on_change(0.2)"] == {"due": 1, "admitted": 0, "coalesced": 1, "dropped_budget": 0,
+                                     "dropped_for_verification": 0}
+    fates = cov["fates"]["door"]
+    assert fates.get("coalesced", 0) - before.get("coalesced", 0) == 1
+    assert fates.get("dropped_budget", 0) - before.get("dropped_budget", 0) == 1
+
+
+def test_poke_looks_are_labelled_poke():
+    cond = Condition("door", "the door is open", trigger=Never())
+
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [N]})), [cond], store=mem()) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            src.push(image())
+            await asyncio.sleep(0.05)
+            m.poke("cam", "door", reason="sensor")
+            await asyncio.sleep(0.1)
+            src.close()
+            await collect(watch)
+            return m.coverage("cam")
+
+    per = run(main())["triggers"]["door"]["poke"]
+    assert per["due"] == 1 and per["admitted"] == 1
+
+
+def test_fates_with_a_tuple_of_one_equal_those_of_the_bare_trigger():
+    single = run(_drive([Condition("door", "the door is open", trigger=At(2))], 5))[0]
+    as_tuple = run(_drive([Condition("door", "the door is open", trigger=(At(2),))], 5))[0]
+    assert single["fates"] == as_tuple["fates"] and single["triggers"] == as_tuple["triggers"]
+
+
+def test_a_storm_of_tuple_triggers_never_exceeds_the_window(monkeypatch):
+    monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
+    monkeypatch.setattr(rt, "DEADLINES", {rt.EVENT: 0.3, rt.STATE: 0.5})
+    monkeypatch.setattr(rt, "VERIFY_RETRY_S", 0.05)
+    attempts: list[float] = []
+    rng = np.random.default_rng(11)
+
+    def script(request):
+        attempts.append(time.monotonic())
+        if rng.random() < 0.3:
+            return RetryableError("busy")
+        return {i.condition.id: (Y if rng.random() < 0.5 else N) for i in request.items}
+
+    judge = FakeJudge(script, can_batch=False)
+    conds = [Condition("fall", "a person falls", kind="event", trigger=(Always(), At(3), percept.every(0.05)),
+                       rearm_s=0.2),
+             Condition("door", "the door is open", trigger=(percept.every(0.05), Always()), clear_after_no=1),
+             Condition("gate", "the gate is open", trigger=(Always(), percept.on_change()), clear_after_no=1)]
+    limit = 8
+    cov, stats, _ = run(_drive(conds, 110, judge=judge, limit=limit, pause=0.02))
+    attempts.sort()
+    for i, t in enumerate(attempts):
+        assert sum(1 for u in attempts[i:] if u < t + 1.0) <= limit
+    assert stats["streams"]["cam"]["attempts"] == len(attempts)
+    dropped = sum(per.get("dropped_budget", 0) for c in cov["triggers"].values() for per in c.values())
+    assert dropped == sum(c.get("dropped_budget", 0) for c in cov["fates"].values())
+    for cid, per in cov["triggers"].items():
+        coalesced = sum(p["coalesced"] for p in per.values())
+        assert coalesced == cov["fates"][cid].get("coalesced", 0)

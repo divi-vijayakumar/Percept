@@ -647,3 +647,43 @@ def test_a_cascade_pinned_plan_sends_each_concern_to_its_judge():
         return {i.condition.id for *_, r in judge.sent if r.purpose == "detect" for i in r.items}
 
     assert asked(a) == {"lamp_on"} and asked(b) == {"door_open"}
+
+
+# --------------------------------------------------------------------------- combined attention
+
+
+def combined(entries):
+    plan = state_plan()
+    plan["concerns"][0]["attention"] = {"any": entries}
+    return plan
+
+
+def test_combined_attention_compiles_to_a_tuple_trigger_in_canonical_order():
+    c = compile_(combined([{"on_change": {"threshold": 0.3}}, {"every": 5}]))
+    (cond,) = c.conditions
+    assert isinstance(cond.trigger, tuple) and set(cond.trigger) == {on_change(0.3), every(5)}
+    swapped = compile_(combined([{"every": 5}, {"on_change": {"threshold": 0.3}}]))
+    assert swapped.conditions == c.conditions and swapped.plan_hash == c.plan_hash
+    duplicated = compile_(combined([{"every": 5}, {"on_change": {"threshold": 0.3}}, {"every": 5}]))
+    assert duplicated.plan_hash == c.plan_hash
+    assert compile_(combined([{"every": 5}])).plan_hash != c.plan_hash
+    assert compile_(combined([{"every": 6}, {"on_change": {"threshold": 0.3}}])).plan_hash != c.plan_hash
+    listed = c.explain()["concerns"][0]["trigger"]
+    assert listed["origin"] == "plan"
+    assert sorted(t["type"] for t in listed["value"]) == ["every", "on_change"]
+    percept.Monitor(**c.monitor_kwargs, store=percept.MemoryStore())     # accepted as is
+
+
+def test_single_trigger_hashes_are_unchanged_by_combined_support():
+    # one trigger is still described as one object, so existing plans keep their hash
+    c = compile_(state_plan())
+    assert c.conditions[0].trigger == every(0.2)
+    assert c.explain()["concerns"][0]["trigger"]["value"] == [{"type": "every", "seconds": 0.2}]
+
+
+def test_feasibility_counts_every_members_of_a_combined_trigger():
+    f = compile_(combined([{"every": 0.5}, {"every": 1}])).feasibility()["sources"]["dock"]
+    assert f["periodic_requests_per_min"] == 180 and len(f["groups"]) == 2 and f["verdict"] == "feasible"
+    g = compile_(combined([{"on_change": {}}, {"every": 1}])).feasibility()["sources"]["dock"]
+    assert g["periodic_requests_per_min"] == 60 and g["verdict"] == "best_effort"
+    assert "change-triggered demand is unknown until measured on representative video" in g["notes"]
