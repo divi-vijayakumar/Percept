@@ -252,3 +252,13 @@ def test_requests_that_differ_in_prompt_route_token_limit_or_model_do_not_share_
     other = FakeJudge(lambda r: {}, price=PRICE)
     other.model = "another-model"
     assert ev.CachingJudge(other, cap_usd=None).key(r) != guard.key(r)
+
+
+def test_a_sweep_configuration_that_runs_out_of_money_is_scored_capped(clip):
+    root = clip[0]
+    labels, manifest = manifest_for(root)
+    configs = {"first": compiled(), "second": compiled(trigger={"every": 1.0})}
+    with pytest.warns(RuntimeWarning, match="cap"):
+        scores = ev.sweep(configs, labels, manifest, split="validation", video_root=root, judge_cap_usd=0.0,
+                          speed=SPEED)
+    assert all(s.capped and s.refused > 0 and s.paid_usd == 0 for s in scores.values())

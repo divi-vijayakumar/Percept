@@ -309,7 +309,7 @@ def bootstrap(tallies: Sequence[Mapping], seed: int = 0, n: int = BOOTSTRAP_N,
 class ClipRun:
     """What a run did on one labelled clip: ``seconds`` of it watched, its predictions, looks,
     drops and detector fires, the API dollars it spent (``cost_usd``: as live, a cached reply at its
-    original cost; ``paid_usd``: actually paid), the local compute seconds it used, and the
+    original cost; ``paid_usd``: actually paid; ``refused``: requests a spend cap refused), the local compute seconds it used, and the
     cooldown one report imposes on the next of its condition."""
 
     file: str
@@ -322,13 +322,15 @@ class ClipRun:
     compute_s: float = 0.0
     cooldown_s: float = 0.0
     paid_usd: float = 0.0
+    refused: int = 0
 
 
 @dataclass(frozen=True)
 class Score:
     """The metrics of one run over labelled clips. ``tp``: matched occurrences; ``fp``: false
     alerts (unmatched predictions that are not duplicates); ``fn``: missed occurrences.
-    ``misses_by_stage`` sums to ``fn``. Ratios are None when their denominator is zero."""
+    ``misses_by_stage`` sums to ``fn``. ``capped``: a spend cap refused
+    ``refused`` requests, so the run is incomplete. Ratios are None when their denominator is zero."""
 
     clips: int
     hours: float
@@ -357,6 +359,8 @@ class Score:
     compute_s_per_true_event: Optional[float]
     ci95: Mapping[str, Any] = field(default_factory=dict)
     paid_usd: float = 0.0
+    refused: int = 0
+    capped: bool = False
 
 
 def evaluate(labels: Labels, runs: Sequence[ClipRun], *, tol: float = TOLERANCE_S, seed: int = 0,
@@ -428,4 +432,5 @@ def evaluate(labels: Labels, runs: Sequence[ClipRun], *, tol: float = TOLERANCE_
                                                     ("verified", verifies)) if not on),
         cost_usd=cost, cost_per_true_event=_ratio(cost, tp), compute_s=compute,
         compute_s_per_true_event=_ratio(compute, tp), ci95=bootstrap(tallies, seed, n),
-        paid_usd=sum(r.paid_usd for r in runs))
+        paid_usd=sum(r.paid_usd for r in runs), refused=sum(r.refused for r in runs),
+        capped=any(r.refused for r in runs))

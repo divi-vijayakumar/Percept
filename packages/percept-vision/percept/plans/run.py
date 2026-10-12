@@ -33,6 +33,7 @@ import math
 import os
 import tempfile
 import time
+import warnings
 import weakref
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Optional, Sequence, Union
@@ -274,7 +275,7 @@ async def _watch(compiled: Compiled, path: str, rate: float, max_side: int, name
         if speed:
             time.sleep(max(0.0, start + clock[1] / speed - time.time()))
 
-    met, cpu, paid = [], time.process_time(), guard.spent
+    met, cpu, paid, refused = [], time.process_time(), guard.spent, guard.refused
     source = open_source(path, fps=rate, max_side=max_side, on_frame=on_frame)
     async with Monitor(**dict(compiled.monitor_kwargs, judge=shown), store=MemoryStore(), trace=trace_path) as m:
         async for delivery in m.watch(source, fps=rate):
@@ -304,6 +305,7 @@ async def _watch(compiled: Compiled, path: str, rate: float, max_side: int, name
         preds.append(Prediction(names[d.condition_id], ev[0], ev[-1], ev[-1], d.confidence, tuple(yes)))
     return ClipRun(_basename(path), (clock[1] if clock else 0.0) + 1.0 / rate, tuple(preds),
                    tuple(lk for _, _, lk in looks), tuple(drops), cost_usd=cost, paid_usd=guard.spent - paid,
+                   refused=guard.refused - refused,
                    compute_s=time.process_time() - cpu, cooldown_s=_cooldown(compiled))
 
 
@@ -318,6 +320,8 @@ def run(compiled: Compiled, labels: Labels, clips: Sequence[str], *, video_root:
     the records misses are attributed with. ``cost_usd``: what the run would have cost live (a
     cached reply counts its original cost); ``paid_usd``: what was actually paid; ``compute_s``:
     CPU seconds of the whole process while the clip ran (decoding and the runtime included).
+    ``refused``: requests the cap refused (they failed with ``budget``); a run that hit the cap
+    warns, and its :class:`~percept.plans.score.Score` says ``capped``.
 
     Frames are fed at ``speed`` times real time (None: as fast as the Monitor takes them, which
     leaves it little time to look). The Monitor's request budget, deadlines and timers run on the
@@ -336,7 +340,11 @@ def run(compiled: Compiled, labels: Labels, clips: Sequence[str], *, video_root:
                              Path(tmp) / f"trace-{i}.jsonl", speed) for i, f in enumerate(clips)]
 
     with tempfile.TemporaryDirectory() as tmp:
-        return asyncio.run(main(tmp))
+        runs = asyncio.run(main(tmp))
+    if guard.refused:
+        warnings.warn(f"the ${judge_cap_usd:g} judge cap refused {guard.refused} request(s): "
+                      "the score is of a capped run", RuntimeWarning, stacklevel=2)
+    return runs
 
 
 # --------------------------------------------------------------------------- freeze before test
@@ -397,7 +405,8 @@ def sweep(configs: Mapping[str, Compiled], labels: Labels, manifest: SplitManife
           **options: Any) -> dict[str, Score]:
     """:func:`run` each configuration you declare (name -> compiled plan) on the ``dev`` or
     ``validation`` split and return their scores side by side, in your order. ``judge_cap_usd``
-    caps the whole sweep; replies are shared through one cache, so a request two configurations
+    caps the whole sweep (a configuration that runs out is scored ``capped``,
+    with its refused requests counted); replies are shared through one cache, so a request two configurations
     send alike is paid once. It neither ranks nor picks: comparing the scores is yours. The test
     split is not swept: it is scored once, with :func:`score_split`, for a registered plan."""
     if split not in ("dev", "validation"):
