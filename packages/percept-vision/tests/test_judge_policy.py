@@ -163,6 +163,56 @@ def test_real_hang_is_cut_at_the_deadline():
     assert time.monotonic() - start < 1.0
 
 
+def test_a_hung_attempt_is_abandoned_in_time_for_the_retry():
+    # An attempt that never replies used to hold the whole deadline, leaving no time to retry. With a
+    # retry left, an attempt gets ATTEMPT_SHARE of the time remaining, so the retry still runs.
+    calls = []
+
+    async def first_hangs(prompt, images, max_output_tokens, request):
+        calls.append(time.monotonic())
+        if len(calls) == 1:
+            await asyncio.sleep(60)
+        return RawReply(OK, 100, 10)
+
+    start = time.monotonic()
+    result = asyncio.run(policy.call(first_hangs, make_request(deadline_s=0.5), judge_name="j"))
+    assert [o.answer for o in result.observations] == ["yes", "no"] and kinds(result) == [None, None]
+    assert result.usage[0].usage.attempts == 2 and len(calls) == 2
+    assert calls[1] - start < 0.5 * policy.ATTEMPT_SHARE + 0.1      # the retry started inside its share
+    assert time.monotonic() - start < 0.5
+
+
+def test_without_a_retry_an_attempt_may_use_the_whole_deadline():
+    async def slow(prompt, images, max_output_tokens, request):
+        await asyncio.sleep(0.3)        # past ATTEMPT_SHARE of the deadline, inside the deadline
+        return RawReply(OK)
+
+    result = asyncio.run(policy.call(slow, make_request(deadline_s=0.4), judge_name="j", retries=0))
+    assert kinds(result) == [None, None] and result.usage[0].usage.attempts == 1
+
+
+def test_a_cancelled_request_cancels_its_attempt():
+    cancelled = []
+
+    async def hang(prompt, images, max_output_tokens, request):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    async def main():
+        task = asyncio.create_task(policy.call(hang, make_request(deadline_s=30.0), judge_name="j"))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    asyncio.run(main())
+    assert cancelled == [True]
+
+
 def test_deadline_override():
     assert kinds(run(Provider((3.0, RawReply(OK))), deadline_s=2.0)) == ["timeout"] * 2
 

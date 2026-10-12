@@ -42,6 +42,8 @@ Send = Callable[[Prompt, "tuple[bytes, ...]", int, JudgeRequest], Awaitable[RawR
 
 TRUNCATED = "reply truncated at max_output_tokens"
 BACKOFF_S = 0.25  # the retry waits BACKOFF_S to 2 * BACKOFF_S, unless the provider says otherwise
+ATTEMPT_SHARE = 0.6  # with a retry left, an attempt may use this share of the time remaining: one
+                     # that hangs is abandoned in time for the retry to run
 
 
 async def call(
@@ -103,8 +105,14 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
         nonlocal attempts, tokens_in, tokens_out, out_of_time
         while True:
             attempts += 1
+            sent = asyncio.ensure_future(send(prompt, images, request.max_output_tokens, request))
             try:
-                reply = await send(prompt, images, request.max_output_tokens, request)
+                if attempts <= retries:     # a retry is left: don't let this attempt use all the time
+                    limit = max(0.0, deadline_s - (clock() - start)) * ATTEMPT_SHARE
+                    await asyncio.wait({sent}, timeout=limit)
+                    if not sent.done():
+                        continue            # it hung: abandoned (finally cancels it), the retry runs
+                reply = await sent
             except RetryableError as exc:
                 delay = exc.retry_after_s if exc.retry_after_s is not None else BACKOFF_S * (1 + rng())
                 if attempts > retries:
@@ -118,6 +126,9 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
                 tokens_in += max(0, int(exc.tokens_in))
                 tokens_out += max(0, int(exc.tokens_out))
                 raise
+            finally:
+                if not sent.done():     # abandoned, or the whole request was cancelled
+                    sent.cancel()
             tokens_in += max(0, int(reply.tokens_in))
             tokens_out += max(0, int(reply.tokens_out))
             return reply
