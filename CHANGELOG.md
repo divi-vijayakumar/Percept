@@ -2,6 +2,20 @@
 
 Notable changes to Percept.
 
+## Unreleased
+
+### API
+
+- `percept.plans` (experimental; the schema may change before it is stable): a watch plan, one
+  plain-data document (`percept.watch/v1alpha1`) with sources, budget, judges and concerns.
+  `plans.compile(plan, routes)` checks it, raising `PlanError` with the dotted path of the field,
+  and returns `Compiled`: the conditions, `monitor_kwargs` for `Monitor(**...)`, the
+  `external_event` map for `poke`, and a `plan_hash` of every effective setting. `explain()`
+  lists each setting with its origin (plan, SDK default or fixed by the runtime),
+  `feasibility()` checks periodic demand against the request budget, and `provenance()` /
+  `trace_record()` name the SDK version, judges and prompt hash, without secrets. Example:
+  `examples/watch_plan.py`.
+
 ## 0.9.0 — Developer Preview (2026-10-11)
 
 Percept 0.9.0, the Developer Preview, is a rewrite around one job: a decision layer that turns a

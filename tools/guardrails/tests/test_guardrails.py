@@ -83,6 +83,25 @@ def test_relative_shell_import_from_nested_core_fails(tmp_path):
     assert g.check_boundaries(root)
 
 
+@pytest.mark.parametrize("path", ["plans/__init__.py", "plans/later.py"])
+@pytest.mark.parametrize("bad_import", ["import asyncio", "from percept.monitor import x", "from percept.judges import gemini"])
+def test_plans_package_is_core(tmp_path, path, bad_import):
+    files = {**CLEAN, "plans/__init__.py": "from percept.plans import later\n", "plans/later.py": "x = 1\n",
+             "judges/_cascade.py": "import time\n"}
+    assert g.check_boundaries(make_tree(tmp_path, files)) == []
+    root = make_tree(tmp_path, {**files, path: f"{bad_import}\n"})
+    problems = g.check_boundaries(root)
+    assert problems and path.split("/")[1] in problems[0], bad_import
+
+
+def test_plans_may_build_a_cascade_but_other_core_may_not(tmp_path):
+    files = {**CLEAN, "plans/__init__.py": "from percept.judges._cascade import cascade\n",
+             "judges/_cascade.py": "import time\n"}
+    assert g.check_boundaries(make_tree(tmp_path, files)) == []
+    root = make_tree(tmp_path, {**files, "decide.py": "from percept.judges._cascade import cascade\n"})
+    assert g.check_boundaries(root)
+
+
 def test_contracts_importing_percept_fails(tmp_path):
     root = make_tree(tmp_path, {**CLEAN, "contracts.py": "from percept.decide import step\n"})
     assert g.check_boundaries(root)

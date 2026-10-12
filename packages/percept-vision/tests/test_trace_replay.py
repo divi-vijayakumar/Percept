@@ -526,7 +526,7 @@ def test_the_public_surface_exports_the_trace_module_not_a_replay_function():
     import percept.replay as core
 
     assert "trace" in percept.__all__ and "replay" not in percept.__all__ and "TraceWriter" not in percept.__all__
-    assert len(percept.__all__) == 27
+    assert len(percept.__all__) == 28
     assert percept.replay is core and callable(core.replay)
     assert percept.trace.TraceWriter is tr.TraceWriter and callable(percept.trace.replay)
 

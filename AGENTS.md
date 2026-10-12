@@ -16,7 +16,7 @@ pure reducer decides whether the agent hears about it.
 ## Architecture rules (CI enforces the first three)
 
 - **Functional core, imperative shell.** `percept.contracts`, `decide`, `triggers`, `zones`, `clips`,
-  `judges.base` and `replay` are pure: no I/O, no threads, no asyncio, no vendor SDKs, time passed in
+  `judges.base`, `replay` and `plans` are pure: no I/O, no threads, no asyncio, no vendor SDKs, time passed in
   as an argument. `contracts` imports no other percept module. Only shell modules (`monitor`,
   `sources`, `delivery`, `trace`, `judges/<vendor>`) touch the outside world.
 - **At most 30 public names** in `percept.__all__`.

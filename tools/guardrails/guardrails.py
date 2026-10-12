@@ -37,7 +37,13 @@ CORE = {
     "percept.clips",
     "percept.judges.base",
     "percept.replay",
+    "percept.plans",
 }
+# Packages whose every module is core.
+CORE_PACKAGES = ("percept.plans",)
+# Shell modules a core module may import to build a value it never calls: plans builds a
+# cascade judge for the runtime to drive.
+CORE_BUILDS = {"percept.plans": {"percept.judges._cascade"}}
 # Top-level modules a core module must never import.
 IO_MODULES = {
     "asyncio", "socket", "threading", "multiprocessing", "subprocess", "concurrent",
@@ -130,7 +136,8 @@ def check_boundaries(root: Path) -> list[str]:
     mods = discover(root)
     problems: list[str] = []
     for mod in mods.values():
-        in_core = mod.name in CORE
+        in_core = mod.name in CORE or mod.name.startswith(tuple(p + "." for p in CORE_PACKAGES))
+        owner = next((p for p in CORE_PACKAGES if mod.name == p or mod.name.startswith(p + ".")), mod.name)
         for name, line in imports_of(mod):
             top = name.split(".")[0]
             where = f"{mod.path.relative_to(root)}:{line}"
@@ -141,7 +148,9 @@ def check_boundaries(root: Path) -> list[str]:
                 continue
             if top in IO_MODULES:
                 problems.append(f"{where}: core module {mod.name} imports I/O module {name}")
-            elif target is not None and target != "percept" and target not in CORE:
+            elif target is not None and target != "percept" and target not in CORE \
+                    and not target.startswith(tuple(p + "." for p in CORE_PACKAGES)) \
+                    and target not in CORE_BUILDS.get(owner, ()):
                 problems.append(f"{where}: core module {mod.name} imports shell module {target}")
             elif top not in ("percept", "__future__") and top not in CORE_THIRD_PARTY \
                     and top not in sys.stdlib_module_names:

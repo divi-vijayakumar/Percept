@@ -57,3 +57,9 @@ def test_webhook_agent_posts_every_decision_and_acks_after_a_2xx():
     assert sorted(decisions(out)) == ["cleared", "met", "met"], out
     assert "met      person_fell" in out and "cleared  door_open" in out, out
     assert "webhook received 3 decisions" in out, out
+
+
+def test_watch_plan_compiles_explains_and_runs():
+    out = run("watch_plan.py").stdout
+    assert "feasibility: \"best_effort\"" in out and "{'shelf_sensor': ('package_fell',)}" in out, out
+    assert decisions(out) == ["met", "cleared"], out
