@@ -304,3 +304,77 @@ def run(compiled: Compiled, labels: Labels, clips: Sequence[str], *, video_root:
 
     with tempfile.TemporaryDirectory() as tmp:
         return asyncio.run(main(tmp))
+
+
+# --------------------------------------------------------------------------- freeze before test
+
+
+def register(compiled: Compiled, manifest: SplitManifest, labels: Labels, *, split: str = "test", created: str,
+             judge_versions: Optional[Mapping[str, str]] = None) -> dict:
+    """A registration record freezing ``compiled`` before ``split`` is run: the plan hash, its
+    provenance (SDK version, prompt hash, the judges and the model ids requested, and
+    ``judge_versions``, the model versions your judges reported, if any), the manifest and labels
+    hashes, the split and ``created`` (your timestamp; no clock is read). ``registration_hash``
+    covers the rest. No path is recorded, so the record is the same in every checkout. Keep it
+    with your results and pass it to :func:`score_split`."""
+    if split not in SPLITS:
+        raise ValueError(f"split must be one of {', '.join(SPLITS)}, got {split!r}")
+    if manifest.labels_hash != labels.labels_hash:
+        raise ValueError("the manifest was split from other labels")
+    record = {"format": REGISTRATION_FORMAT, "plan_hash": compiled.plan_hash,
+              "provenance": dict(compiled.provenance(), judge_versions=dict(judge_versions or {})),
+              "manifest_hash": manifest.manifest_hash, "labels_hash": labels.labels_hash, "split": split,
+              "created": created}
+    return dict(record, registration_hash=_sha(record))
+
+
+def score_split(compiled: Compiled, labels: Labels, manifest: SplitManifest, *, split: str,
+                video_root: Union[str, os.PathLike], judge_cap_usd: float, registration: Optional[Mapping] = None,
+                **options: Any) -> Score:
+    """:func:`run` on the clips of ``split`` and :func:`~percept.plans.score.evaluate` them.
+    ``options`` go to :func:`run`.
+
+    The test split is scored only with a ``registration`` from :func:`register` for this split
+    whose plan, manifest and labels hashes match the current ones: freeze the plan before you look
+    at the test split, so the test score is not chosen after the fact. Anything else raises
+    ValueError."""
+    if split not in SPLITS:
+        raise ValueError(f"split must be one of {', '.join(SPLITS)}, got {split!r}")
+    if manifest.labels_hash != labels.labels_hash:
+        raise ValueError("the manifest was split from other labels")
+    if split == "test":
+        want = {"plan_hash": compiled.plan_hash, "manifest_hash": manifest.manifest_hash,
+                "labels_hash": labels.labels_hash, "split": "test"}
+        reg = dict(registration or {})
+        body = {k: v for k, v in reg.items() if k != "registration_hash"}
+        if not reg or any(reg.get(k) != v for k, v in want.items()) or reg.get("registration_hash") != _sha(body):
+            raise ValueError("the test split is scored only for a frozen plan: call register(compiled, manifest, "
+                             "labels, split='test', created=...) before running it and pass the record as "
+                             "registration=; a record whose plan, manifest or labels hash differs from the current "
+                             "ones (the plan, clips or labels changed since) does not count")
+    return evaluate(labels, run(compiled, labels, manifest.clips[split], video_root=video_root,
+                                judge_cap_usd=judge_cap_usd, **options))
+
+
+# --------------------------------------------------------------------------- declared configurations
+
+
+def sweep(configs: Mapping[str, Compiled], labels: Labels, manifest: SplitManifest, *, split: str,
+          video_root: Union[str, os.PathLike], judge_cap_usd: float, cache: Optional[MutableMapping] = None,
+          **options: Any) -> dict[str, Score]:
+    """:func:`run` each configuration you declare (name -> compiled plan) on the ``dev`` or
+    ``validation`` split and return their scores side by side, in your order. ``judge_cap_usd``
+    caps the whole sweep; replies are shared through one cache, so a request two configurations
+    send alike is paid once. It neither ranks nor picks: comparing the scores is yours. The test
+    split is not swept: it is scored once, with :func:`score_split`, for a registered plan."""
+    if split not in ("dev", "validation"):
+        raise ValueError(f"sweep runs on dev or validation, not {split!r}")
+    cache = {} if cache is None else cache
+    out: dict[str, Score] = {}
+    left = judge_cap_usd
+    for name, compiled in configs.items():
+        runs = run(compiled, labels, manifest.clips[split], video_root=video_root, judge_cap_usd=left,
+                   cache=cache, **options)
+        left = max(0.0, left - sum(r.cost_usd for r in runs))
+        out[name] = evaluate(labels, runs)
+    return out

@@ -144,6 +144,57 @@ def request(i: int, image=None) -> percept.JudgeRequest:
     return percept.JudgeRequest(f"r{i}", "cam", 0, (percept.JudgeItem(cond),), (img,), (0.0, 1.0))
 
 
+def manifest_for(root):
+    """Four clips, one per group, at least one in each split."""
+    groups = {s: next(f"g{i}" for i in range(1000) if plans.labels.split_of(f"g{i}") == s) for s in plans.labels.SPLITS}
+    groups["dev2"] = next(f"h{i}" for i in range(1000) if plans.labels.split_of(f"h{i}") == "validation")
+    files = {f"{k}.avi": g for k, g in groups.items()}
+    for f in files:
+        if not (root / f).exists():
+            write_clip(root / f)
+    labels = labels_for(list(files), group_of=files.get)
+    return labels, plans.split(labels)
+
+
+def test_test_split_needs_a_matching_registration(clip):
+    root = clip[0]
+    labels, manifest = manifest_for(root)
+    c = compiled()
+    kw = dict(split="test", video_root=root, judge_cap_usd=1.0, speed=SPEED)
+    with pytest.raises(ValueError, match="frozen"):
+        ev.score_split(c, labels, manifest, **kw)
+    stale = ev.register(compiled(revision=2), manifest, labels, created="2026-10-12")
+    with pytest.raises(ValueError, match="frozen"):
+        ev.score_split(c, labels, manifest, registration=stale, **kw)
+    reg = ev.register(c, manifest, labels, created="2026-10-12")
+    with pytest.raises(ValueError, match="frozen"):
+        ev.score_split(c, labels, manifest, registration=dict(reg, created="later"), **kw)
+    score = ev.score_split(c, labels, manifest, registration=reg, **kw)
+    assert score.clips == len(manifest.clips["test"]) and score.tp == score.clips
+
+
+def test_registration_is_the_same_in_every_checkout():
+    files = [f"/checkout-a/clips/{n}" for n in ("x.avi", "y.avi")]
+    other = [f"/elsewhere/b/{n}" for n in ("x.avi", "y.avi")]
+    group = lambda f: f.rsplit("/", 1)[-1]     # noqa: E731  a recording group is a name, not a path
+    labels_a, labels_b = labels_for(files, group), labels_for(other, group)
+    c = compiled()
+    reg_a = ev.register(c, plans.split(labels_a), labels_a, created="t")
+    reg_b = ev.register(c, plans.split(labels_b), labels_b, created="t")
+    assert reg_a == reg_b and "checkout" not in str(reg_a) and reg_a["provenance"]["prompt_sha256"]
+
+
+def test_sweep_returns_one_score_per_declared_config_in_order(clip):
+    root = clip[0]
+    labels, manifest = manifest_for(root)
+    configs = {"slow": compiled(trigger={"every": 2.0}), "default": compiled()}
+    scores = ev.sweep(configs, labels, manifest, split="validation", video_root=root, judge_cap_usd=1.0, speed=SPEED)
+    assert list(scores) == ["slow", "default"] and all(isinstance(s, plans.Score) for s in scores.values())
+    assert all(s.clips == len(manifest.clips["validation"]) for s in scores.values())
+    with pytest.raises(ValueError):
+        ev.sweep(configs, labels, manifest, split="test", video_root=root, judge_cap_usd=1.0)
+
+
 def test_caching_judge_sends_nothing_for_an_identical_request():
     sent = []
     guard = ev.CachingJudge(counting(sent), cap_usd=1.0)
