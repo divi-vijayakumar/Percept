@@ -188,9 +188,9 @@ def load_labels(doc: Any) -> Labels:
         base = _basename(file)
         if not base:
             raise LabelError(f"{path}.file", "expected a file name")
-        if base in seen:
-            raise LabelError(f"{path}.file", f"duplicate file {base!r} (also clips[{seen[base]}])")
-        seen[base] = i
+        if base.casefold() in seen:     # case-folded: a.mp4 and A.MP4 are one file on many disks
+            raise LabelError(f"{path}.file", f"duplicate file {base!r} (also clips[{seen[base.casefold()]}])")
+        seen[base.casefold()] = i
         group = _text(raw["group"], f"{path}.group") if "group" in raw else _stem(file)
         occs = []
         for j, o in enumerate(_list(raw.get("occurrences", []), f"{path}.occurrences")):
@@ -252,7 +252,11 @@ def split(labels: Labels, durations: Optional[Mapping[str, float]] = None, *,
         raise ValueError(f"cutoffs must be two integers with 0 <= c1 <= c2 <= 100, got {cutoffs!r}")
     secs: dict[str, float] = {}
     if durations is not None:
-        by_base = {_basename(k): v for k, v in durations.items()}
+        by_base: dict[str, Any] = {}
+        for k, v in durations.items():
+            if _basename(k) in by_base:
+                raise LabelError(f"durations.{k}", f"duplicate file {_basename(k)!r}")
+            by_base[_basename(k)] = v
         for c in labels.clips:
             if _basename(c.file) not in by_base:
                 raise LabelError(f"durations.{c.file}", "missing")

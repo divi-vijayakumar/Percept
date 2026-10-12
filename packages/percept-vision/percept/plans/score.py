@@ -360,6 +360,18 @@ def evaluate(labels: Labels, runs: Sequence[ClipRun], *, tol: float = TOLERANCE_
              n: int = BOOTSTRAP_N) -> Score:
     """Score one run (a :class:`ClipRun` per watched clip) against ``labels``. Only the clips in
     ``runs`` count; a clip's occurrences that begin after ``seconds`` don't."""
+    if not (math.isfinite(tol) and tol >= 0):
+        raise ValueError(f"tol must be a finite number >= 0, got {tol!r}")
+    known = {c.label for c in labels.conditions}
+    for i, r in enumerate(runs):            # a record under an unknown label would vanish from the score
+        if not (math.isfinite(r.seconds) and r.seconds > 0):
+            raise LabelError(f"runs[{i}].seconds", f"expected a finite number > 0, got {r.seconds!r}")
+        for name, records, label_of in (("predictions", r.predictions, lambda x: x.label),
+                                        ("looks", r.looks, lambda x: x.label),
+                                        ("drops", r.drops, lambda x: x[0]), ("fires", r.fires, lambda x: x[0])):
+            for j, rec in enumerate(records):
+                if label_of(rec) not in known:
+                    raise LabelError(f"runs[{i}].{name}[{j}]", f"label {label_of(rec)!r} is not in the labels")
     judged = any(r.looks for r in runs)
     verifies = any(lk.purpose == "verify" for r in runs for lk in r.looks)
     seen: set = set()

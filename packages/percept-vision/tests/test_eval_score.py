@@ -87,3 +87,26 @@ def test_runs_must_name_labelled_clips_once():
         evaluate(labels(), [ClipRun("x.mp4", 10), ClipRun("other/x.mp4", 10)])
     empty = evaluate(labels(), [])
     assert empty.recall is None and empty.false_per_hour is None and empty.ci95["recall"] is None
+
+
+@pytest.mark.parametrize("bad", [
+    ClipRun("x.mp4", 1800, predictions=[p("zzz", 101)]),                 # a typo'd label must not vanish
+    ClipRun("x.mp4", 1800, looks=[Look("zzz", 1, 2, "yes", None, "detect", 0.9)]),
+    ClipRun("x.mp4", 1800, drops=[("zzz", 1.0, 2.0, "budget")]),
+    ClipRun("x.mp4", 1800, fires=[("zzz", 1.0)]),
+])
+def test_a_record_under_an_unknown_label_is_an_error_not_a_silent_drop(bad):
+    with pytest.raises(LabelError, match="zzz"):
+        evaluate(labels(), [bad])
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])
+def test_watched_seconds_must_be_finite_and_positive(seconds):
+    with pytest.raises(LabelError, match="seconds"):
+        evaluate(labels(), [ClipRun("x.mp4", seconds)])
+
+
+@pytest.mark.parametrize("tol", [-0.1, float("nan"), float("inf")])
+def test_the_tolerance_must_be_finite_and_not_negative(tol):
+    with pytest.raises(ValueError, match="tol"):
+        evaluate(labels(), runs(), tol=tol)

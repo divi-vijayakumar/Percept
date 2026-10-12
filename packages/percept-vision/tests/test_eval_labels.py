@@ -160,3 +160,15 @@ def test_split_checks_cutoffs_and_durations():
         split(labels, {"clip0.mp4": 1.0})
     assert split(labels, cutoffs=(0, 0)).clips["test"] == ("clip0.mp4", "clip1.mp4", "clip2.mp4")
     assert split(labels, cutoffs=(100, 100)).clips["dev"] == ("clip0.mp4", "clip1.mp4", "clip2.mp4")
+
+
+def test_file_names_differing_only_in_case_are_one_file():
+    d = doc()
+    d["clips"][1]["file"] = "other/A.MP4"
+    with pytest.raises(LabelError, match="duplicate file"):
+        load_labels(d)
+
+
+def test_durations_with_a_duplicate_file_name_are_refused():
+    with pytest.raises(LabelError, match="duplicate file"):
+        split(load_labels(doc()), {"cams/a.mp4": 60, "other/a.mp4": 90, "cams/b.mp4": 60, "cams/c.mp4": 60})
