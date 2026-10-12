@@ -18,6 +18,7 @@ cv2 = pytest.importorskip("cv2")
 
 FPS, SECONDS = 10, 8.0
 PRICE = PriceModel(0.10, 0.40, 258)
+SPEED = 4.0       # 4x real time keeps the tests short; the demo budget leaves room for every look
 
 
 def write_clip(path, square=(2.0, 5.0)) -> str:
@@ -113,3 +114,65 @@ def test_attention_only_fires_are_the_looks_a_live_monitor_makes(monkeypatch, cl
     assert runs[0].file == name and runs[0].cost_usd == 0 and abs(runs[0].seconds - SECONDS) < 0.5
     score = plans.evaluate(labels_for([name]), runs)
     assert score.funnel["candidate"] == 1 and score.cost_usd == 0
+
+
+# --------------------------------------------------------------------------- the full runtime and the cache
+
+
+def counting(sent):
+    def answer(request):
+        sent.append(request.request_id)
+        return script(request)
+    return FakeJudge(answer, price=PRICE)
+
+
+def test_run_finds_the_square_and_a_second_identical_run_costs_nothing(clip):
+    root, name = clip
+    sent, cache, labels = [], {}, labels_for([name])
+    c = compiled(counting(sent))
+    first = ev.run(c, labels, [name], video_root=root, judge_cap_usd=1.0, cache=cache, speed=SPEED)
+    score = plans.evaluate(labels, first)
+    assert score.tp == 1 and score.fp == 0 and score.cost_usd > 0 and first[0].looks and sent
+    n = len(sent)
+    second = ev.run(c, labels, [name], video_root=root, judge_cap_usd=1.0, cache=cache, speed=SPEED)
+    assert len(sent) == n and sum(r.cost_usd for r in second) == 0 and plans.evaluate(labels, second).tp == 1
+
+
+def request(i: int, image=None) -> percept.JudgeRequest:
+    cond = percept.Condition("red", "a red square appears", kind="event")
+    img = np.full((8, 8, 3), i, np.uint8) if image is None else image
+    return percept.JudgeRequest(f"r{i}", "cam", 0, (percept.JudgeItem(cond),), (img,), (0.0, 1.0))
+
+
+def test_caching_judge_sends_nothing_for_an_identical_request():
+    sent = []
+    guard = ev.CachingJudge(counting(sent), cap_usd=1.0)
+    a = asyncio.run(guard.judge(request(1)))
+    b = asyncio.run(guard.judge(request(2, image=np.full((8, 8, 3), 1, np.uint8))))
+    assert sent == ["r1"] and guard.requests == 1 and guard.hits == 1 and b.usage == ()
+    assert b.observations[0].request_id == "r2" and b.observations[0].answer == a.observations[0].answer
+
+
+def test_the_cap_is_never_passed_with_requests_in_flight_and_refusals_fail_with_budget():
+    async def main():
+        gate, inner = asyncio.Event(), FakeJudge(lambda r: {"red": ("yes", 0.9, "seen")}, price=PRICE)
+        one = ev.CachingJudge(inner, cap_usd=None).reservation(request(0))
+        guard = ev.CachingJudge(inner, cap_usd=2.5 * one, cache=None)
+        real = inner.judge
+
+        async def slow(r):
+            await gate.wait()
+            return await real(r)
+
+        inner.judge = slow
+        tasks = [asyncio.create_task(guard.judge(request(i))) for i in range(5)]
+        await asyncio.sleep(0)
+        held = guard.held
+        gate.set()
+        return guard, held, await asyncio.gather(*tasks)
+
+    guard, held, results = asyncio.run(main())
+    refused = [r for r in results if r.observations[0].failed]
+    assert held <= guard.cap and len(refused) == 3 and guard.refused == 3 and guard.tripped.is_set()
+    assert all(r.observations[0].failure == "budget" and r.observations[0].answer != "no" for r in refused)
+    assert guard.spent <= guard.cap and guard.held == 0

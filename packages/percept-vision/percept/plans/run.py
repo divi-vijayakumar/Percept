@@ -198,3 +198,109 @@ class CachingJudge:
                 with open(self.spend_log, "a") as f:
                     f.write(json.dumps({"t": round(time.time(), 3), "request_id": request.request_id,
                                         "cost_usd": cost, "settled": result is not None}) + "\n")
+
+
+# --------------------------------------------------------------------------- the full runtime
+
+
+class _Shown:
+    """Passes requests to ``judge`` and records the clip times of the frames each one showed,
+    tracing every image to the frame it is (or is a view of) by identity."""
+
+    def __init__(self, judge: CachingJudge) -> None:
+        self._judge, self.frames, self._times = judge, {}, {}
+        self.name, self.can_batch, self.price, self.max_attempts = judge.name, judge.can_batch, judge.price, judge.max_attempts
+        self.max_attempts_for, self.worst_case_cost_for = judge.max_attempts_for, judge.worst_case_cost_for
+
+    def note(self, image: np.ndarray, t: float) -> None:
+        if len(self._times) > 512:      # forget frames nothing holds any more
+            self._times = {k: v for k, v in self._times.items() if v[0]() is not None}
+        self._times[id(image)] = (weakref.ref(image), t)
+
+    def _t(self, image: np.ndarray) -> Optional[float]:
+        while isinstance(image.base, np.ndarray):
+            image = image.base
+        entry = self._times.get(id(image))
+        return entry[1] if entry is not None and entry[0]() is image else None
+
+    async def judge(self, request: JudgeRequest) -> JudgeResult:
+        self.frames[request.request_id] = tuple(t for t in map(self._t, request.images) if t is not None)
+        return await self._judge.judge(request)
+
+
+def _base_id(request_id: str) -> str:
+    return request_id.split("/")[0]         # a non-batching judge splits a request per condition
+
+
+async def _watch(compiled: Compiled, path: str, rate: float, max_side: int, names: Mapping[str, str],
+                 guard: CachingJudge, trace_path: Path, speed: Optional[float]) -> ClipRun:
+    shown, clock, start = _Shown(guard), [], time.time()    # clock: [anchor, last clip time]
+
+    def on_frame(frame: Any) -> None:     # on the capture thread: pacing slows only decoding
+        clock[:] = [frame.t_wall if not clock else clock[0], frame.t_wall - (clock[0] if clock else frame.t_wall)]
+        shown.note(frame.image, clock[1])
+        if speed:
+            time.sleep(max(0.0, start + clock[1] / speed - time.time()))
+
+    met, cpu = [], time.process_time()
+    source = open_source(path, fps=rate, max_side=max_side, on_frame=on_frame)
+    async with Monitor(**dict(compiled.monitor_kwargs, judge=shown), store=MemoryStore(), trace=trace_path) as m:
+        async for delivery in m.watch(source, fps=rate):
+            if delivery.decision.type == "met" and delivery.decision.condition_id in names:
+                met.append(delivery.decision)
+        cost = sum(s.get("cost_usd", 0.0) for s in m.stats()["streams"].values())
+    anchor = clock[0] if clock else 0.0
+    looks: list[tuple[str, str, Look]] = []
+    drops: list[Drop] = []
+    for rec in read_trace(trace_path):
+        if rec["kind"] == "decide_input" and rec["input"]["type"] == "Observed":
+            o = rec["input"]["observation"]
+            if o["condition_id"] in names:
+                looks.append((_base_id(o["request_id"]), o["condition_id"], Look(
+                    names[o["condition_id"]], o["evidence_t"][0] - anchor, o["evidence_t"][1] - anchor, o["answer"],
+                    o["failure"], o["purpose"], o.get("confidence") or 0.0,
+                    shown.frames.get(_base_id(o["request_id"]), ()))))
+        elif rec["kind"] == "drop" and rec.get("reason") in ("budget", "deadline") and rec.get("condition_id") in names:
+            t1 = (rec["t_wall"] if rec.get("t_trigger") is None else rec["t_trigger"]) - anchor
+            drops.append(Drop(names[rec["condition_id"]], t1 - EVENT_CLIP_S, t1, rec["reason"]))
+    preds = []
+    for d in met:       # scored by the frames of the looks it cites that said yes
+        ids = {_base_id(r) for r in d.request_ids}
+        ev = sorted(e.t_wall - anchor for e in d.evidence) or [d.t_observed - anchor]
+        yes = sorted({t for rid, cid, lk in looks if cid == d.condition_id and rid in ids and not lk.failed
+                      and lk.answer == "yes" and lk.confidence >= MIN_CONFIDENCE for t in lk.frames})
+        preds.append(Prediction(names[d.condition_id], ev[0], ev[-1], ev[-1], d.confidence, tuple(yes)))
+    return ClipRun(_basename(path), (clock[1] if clock else 0.0) + 1.0 / rate, tuple(preds),
+                   tuple(lk for _, _, lk in looks), tuple(drops), cost_usd=cost,
+                   compute_s=time.process_time() - cpu, cooldown_s=_cooldown(compiled))
+
+
+def run(compiled: Compiled, labels: Labels, clips: Sequence[str], *, video_root: Union[str, os.PathLike],
+        judge_cap_usd: float, cache: Optional[MutableMapping] = None, label_of: Optional[Mapping[str, str]] = None,
+        fps: Optional[float] = None, spend_log: Union[None, str, os.PathLike] = None,
+        speed: Optional[float] = 1.0) -> list[ClipRun]:
+    """The full runtime over each clip: a :class:`~percept.Monitor` built from ``monitor_kwargs``
+    (a fresh ``MemoryStore`` and a temporary trace), its judge wrapped in one :class:`CachingJudge`
+    for the whole call (``judge_cap_usd`` in dollars; pass the same ``cache`` mapping to reuse
+    replies across calls). Decisions become predictions, and the trace's looks and dropped looks
+    the records misses are attributed with. ``cost_usd``: what the judge reported; ``compute_s``:
+    process CPU seconds.
+
+    Frames are fed at ``speed`` times real time (None: as fast as the Monitor takes them, which
+    leaves it little time to look). The Monitor's request budget, deadlines and timers run on the
+    real clock, so at any speed but 1 budget drops differ from a live run. A prediction's
+    ``t_decided`` is the end of its evidence: latency from this mode is not a wall-clock latency."""
+    if speed is not None and not (math.isfinite(speed) and speed > 0):
+        raise ValueError(f"speed must be a positive number or None, got {speed!r}")
+    if not (isinstance(judge_cap_usd, (int, float)) and math.isfinite(judge_cap_usd) and judge_cap_usd >= 0):
+        raise ValueError(f"judge_cap_usd must be a finite number >= 0, got {judge_cap_usd!r}")
+    rate, max_side, names = _setup(compiled, labels, clips, fps, label_of)
+    guard = CachingJudge(compiled.monitor_kwargs["judge"], cap_usd=judge_cap_usd, spend_log=spend_log,
+                         cache=True if cache is None else cache)
+
+    async def main(tmp: str) -> list[ClipRun]:
+        return [await _watch(compiled, os.path.join(os.fspath(video_root), f), rate, max_side, names, guard,
+                             Path(tmp) / f"trace-{i}.jsonl", speed) for i, f in enumerate(clips)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        return asyncio.run(main(tmp))
