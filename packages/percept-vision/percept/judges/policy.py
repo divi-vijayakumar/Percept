@@ -7,7 +7,8 @@ An adapter supplies only ``send``::
                    request: JudgeRequest) -> RawReply
 
 ``images`` are JPEG bytes in request order (oldest first). ``send`` makes exactly one provider
-request and returns the reply text with the billed token counts, or raises:
+request and returns the reply text with the billed token counts, or raises (it must tolerate
+cancellation: an attempt that hangs is cancelled so its retry can run):
 
 * ``RetryableError`` for a transient failure (rate limit, 5xx, dropped connection);
 * ``RefusalError`` when the provider declined to answer (with any billed tokens);
@@ -44,7 +45,8 @@ Send = Callable[[Prompt, "tuple[bytes, ...]", int, JudgeRequest], Awaitable[RawR
 TRUNCATED = "reply truncated at max_output_tokens"
 BACKOFF_S = 0.25  # the retry waits BACKOFF_S to 2 * BACKOFF_S, unless the provider says otherwise
 ATTEMPT_SHARE = 0.6  # with a retry left, an attempt may use this share of the time remaining: one
-                     # that hangs is abandoned in time for the retry to run
+                     # that hangs is abandoned in time for the retry to run (on an 8 s deadline the
+                     # cut is 4.8 s and the retry keeps 3.2 s)
 
 
 async def call(
@@ -102,12 +104,14 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
     attempts = tokens_in = tokens_out = 0
     out_of_time = False  # a retry was skipped because it could not finish before the deadline
     unreplied = 0  # attempts sent that never replied: possibly billed, tokens unknown
+    in_flight = False  # an attempt is waiting for its reply (not a backoff sleep)
 
     async def attempt() -> RawReply:
-        nonlocal attempts, tokens_in, tokens_out, out_of_time, unreplied
+        nonlocal attempts, tokens_in, tokens_out, out_of_time, unreplied, in_flight
         while True:
             attempts += 1
             sent = asyncio.ensure_future(send(prompt, images, request.max_output_tokens, request))
+            in_flight = True
             try:
                 if attempts <= retries:     # a retry is left: don't let this attempt use all the time
                     limit = max(0.0, deadline_s - (clock() - start)) * ATTEMPT_SHARE
@@ -129,9 +133,15 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
                 tokens_in += max(0, int(exc.tokens_in))
                 tokens_out += max(0, int(exc.tokens_out))
                 raise
+            except (asyncio.TimeoutError, TimeoutError):
+                unreplied += 1          # the transport gave up waiting: possibly billed, no tokens
+                raise
             finally:
+                if sent.done() and not sent.cancelled():
+                    in_flight = False   # it answered or failed; a cut or cancelled one stays counted
                 if not sent.done():     # abandoned, or the whole request was cancelled
                     sent.cancel()
+                    sent.add_done_callback(_settled)   # whatever it ends with is not an outcome
             tokens_in += max(0, int(reply.tokens_in))
             tokens_out += max(0, int(reply.tokens_out))
             return reply
@@ -143,7 +153,7 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
         if clock() - start > deadline_s:
             failure, reason = "timeout", f"reply arrived after the {deadline_s:.1f} s deadline"
     except (asyncio.TimeoutError, TimeoutError):
-        unreplied += 1
+        unreplied += in_flight      # cut mid-attempt, not during a backoff sleep
         failure, reason = "timeout", f"no reply within {deadline_s:.1f} s"
     except RetryableError as exc:
         cause = "no time to retry before the deadline" if out_of_time else "retries exhausted"
@@ -173,6 +183,12 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
     used = Usage(attempts, tokens_in, tokens_out, cost, max(0.0, clock() - start))
     return observations, RequestUsage(request.request_id, judge_name, used, request_failure,
                                       tuple(item.condition.id for item in request.items))
+
+
+def _settled(task: asyncio.Future) -> None:
+    """Retrieve an abandoned attempt's outcome, so a late failure is never logged as unhandled."""
+    if not task.cancelled():
+        task.exception()
 
 
 def _describe(exc: BaseException) -> str:
