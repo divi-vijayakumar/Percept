@@ -1219,16 +1219,25 @@ class Monitor:
             if cond.judge not in routes:
                 raise ValueError(f"condition {cond.id!r}: unknown judge route {cond.judge!r}")
         for stream in getattr(self, "_streams", {}).values():     # none yet while constructing
-            self._check_window([cond], stream.ring.seconds, stream.id)
+            self._check_window([cond], stream.ring, stream.id)
 
-    def _check_window(self, conds: Iterable[Condition], seconds: float, stream_id: str) -> None:
-        """Refuse an event window the stream's pre-roll can never hold: judging a shorter clip
-        while claiming the asked-for one is not allowed."""
+    def _check_window(self, conds: Iterable[Condition], ring: PreRoll, stream_id: str) -> None:
+        """Refuse an event window the stream's pre-roll can never fill: judging a shorter clip, or
+        fewer frames, while claiming the asked-for one is not allowed. The pre-roll keeps at most
+        ``floor(clip_s * fps) + 1`` frames from a window, plus the newest frame, which is always judged."""
         for cond in conds:
-            if cond.kind == "event" and cond.clip_window[0] > seconds:
-                raise ValueError(f"condition {cond.id!r}: clip_s={cond.clip_window[0]:g} is longer than the "
-                                 f"pre-roll of stream {stream_id!r} ({seconds:g} s); shorten clip_s or give "
-                                 f"the source a PreRoll of at least {cond.clip_window[0]:g} s")
+            if cond.kind != "event":
+                continue
+            clip_s, frames = cond.clip_window
+            if clip_s > ring.seconds:
+                raise ValueError(f"condition {cond.id!r}: clip_s={clip_s:g} is longer than the "
+                                 f"pre-roll of stream {stream_id!r} ({ring.seconds:g} s); shorten clip_s or give "
+                                 f"the source a PreRoll of at least {clip_s:g} s")
+            reachable = math.floor(clip_s * ring.fps) + 2
+            if frames > reachable:
+                raise ValueError(f"condition {cond.id!r}: clip_frames={frames} can't be filled from {clip_s:g} s "
+                                 f"of a {ring.fps:g} fps pre-roll on stream {stream_id!r} (at most {reachable}); "
+                                 f"lengthen clip_s, lower clip_frames, or raise the PreRoll's fps")
 
     def _active(self) -> list[str]:
         return [cid for cid in self._conds if cid not in self._paused]
@@ -1383,7 +1392,7 @@ class Monitor:
         if isinstance(source, str):
             stream = self._streams.get(stream_id or source)
             if stream is None:
-                self._check_window(self._conds.values(), PreRoll().seconds, stream_id or source)
+                self._check_window(self._conds.values(), PreRoll(), stream_id or source)
                 opened = open_source(source, stream_id=stream_id, preroll=PreRoll())
                 stream = self._streams.get(opened.stream_id) or self._add(opened, fps)
         elif isinstance(source, Source):
@@ -1403,8 +1412,7 @@ class Monitor:
         if callable(lock):
             lock()      # one owner per database: raises StoreLocked if another process has it
         own = getattr(source, "preroll", None)
-        self._check_window(self._conds.values(), own.seconds if own is not None else PreRoll().seconds,
-                           source.stream_id)
+        self._check_window(self._conds.values(), own if own is not None else PreRoll(), source.stream_id)
         if getattr(source, "preroll", 0) is None:
             source.preroll = PreRoll()  # sources that accept one are fed at capture rate
         stream = self._streams[source.stream_id] = _Stream(self, source, fps)

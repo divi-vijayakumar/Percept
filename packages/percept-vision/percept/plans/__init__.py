@@ -52,6 +52,7 @@ MAX_SECONDS = 10**7         # longest duration a plan may give
 EVENT_CLIP_S = 4.0          # an event's evidence window unless judgment.evidence sets it
 CLIP_FRAMES = 4
 PREROLL_S = 8.0             # the SDK's default pre-roll: the longest window a plan may ask for
+PREROLL_FPS = 2.0           # ... sampled at this rate: a window holds at most floor(s * fps) + 2 frames
 DEADLINES = {"event": 3.0, "state": 10.0}
 BUDGET = {"max_requests_per_min": 6, "max_cost_per_hour": None, "max_concurrent_requests": 4}
 DEFAULT_TRIGGERS = {"event": (OnChange(),), "state": (OnChange(), Every(300))}
@@ -492,6 +493,11 @@ def compile(plan: Any, routes: Mapping[str, Judge]) -> Compiled:  # noqa: A001 -
                 if clip_frames > MAX_CLIP_FRAMES:
                     _fail(f"{where}.frames", f"expected an integer <= {MAX_CLIP_FRAMES}")
                 kwargs["clip_frames"] = clip_frames
+            window_s = kwargs.get("clip_s", EVENT_CLIP_S)
+            reachable = math.floor(window_s * PREROLL_FPS) + 2
+            if kwargs.get("clip_frames", CLIP_FRAMES) > reachable:
+                _fail(f"{where}.frames", f"at most {reachable} frames fit {window_s:g} s of the default "
+                                         f"{PREROLL_FPS:g} fps pre-roll")
         events: tuple[str, ...] = ()
         if "attention" in raw:
             kwargs["trigger"], events = _attention(raw["attention"], f"{path}.attention")

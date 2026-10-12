@@ -203,3 +203,30 @@ def test_conditions_recorded_without_a_window_decode_to_the_defaults():
     windowed = event(clip_s=6.0, clip_frames=8)
     data = encode_condition(windowed)
     assert (data["clip_s"], data["clip_frames"]) == (6.0, 8) and decode_condition(data) == windowed
+
+
+def test_a_frame_count_the_pre_roll_can_never_fill_is_refused_up_front():
+    # A 1 s window of the 2 fps pre-roll holds at most 3 frames, plus the newest: 4. Asking for 5
+    # would be "short" on every look, so it is refused when the condition meets the stream.
+    from percept.clips import PreRoll
+    ok = Condition("fall", "a person falls", kind="event", clip_s=1.0, clip_frames=4)
+    bad = Condition("fall", "a person falls", kind="event", clip_s=1.0, clip_frames=5)
+    m = percept.Monitor(FakeJudge({}), [ok], store=percept.MemoryStore())
+    m._check_window([ok], PreRoll(), "cam")
+    with pytest.raises(ValueError, match="can't be filled"):
+        m._check_window([bad], PreRoll(), "cam")
+
+
+def test_plans_refuse_an_unfillable_frame_count_and_mirror_the_pre_roll_rate():
+    from percept import plans
+    from percept.clips import PreRoll
+    assert plans.PREROLL_FPS == PreRoll().fps and plans.PREROLL_S == PreRoll().seconds
+    plan = {"schema_version": plans.SCHEMA_VERSION, "plan_id": "p", "revision": 1,
+            "sources": [{"id": "cam", "kind": "video"}],
+            "concerns": [{"id": "fall", "source": "cam", "description": "a person falls",
+                          "judgment": {"route": "fast", "evidence": {"pre_seconds": 1.0, "frames": 5}},
+                          "decision": {"kind": "event"}}]}
+    with pytest.raises(plans.PlanError, match="frames"):
+        plans.compile(plan, {"fast": FakeJudge({})})
+    plan["concerns"][0]["judgment"]["evidence"]["frames"] = 4
+    assert plans.compile(plan, {"fast": FakeJudge({})}).conditions[0].clip_frames == 4
