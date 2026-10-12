@@ -1149,7 +1149,8 @@ class Monitor:
     Configuration errors raise here, in :meth:`add` and in :meth:`watch`. Nothing raises
     during operation: outages, failures, budget exhaustion and store lag are reported by
     :meth:`health` and :meth:`coverage`. Methods other than :meth:`push` are called from the
-    monitor's event loop thread.
+    monitor's event loop thread. A task that pokes a stream (a detector, a tracker) awaits
+    :meth:`ready` first, so it does not race the task that watches the stream.
 
     For offline tests and demos, pass ``percept.judges.FakeJudge(script)`` as the judge: no key
     or network, the same prompt, parsing and failure handling as a real judge.
@@ -1189,6 +1190,7 @@ class Monitor:
         self._paused: set[str] = set()
         self._snoozes: dict[tuple[str, Optional[str]], float] = {}
         self._streams: dict[str, _Stream] = {}
+        self._ready: dict[str, list[asyncio.Future]] = {}   # ready() waiters, by stream id
         self._health = _HealthRing()
         self._mutes: dict[tuple[str, Optional[str]], asyncio.TimerHandle] = {}
         self._cost = _Window(max_cost_per_hour, lambda: COST_WINDOW_S)
@@ -1416,6 +1418,9 @@ class Monitor:
         if getattr(source, "preroll", 0) is None:
             source.preroll = PreRoll()  # sources that accept one are fed at capture rate
         stream = self._streams[source.stream_id] = _Stream(self, source, fps)
+        for waiter in self._ready.pop(source.stream_id, ()):
+            if not waiter.done():
+                waiter.set_result(None)
         listen = getattr(source, "add_health_listener", None)
         if callable(listen):
             listen(self._source_health)
@@ -1426,6 +1431,38 @@ class Monitor:
             if key not in self._mutes:
                 self._schedule_mute(key)
         return stream
+
+    async def ready(self, stream_id: str, timeout: Optional[float] = None) -> None:
+        """Wait until ``stream_id`` is a stream of this monitor, so :meth:`poke` (and
+        :meth:`set_link`, :meth:`coverage`) accept it. Returns at once if it already is.
+
+        A stream is registered by :meth:`watch` (or a first :meth:`push`) and stays registered
+        until :meth:`aclose`, also after its ``watch()`` iterator ends. Await this in a task
+        that pokes from your own detector, so the order in which the tasks start does not
+        matter::
+
+            async def detector():
+                await monitor.ready("cam")
+                async for event in events():
+                    monitor.poke("cam", "package_left", reason=event.reason)
+
+        ``timeout`` (seconds) raises ``asyncio.TimeoutError`` if the stream is not registered
+        in time. Raises ``RuntimeError`` if the monitor is closed, or closes while waiting.
+        """
+        self._on_loop()
+        self._bind()
+        if stream_id in self._streams:
+            return
+        waiter = asyncio.get_running_loop().create_future()
+        waiters = self._ready.setdefault(stream_id, [])
+        waiters.append(waiter)
+        try:
+            await asyncio.wait_for(waiter, timeout)
+        finally:
+            if waiter in waiters:
+                waiters.remove(waiter)
+            if not waiters and self._ready.get(stream_id) is waiters:
+                del self._ready[stream_id]
 
     def push(self, stream_id: str, image: np.ndarray, t_wall: Optional[float] = None) -> None:
         """Feed a frame from app-owned capture. A new ``stream_id`` starts a stream (on the
@@ -1465,7 +1502,9 @@ class Monitor:
         """Ask for a look now, from your own detector or tracker (the same path as a trigger).
 
         ``observed_at`` (wall time) anchors an event's clip; ``evidence`` (an image or a
-        sequence of images) is judged instead of the stream's frames.
+        sequence of images) is judged instead of the stream's frames. An unknown stream raises
+        ``ValueError``: from a task other than the one that calls :meth:`watch`, first
+        ``await monitor.ready(stream_id)``.
         """
         self._on_loop()
         stream = self._streams.get(stream_id)
@@ -1646,6 +1685,10 @@ class Monitor:
         if self._closed or self._closing:
             return
         self._closing = True
+        for waiter in [w for ws in self._ready.values() for w in ws]:
+            if not waiter.done():
+                waiter.set_exception(RuntimeError("the monitor is closed"))
+        self._ready.clear()
         streams = list(self._streams.values())
         for handle in self._mutes.values():
             handle.cancel()
