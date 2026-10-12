@@ -17,7 +17,7 @@
 - [webhook_agent.py](examples/webhook_agent.py): the integration recipe: an event and a state, decisions POSTed to a webhook with retries and acked after a 2xx, a health task; `--offline` needs no key
 - [quickstart.py](examples/quickstart.py): offline demo of a state, an event, coverage and trace replay with FakeJudge
 - [kitchen_watch.py](examples/kitchen_watch.py): a state on a heartbeat trigger with `max_open_s` and manual ack
-- [frigate_semantic.py](examples/frigate_semantic.py): Frigate person events poke Percept to judge what the person is doing
+- [frigate_semantic.py](examples/frigate_semantic.py): Frigate person events poke Percept to judge what the person is doing; the detector task awaits `monitor.ready(stream_id)` before `monitor.poke(...)`, so it does not race `watch()`
 - [watch_plan.py](examples/watch_plan.py): `percept.plans` (experimental; the schema may change): a whole watch as one plain-data plan. `plans.compile(plan, routes)` checks it and returns `monitor_kwargs` for `Monitor(**...)`, the `events` to `poke`, and a `plan_hash`; `explain()` lists every setting with its origin and `feasibility()` checks periodic demand against the request budget
 
 ## Optional

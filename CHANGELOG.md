@@ -6,6 +6,10 @@ Notable changes to Percept.
 
 ### API
 
+- `Monitor.ready(stream_id, timeout=None)`: wait until a stream is registered (by `watch()` or a
+  first `push()`), so a detector in another task can `poke()` it without racing the watch.
+  Returns at once for a registered stream; raises `RuntimeError` if the monitor closes first and
+  `asyncio.TimeoutError` on `timeout`. `examples/frigate_semantic.py` uses it.
 - `percept.plans` (experimental; the schema may change before it is stable): a watch plan, one
   plain-data document (`percept.watch/v1alpha1`) with sources, budget, judges and concerns.
   `plans.compile(plan, routes)` checks it, raising `PlanError` with the dotted path of the field,
