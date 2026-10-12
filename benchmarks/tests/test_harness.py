@@ -616,3 +616,40 @@ def test_spend_is_logged_per_request(clips, tmp_path):
     asyncio.run(arms.run_chunk(clips[0], guard, timelines, 5.0))
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(rows) == guard.requests and abs(sum(r["cost_usd"] for r in rows) - guard.spent) < 1e-9
+
+
+def test_the_benchmark_scores_through_the_sdk_with_equal_numbers():
+    from percept.plans import ClipRun, evaluate, load_labels
+    from percept.plans import score as sdk
+    conds = (CondSpec("a", "a begins"), CondSpec("b", "b begins"))
+    case = VideoCase("x", "t", (Segment("x.mp4", 0, 1800),), conds,
+                     (Occurrence("a", 100, 105), Occurrence("a", 500, 505), Occurrence("a", 900, 902)))
+    r = watched("arm", "x", 1800, cost_usd=0.3, cooldown_s=2.0)
+    r.preds = [pred(101, decided=103), pred(102, decided=104), pred(900, cid="b"), pred(899, 901, frames=(899, 901))]
+    r.looks = [Look("a", 499, 501, "no", None), Look("a", 99, 101, "yes", None, "detect", 0.9),
+               Look("a", 899, 901, "yes", None, "detect", 0.9), Look("a", 899, 901, "yes", None, "verify", 0.9)]
+    r.budget_drops = [("a", 600, 610, "budget")]
+    bench = metrics.score([r], {"x": case}, tol=1.0, seed=3)
+    labels = load_labels({"conditions": [{"label": "a", "text": "a begins"}, {"label": "b", "text": "b begins"}],
+                          "clips": [{"file": "x.mp4", "occurrences": [
+                              {"label": o.label, "start": o.start, "end": o.end} for o in case.occurrences]}]})
+    run_ = ClipRun("x.mp4", 1800, cost_usd=0.3, cooldown_s=2.0,
+                   predictions=[sdk.Prediction(q.condition_id, q.t0, q.t1, q.t_decided, q.confidence, q.frames)
+                                for q in r.preds],
+                   looks=[sdk.Look(lk.condition_id, lk.t0, lk.t1, lk.answer, lk.failed, lk.purpose, lk.confidence,
+                                   lk.frames) for lk in r.looks],
+                   drops=[sdk.Drop(*d) for d in r.budget_drops])
+    s = evaluate(labels, [run_], tol=1.0, seed=3)
+    assert (s.occurrences, s.tp, s.fp, s.fn, s.duplicates) == (bench["occurrences"], bench["matched"],
+                                                                bench["false_events"], bench["missed"],
+                                                                bench["duplicates"])
+    assert s.tp == 2 and s.fp == 1 and s.duplicates == 1
+    for k in ("recall", "onset_recall", "recall_ceiling", "precision", "false_per_hour", "latency_p50_s",
+              "latency_p95_s", "cost_per_true_event"):
+        assert getattr(s, k) == bench[k], k
+    assert dict(s.misses_by_stage) == bench["misses_by_stage"] and dict(s.funnel) == bench["funnel"]
+    assert s.funnel_matched_outside == bench["funnel_matched_outside"]
+    assert list(s.funnel_not_applicable) == bench["funnel_not_applicable"]
+    assert {k: s.ci95[k] for k in metrics.CI_METRICS} == bench["ci95"]
+    m, ms = metrics.match(r.preds, list(case.occurrences), 1.0), sdk.match(r.preds, list(case.occurrences), 1.0)
+    assert m["matched"] == dict(ms.matched) and m["false"] == list(ms.false)

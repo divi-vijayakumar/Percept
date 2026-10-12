@@ -25,6 +25,12 @@ A concern whose attention is only ``external_event`` entries is judged only when
 condition ids to poke.
 
 Pure: no I/O, no clock. Any malformed plan raises :class:`PlanError` naming the field.
+
+Evaluation (experimental): :func:`load_labels` reads ground truth for your own clips
+(:mod:`percept.plans.labels`), :func:`split` freezes them into dev, validation and test by
+recording group, and :func:`evaluate` scores a run on them (:mod:`percept.plans.score`): matches,
+false alerts, misses attributed to a stage, the funnel, cost and seeded bootstrap intervals. It
+reports; it does not choose between runs.
 """
 
 from __future__ import annotations
@@ -40,11 +46,12 @@ from percept.judges._cascade import cascade
 from percept.judges.base import EVENT_RULE, STATE_RULE, SYSTEM, VERIFY_NOTE, max_attempts
 from percept.replay import TRACE_FORMAT, encode_condition
 from percept.plans.labels import LabelError, Labels, SplitManifest, load_labels, split
+from percept.plans.score import ClipRun, Score, evaluate
 from percept.triggers import Every, OnChange
 
 __all__ = ["SCHEMA_VERSION", "Compiled", "PlanError", "compile",
-           # evaluation (experimental): labels, frozen splits
-           "LabelError", "Labels", "SplitManifest", "load_labels", "split"]
+           # evaluation (experimental): labels, frozen splits, scoring
+           "LabelError", "Labels", "SplitManifest", "load_labels", "split", "ClipRun", "Score", "evaluate"]
 
 SCHEMA_VERSION = "percept.watch/v1alpha1"
 MAX_SIDE = 640

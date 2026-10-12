@@ -6,6 +6,20 @@ Notable changes to Percept.
 
 ### API
 
+- Evaluation in `percept.plans` (experimental): `load_labels(doc)` checks ground truth for your
+  own clips (the format of the benchmark's `local:` datasets, plus an optional recording `group`)
+  and raises `LabelError` with the field path; overlapping occurrences of a label merge;
+  `Labels.labels_hash` is the same across checkouts. `split(labels, durations)` freezes clips into
+  dev, validation and test by `sha256(group) mod 100`, so adding clips never moves existing ones,
+  and returns a `SplitManifest` with clips, occurrence counts, hours and a `manifest_hash`.
+  `evaluate(labels, runs)` scores one run (`ClipRun` per clip) and returns `Score`: TP/FP/FN,
+  recall, precision, false alerts per hour and per 100 occurrences, misses attributed to a stage,
+  the funnel, API cost and local compute seconds per correct event, and seeded bootstrap 95%
+  intervals. It reports; it never picks between runs. The benchmark harness now scores through it.
+- `percept.attention.build(conditions, default_change=, default_heartbeat=, paused=)` returns the
+  trigger groups and labels the Monitor uses, and `attention.PRIORITY` the queue priority of each
+  kind of look, so an offline evaluator needs no private import. The Monitor calls it; behaviour
+  is unchanged.
 - `Monitor.ready(stream_id, timeout=None)`: wait until a stream is registered (by `watch()` or a
   first `push()`), so a detector in another task can `poke()` it without racing the watch.
   Returns at once for a registered stream; raises `RuntimeError` if the monitor closes first and

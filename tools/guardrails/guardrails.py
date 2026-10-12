@@ -39,6 +39,8 @@ CORE = {
     "percept.judges.base",
     "percept.replay",
     "percept.plans",
+    "percept.plans.labels",
+    "percept.plans.score",
 }
 # Packages whose every module is core.
 CORE_PACKAGES = ("percept.plans",)
