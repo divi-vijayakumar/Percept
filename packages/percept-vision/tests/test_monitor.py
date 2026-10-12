@@ -1837,3 +1837,34 @@ def test_every_dropped_look_is_traced_with_its_condition_trigger_time_and_reason
         assert r["waited_s"] >= 0.1
     assert any(r["kind"] == "fate" and r.get("event") == "runtime" and r["fate"] == "dropped_budget"
                for r in records)                                      # the per-minute counts stay
+
+
+def test_verification_comes_before_new_detection_under_a_full_budget(monkeypatch):
+    # Three events in separate zones, due on every frame; two requests fit a window, and the
+    # candidate deadline is shorter than the window. Detections that could open a candidate leave
+    # one verification's attempts free, so every candidate is verified instead of timing out.
+    monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
+    thirds = [((x, 0.0), (x + 1 / 3, 0.0), (x + 1 / 3, 1.0), (x, 1.0)) for x in (0.0, 1 / 3, 2 / 3)]
+    conds = [Condition(c, f"event {c}", kind="event", trigger=Always(), zones=(z,), candidate_deadline_s=0.6,
+                       rearm_s=60.0) for c, z in zip("abc", thirds)]
+    judge = FakeJudge(answers({"detect": [Y], "verify": [Y]}), latency_s=0.15)   # max_attempts 2
+
+    async def main():
+        async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=4) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            feeder = asyncio.create_task(push_frames(src, 120, pause=0.05))
+            got = await asyncio.wait_for(collect(watch, limit=3), 15.0)
+            feeder.cancel()
+            return got, m.stats()
+
+    got, stats = run(main())
+    assert sorted(d.decision.condition_id for d in got) == ["a", "b", "c"]
+    assert [d.decision.type for d in got] == ["met"] * 3, [(d.decision.type, d.decision.reason) for d in got]
+
+
+def test_a_ceiling_too_small_for_both_keeps_first_come_order():
+    m = percept.Monitor(FakeJudge(answers({"detect": [Y], "verify": [Y]})), [], store=mem(), max_requests_per_min=3)
+    stream = rt._Stream.__new__(rt._Stream)
+    stream.m, stream.verify_task, stream.verify_work, stream.verifies = m, None, None, {}
+    assert stream.verify_headroom([]) == 0          # 3 < 2 x 2 attempts: no reserve

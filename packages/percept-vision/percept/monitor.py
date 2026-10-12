@@ -624,7 +624,7 @@ class _Stream:
             wait = min([wait] + later)
         if self.detect_task is None and self.pending:
             group = self.group()
-            if group and self.start(group, "detect", now) == "budget":
+            if group and self.start(group, "detect", now, headroom=self.verify_headroom(group)) == "budget":
                 refused = True
                 for w in group:
                     w.blocked = True
@@ -662,8 +662,22 @@ class _Stream:
                 group.append(w)
         return group
 
-    def start(self, works: list[_Work], purpose: str, now: float) -> Optional[str]:
-        """Send one request, or say why not: "pool", "budget" or "gone"."""
+    def verify_headroom(self, group: list[_Work]) -> int:
+        """Attempts a detection must leave free in the window: verification comes before new
+        detection, so a look that could open a candidate needing verification (or one made while a
+        verification waits) keeps room for that verification. Applied only when the ceiling can hold
+        a detection and a verification together; a smaller ceiling keeps first-come order."""
+        m = self.m
+        if m.max_requests_per_min < 2 * m._attempts:
+            return 0
+        inflight = self.verify_work if self.verify_task is not None else None
+        waiting = any(not w.gone and w is not inflight for w in self.verifies.values())
+        needs = any(m._conds[w.condition_id].verify_mode != "off" for w in group if w.condition_id in m._conds)
+        return m._attempts if waiting or needs else 0
+
+    def start(self, works: list[_Work], purpose: str, now: float, headroom: int = 0) -> Optional[str]:
+        """Send one request, or say why not: "pool", "budget" or "gone". ``headroom`` attempts
+        must stay free in the window after this request's reservation."""
         m = self.m
         if not self.granted and m._slots >= m.max_concurrent_requests:
             m._waiters[self.id] = self      # first come, first served when a slot frees
@@ -696,7 +710,7 @@ class _Stream:
             cost_ok = False             # another stream has waited longer for the shared dollar cap
         if not cost_ok:
             m._cost_waiters.setdefault(self.id, None)
-        if not (cost_ok and self.budget.fits(reserve, now)):
+        if not (cost_ok and self.budget.fits(reserve + headroom, now)):
             return "budget"
         m._cost_waiters.pop(self.id, None)
         self.budget.take(reserve)       # both ledgers are checked and taken in one step on the loop:
