@@ -26,6 +26,20 @@ Notable changes to Percept.
   looks that were `due`, `admitted`, `coalesced`, `dropped_budget` and
   `dropped_for_verification`. `stats()` adds the same totals per label under each stream's
   `triggers`. The existing `fates` are unchanged.
+- Per-condition evidence windows: `Condition.clip_s` and `Condition.clip_frames` (events only)
+  set how many seconds before the trigger an event is judged on and how many frames (1 to 16)
+  are spread over them, the newest always included. `None` keeps 4 seconds and 4 frames.
+  Verification on the original interval re-judges exactly the frames the detection used. A
+  window longer than the stream's pre-roll (8 seconds unless the source has its own `PreRoll`)
+  is refused with `ValueError` when the condition or the stream is added. When the pre-roll
+  holds less than the window (the stream just started or reconnected: under 90% of `clip_s`, or
+  fewer frames than `clip_frames`), the event is judged on what is held and counted in
+  `coverage()["evidence_short"]` per condition and in `stats()`, apart from `fates`; the trace's
+  `request` record gains `evidence_s`, `clip_s`, `frames`, `clip_frames` and `evidence_short`.
+  Trace `conditions` records carry the two fields only when set; older traces replay unchanged.
+  In a watch plan, `judgment.evidence.pre_seconds` (at most 8) and `judgment.evidence.frames`
+  compile to them (a state with either is a `PlanError`); plans without them keep their
+  `plan_hash`.
 
 ## 0.9.0 — Developer Preview (2026-10-11)
 
