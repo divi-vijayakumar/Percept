@@ -53,8 +53,7 @@ if __name__ == "__main__":
 Cheap triggers decide when a condition is worth a look, a judge (a vision-language model) decides
 what is true, and a pure reducer decides whether your agent hears about it: at most one `met` per
 real occurrence, stored before delivery and redelivered until acknowledged. The architecture
-diagram is in the
-[repository README](https://github.com/REPLACE-ME/percept#architecture).
+diagram is on the [project site](https://percept.percia.ai/).
 
 ## Integrating Percept
 
@@ -155,9 +154,8 @@ camera = percept.PushSource("test-cam")    # camera.push(frame), then camera.clo
   `health()`.
 
 A complete, runnable version (a webhook with retries, a health task and an offline mode) is
-`examples/webhook_agent.py` in the
-[repository](https://github.com/REPLACE-ME/percept/blob/main/examples/webhook_agent.py); details in
-[docs/integration.md](https://github.com/REPLACE-ME/percept/blob/main/docs/integration.md).
+`examples/webhook_agent.py` in the source repository; the integration guide is on the
+[project site](https://percept.percia.ai/).
 
 ## Limits
 
@@ -174,8 +172,7 @@ A complete, runnable version (a webhook with retries, a health task and an offli
 
 ## Links
 
-- Repository: https://github.com/REPLACE-ME/percept
-- Documentation: https://github.com/REPLACE-ME/percept/tree/main/docs
+- Project site and documentation: https://percept.percia.ai/
 - Support: support@velvee.ai
 
 Percept is developed by Velvee, Inc. Licensed under Apache-2.0.

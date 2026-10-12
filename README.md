@@ -271,8 +271,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). Security repo
 
 ## Support
 
-Questions and bug reports: open an issue at https://github.com/REPLACE-ME/percept/issues, or email
-support@velvee.ai.
+Questions and bug reports: email support@velvee.ai. Project site: https://percept.percia.ai/
 
 ---
 

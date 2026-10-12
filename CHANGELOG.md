@@ -2,7 +2,7 @@
 
 Notable changes to Percept.
 
-## 0.9.0 — Developer Preview (unreleased)
+## 0.9.0 — Developer Preview (2026-10-11)
 
 Percept 0.9.0, the Developer Preview, is a rewrite around one job: a decision layer that turns a
 live video stream and plain-language conditions into one decision per real occurrence, for an

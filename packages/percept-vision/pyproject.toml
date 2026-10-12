@@ -37,9 +37,8 @@ openai = ["openai>=1.40"]
 dev = ["pytest>=8", "hypothesis>=6.100"]
 
 [project.urls]
-Homepage = "https://github.com/REPLACE-ME/percept"
-Repository = "https://github.com/REPLACE-ME/percept"
-Issues = "https://github.com/REPLACE-ME/percept/issues"
+Homepage = "https://percept.percia.ai/"
+Documentation = "https://percept.percia.ai/"
 
 [tool.setuptools.packages.find]
 include = ["percept*"]
