@@ -15,6 +15,17 @@ Notable changes to Percept.
   `feasibility()` checks periodic demand against the request budget, and `provenance()` /
   `trace_record()` name the SDK version, judges and prompt hash, without secrets. Example:
   `examples/watch_plan.py`.
+- Combined triggers: `Condition.trigger` also takes a tuple of triggers, meaning any of them (the
+  condition is due when any member fires), for example `(on_change(), every(60))`. Equal
+  triggers still share one state across conditions, and every look draws on the stream's one
+  request budget. In a watch plan, several `on_change`/`every` entries in `attention.any` now
+  compile to a combined trigger (members in a canonical order, so the entries' order does not
+  change `plan_hash`); `feasibility()` counts each `every` member.
+- `Monitor.coverage()` adds `triggers`: per condition and per trigger label (`on_change(0.2)`,
+  `every(5)`, a custom trigger's class name, or `poke`, `settled`, `recheck`, `verify`), the
+  looks that were `due`, `admitted`, `coalesced`, `dropped_budget` and
+  `dropped_for_verification`. `stats()` adds the same totals per label under each stream's
+  `triggers`. The existing `fates` are unchanged.
 
 ## 0.9.0 — Developer Preview (2026-10-11)
 
