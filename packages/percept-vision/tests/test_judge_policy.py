@@ -264,6 +264,21 @@ def test_a_timeout_during_a_retry_backoff_charges_only_the_attempts_sent():
     assert kinds(result) == ["unavailable"] * 2 and result.usage[0].usage.cost_usd < one
 
 
+def test_a_deadline_cut_during_a_backoff_sleep_charges_no_unsent_attempt():
+    from percept.judges.base import worst_case_tokens
+    one = cost_of(PRICE, *worst_case_tokens(make_request(), PRICE))
+
+    async def busy(*_):
+        raise RetryableError("busy", retry_after_s=0.0)
+
+    async def slow_sleep(_delay):
+        await asyncio.sleep(60)        # a backoff that overshoots the deadline
+
+    result = asyncio.run(policy.call(busy, make_request(deadline_s=0.1), judge_name="j", price=PRICE,
+                                     retries=1, sleep=slow_sleep))
+    assert kinds(result) == ["timeout"] * 2 and result.usage[0].usage.cost_usd < one
+
+
 def test_an_abandoned_attempt_that_fails_later_is_silent(recwarn):
     async def main():
         calls = []

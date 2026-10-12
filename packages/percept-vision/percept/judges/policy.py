@@ -121,6 +121,7 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
                         continue            # it hung: abandoned (finally cancels it), the retry runs
                 reply = await sent
             except RetryableError as exc:
+                in_flight = False       # it answered with an error: a cut during the backoff charges nothing
                 delay = exc.retry_after_s if exc.retry_after_s is not None else BACKOFF_S * (1 + rng())
                 if attempts > retries:
                     raise
@@ -130,6 +131,7 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
                 await sleep(delay)
                 continue
             except RefusalError as exc:  # a declined request is still billed
+                in_flight = False
                 tokens_in += max(0, int(exc.tokens_in))
                 tokens_out += max(0, int(exc.tokens_out))
                 raise
