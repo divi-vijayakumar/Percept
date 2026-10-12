@@ -4,6 +4,7 @@ registration of the test split, and side-by-side sweeps."""
 from __future__ import annotations
 
 import asyncio
+import json
 
 import numpy as np
 import pytest
@@ -177,6 +178,25 @@ def test_test_split_needs_a_matching_registration(clip):
         ev.score_split(c, labels, manifest, registration=dict(reg, created="later"), **kw)
     score = ev.score_split(c, labels, manifest, registration=reg, **kw)
     assert score.clips == len(manifest.clips["test"]) and score.tp == score.clips
+    assert score.registration_hash == reg["registration_hash"]
+
+
+def test_the_ledger_allows_one_test_scoring_per_registration(clip, tmp_path):
+    root = clip[0]
+    labels, manifest = manifest_for(root)
+    c, ledger = compiled(), tmp_path / "ledger.jsonl"
+    kw = dict(split="test", video_root=root, judge_cap_usd=1.0, speed=SPEED, ledger=ledger)
+    unlisted = ev.register(c, manifest, labels, created="t")
+    with pytest.raises(ValueError, match="not in the ledger"):
+        ev.score_split(c, labels, manifest, registration=unlisted, **kw)
+    reg = ev.register(c, manifest, labels, created="t", ledger=ledger)
+    ev.score_split(c, labels, manifest, registration=reg, **kw)
+    with pytest.raises(ValueError, match="already scored"):
+        ev.score_split(c, labels, manifest, registration=reg, **kw)
+    ev.score_split(c, labels, manifest, registration=reg, rescore=True, **kw)
+    kinds = [json.loads(x)["kind"] for x in ledger.read_text().splitlines()]
+    rescores = [json.loads(x).get("rescore") for x in ledger.read_text().splitlines()]
+    assert kinds == ["registration", "test_scored", "test_scored"] and rescores == [None, False, True]
 
 
 def test_registration_is_the_same_in_every_checkout():

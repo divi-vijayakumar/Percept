@@ -351,13 +351,15 @@ def run(compiled: Compiled, labels: Labels, clips: Sequence[str], *, video_root:
 
 
 def register(compiled: Compiled, manifest: SplitManifest, labels: Labels, *, split: str = "test", created: str,
-             judge_versions: Optional[Mapping[str, str]] = None) -> dict:
+             judge_versions: Optional[Mapping[str, str]] = None,
+             ledger: Union[None, str, os.PathLike] = None) -> dict:
     """A registration record freezing ``compiled`` before ``split`` is run: the plan hash, its
     provenance (SDK version, prompt hash, the judges and the model ids requested, and
     ``judge_versions``, the model versions your judges reported, if any), the manifest and labels
     hashes, the split and ``created`` (your timestamp; no clock is read). ``registration_hash``
     covers the rest. No path is recorded, so the record is the same in every checkout. Keep it
-    with your results and pass it to :func:`score_split`."""
+    with your results and pass it to :func:`score_split`. With ``ledger`` (a path), the record is
+    also appended to it as a JSON line."""
     if split not in SPLITS:
         raise ValueError(f"split must be one of {', '.join(SPLITS)}, got {split!r}")
     if manifest.labels_hash != labels.labels_hash:
@@ -366,19 +368,32 @@ def register(compiled: Compiled, manifest: SplitManifest, labels: Labels, *, spl
               "provenance": dict(compiled.provenance(), judge_versions=dict(judge_versions or {})),
               "manifest_hash": manifest.manifest_hash, "labels_hash": labels.labels_hash, "split": split,
               "created": created}
-    return dict(record, registration_hash=_sha(record))
+    record = dict(record, registration_hash=_sha(record))
+    if ledger is not None:
+        _append(ledger, {"kind": "registration", **record})
+    return record
+
+
+def _append(ledger: Union[str, os.PathLike], line: dict) -> None:
+    with open(ledger, "a", encoding="utf-8") as f:
+        f.write(json.dumps(line, sort_keys=True) + "\n")
 
 
 def score_split(compiled: Compiled, labels: Labels, manifest: SplitManifest, *, split: str,
                 video_root: Union[str, os.PathLike], judge_cap_usd: float, registration: Optional[Mapping] = None,
-                **options: Any) -> Score:
+                ledger: Union[None, str, os.PathLike] = None, rescore: bool = False, **options: Any) -> Score:
     """:func:`run` on the clips of ``split`` and :func:`~percept.plans.score.evaluate` them.
     ``options`` go to :func:`run`.
 
     The test split is scored only with a ``registration`` from :func:`register` for this split
     whose plan, manifest and labels hashes match the current ones: freeze the plan before you look
     at the test split, so the test score is not chosen after the fact. Anything else raises
-    ValueError."""
+    ValueError. The returned score carries the ``registration_hash``.
+
+    With ``ledger`` (the path given to :func:`register`), the registration must be in it, the
+    test scoring is appended to it, and a second test scoring of the same registration is refused
+    unless ``rescore=True`` (then it is recorded as a rescore). Without a ledger, scoring the
+    test split once is the caller's responsibility."""
     if split not in SPLITS:
         raise ValueError(f"split must be one of {', '.join(SPLITS)}, got {split!r}")
     if manifest.labels_hash != labels.labels_hash:
@@ -393,8 +408,25 @@ def score_split(compiled: Compiled, labels: Labels, manifest: SplitManifest, *, 
                              "labels, split='test', created=...) before running it and pass the record as "
                              "registration=; a record whose plan, manifest or labels hash differs from the current "
                              "ones (the plan, clips or labels changed since) does not count")
-    return evaluate(labels, run(compiled, labels, manifest.clips[split], video_root=video_root,
-                                judge_cap_usd=judge_cap_usd, **options))
+        rh = reg["registration_hash"]
+        if ledger is not None:
+            lines = []
+            if os.path.exists(ledger):
+                with open(ledger, encoding="utf-8") as f:
+                    lines = [json.loads(x) for x in f if x.strip()]
+            if not any(x.get("kind") == "registration" and x.get("registration_hash") == rh for x in lines):
+                raise ValueError(f"registration {rh[:12]} is not in the ledger {_basename(os.fspath(ledger))}")
+            if not rescore and any(x.get("kind") == "test_scored" and x.get("registration_hash") == rh for x in lines):
+                raise ValueError(f"the test split was already scored for registration {rh[:12]}; "
+                                 "pass rescore=True to score it again (recorded as a rescore)")
+    score = evaluate(labels, run(compiled, labels, manifest.clips[split], video_root=video_root,
+                                 judge_cap_usd=judge_cap_usd, **options))
+    if split != "test":
+        return score
+    if ledger is not None:
+        _append(ledger, {"kind": "test_scored", "registration_hash": rh, "rescore": rescore,
+                         "recall": score.recall, "precision": score.precision, "capped": score.capped})
+    return dataclasses.replace(score, registration_hash=rh)
 
 
 # --------------------------------------------------------------------------- declared configurations

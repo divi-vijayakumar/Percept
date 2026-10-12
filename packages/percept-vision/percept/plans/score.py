@@ -330,7 +330,8 @@ class Score:
     """The metrics of one run over labelled clips. ``tp``: matched occurrences; ``fp``: false
     alerts (unmatched predictions that are not duplicates); ``fn``: missed occurrences.
     ``misses_by_stage`` sums to ``fn``. ``capped``: a spend cap refused
-    ``refused`` requests, so the run is incomplete. Ratios are None when their denominator is zero."""
+    ``refused`` requests, so the run is incomplete.
+    ``registration_hash``: the frozen plan a test-split score was made for. Ratios are None when their denominator is zero."""
 
     clips: int
     hours: float
@@ -361,6 +362,7 @@ class Score:
     paid_usd: float = 0.0
     refused: int = 0
     capped: bool = False
+    registration_hash: Optional[str] = None
 
 
 def evaluate(labels: Labels, runs: Sequence[ClipRun], *, tol: float = TOLERANCE_S, seed: int = 0,
