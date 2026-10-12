@@ -1839,28 +1839,73 @@ def test_every_dropped_look_is_traced_with_its_condition_trigger_time_and_reason
                for r in records)                                      # the per-minute counts stay
 
 
-def test_verification_comes_before_new_detection_under_a_full_budget(monkeypatch):
-    # Three events in separate zones, due on every frame; two requests fit a window, and the
-    # candidate deadline is shorter than the window. Detections that could open a candidate leave
-    # one verification's attempts free, so every candidate is verified instead of timing out.
+class From:
+    """Due on every frame from this ``seq`` on."""
+
+    def __init__(self, seq: int) -> None:
+        self.seq = seq
+
+    def step(self, frame, conditions, state, now):
+        return ({c.id: "from" for c in conditions} if frame.seq >= self.seq else {}), None
+
+
+def _verify_retry_scenario(monkeypatch, deadlines=None):
+    """A fall whose first verification fails and is asked again after VERIFY_RETRY_S, while two
+    busy state conditions become due (from frame 3) and compete for the same request window."""
     monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
+    monkeypatch.setattr(rt, "VERIFY_RETRY_S", 0.3)
+    if deadlines:
+        monkeypatch.setattr(rt, "DEADLINES", deadlines)
     thirds = [((x, 0.0), (x + 1 / 3, 0.0), (x + 1 / 3, 1.0), (x, 1.0)) for x in (0.0, 1 / 3, 2 / 3)]
-    conds = [Condition(c, f"event {c}", kind="event", trigger=Always(), zones=(z,), candidate_deadline_s=0.6,
-                       rearm_s=60.0) for c, z in zip("abc", thirds)]
-    judge = FakeJudge(answers({"detect": [Y], "verify": [Y]}), latency_s=0.15)   # max_attempts 2
+    fall = Condition("fall", "a person falls", kind="event", trigger=At(1), zones=(thirds[0],),
+                     candidate_deadline_s=0.9)
+    busy = [Condition(c, f"state {c}", trigger=From(3), zones=(z,)) for c, z in zip("bc", thirds[1:])]
+    base = answers({"detect": [N], "verify": [RetryableError("down"), Y]})
+
+    def script(request):     # the fall's detection says yes; the busy states say no
+        if request.purpose == "detect" and request.items[0].condition.id == "fall":
+            return {"fall": Y}
+        return base(request)
+    judge = FakeJudge(script, latency_s=0.05, retries=0)
+    seen = []
 
     async def main():
-        async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=4) as m:
+        async with percept.Monitor(judge, [fall, *busy], store=mem(), max_requests_per_min=4) as m:
             src = PushSource("cam")
             watch = m.watch(src, fps=None)
-            feeder = asyncio.create_task(push_frames(src, 120, pause=0.05))
-            got = await asyncio.wait_for(collect(watch, limit=3), 15.0)
-            feeder.cancel()
-            return got, m.stats()
+            feeder = asyncio.create_task(push_frames(src, 60, pause=0.05))
 
-    got, stats = run(main())
-    assert sorted(d.decision.condition_id for d in got) == ["a", "b", "c"]
-    assert [d.decision.type for d in got] == ["met"] * 3, [(d.decision.type, d.decision.reason) for d in got]
+            async def health():
+                async for h in m.health():
+                    seen.append(h)
+            ht = asyncio.create_task(health())
+            got = None
+            async for d in watch:
+                if d.decision.condition_id == "fall":
+                    got = d.decision
+                    break
+            await feeder
+            ht.cancel()
+            return got, m.coverage("cam")
+
+    got, cov = run(main())
+    return got, cov, seen, judge
+
+
+def test_a_waiting_verification_keeps_its_attempts_from_new_detection(monkeypatch):
+    # Without the kept room, the busy detections take the attempts in the window while the
+    # failed verification waits to retry, and the fall closes uncertain at its deadline.
+    got, cov, seen, judge = _verify_retry_scenario(monkeypatch)
+    assert got.type == "met", (got.type, got.cause, got.reason)
+    assert any(h.kind == "budget_exhausted" and "held for a waiting verification" in h.detail for h in seen)
+    busy_detects = [r for _, _, _, r in judge.sent if r.purpose == "detect" and r.items[0].condition.id != "fall"]
+    assert len(busy_detects) >= 3                    # detection kept running: held, never starved
+
+
+def test_held_detections_past_their_deadline_count_as_dropped_for_verification(monkeypatch):
+    _, cov, _, _ = _verify_retry_scenario(monkeypatch, deadlines={rt.EVENT: 0.2, rt.STATE: 0.2})
+    held = sum(f.get("dropped_for_verification", 0) for f in cov["fates"].values())
+    assert held >= 1
 
 
 def _bare_stream(m):
@@ -1879,7 +1924,7 @@ def test_no_attempts_are_held_while_the_stream_waits_on_the_dollar_cap():
     fall = Condition("fall", "a person falls", kind="event")
     m = percept.Monitor(FakeJudge(answers({"detect": [Y], "verify": [Y]})), [fall], store=mem(), max_requests_per_min=6)
     stream = _bare_stream(m)
-    stream.pending[("fall", "scene")] = rt._Work(rt.EVENT, "fall", "scene", 0.0)
+    stream.verifies[("fall", "scene")] = rt._Work(rt.VERIFY, "fall", "scene", 0.0)    # waiting to verify
     assert stream.verify_headroom() == m._attempts
     m._cost_waiters["cam"] = None                          # a verification refused for money
     assert stream.verify_headroom() == 0
@@ -1903,30 +1948,3 @@ def test_a_full_group_for_a_non_batching_judge_still_fits_with_the_verification_
     looked = {r.items[0].condition.id for _, _, _, r in judge.sent if r.purpose == "detect"}
     assert looked == set("abcd")                         # every look was judged, none starved
     assert all(len(r.items) <= 2 for _, _, _, r in judge.sent)   # (6 - 2) // 2 items a request
-
-
-def test_a_detection_held_for_verification_says_so(monkeypatch):
-    monkeypatch.setattr(rt, "BUDGET_WINDOW_S", 1.0)
-    thirds = [((x, 0.0), (x + 1 / 3, 0.0), (x + 1 / 3, 1.0), (x, 1.0)) for x in (0.0, 1 / 3, 2 / 3)]
-    conds = [Condition(c, f"event {c}", kind="event", trigger=Always(), zones=(z,), rearm_s=60.0)
-             for c, z in zip("abc", thirds)]
-    judge = FakeJudge(answers({"detect": [Y], "verify": [Y]}), latency_s=0.15)
-    seen = []
-
-    async def main():
-        async with percept.Monitor(judge, conds, store=mem(), max_requests_per_min=4) as m:
-            src = PushSource("cam")
-            watch = m.watch(src, fps=None)
-            feeder = asyncio.create_task(push_frames(src, 60, pause=0.05))
-
-            async def health():
-                async for h in m.health():
-                    seen.append(h)
-            ht = asyncio.create_task(health())
-            await asyncio.wait_for(collect(watch, limit=3), 15.0)
-            feeder.cancel()
-            ht.cancel()
-
-    run(main())
-    details = [h.detail for h in seen if h.kind == "budget_exhausted"]
-    assert any("held for a waiting or likely verification" in d for d in details), details

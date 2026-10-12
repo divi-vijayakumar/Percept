@@ -223,6 +223,7 @@ class _Work:
     verify: Optional[decide.RequestVerify] = None
     not_before: float = 0.0                     # verify retries
     blocked: bool = False                       # waited on the budget
+    held: bool = False                          # waited because attempts were kept for verification
     gone: bool = False                          # the original evidence is no longer held
     starved: bool = False                       # counted once as evidence_unavailable
     frames: tuple = ()                          # an original-interval verification's frames
@@ -501,10 +502,12 @@ class _Stream:
         return f
 
     def drop(self, w: _Work, reason: str, now: float) -> None:
-        """A look given up without being judged: counted as ``dropped_budget`` and, when tracing,
-        recorded one by one (reason ``budget``: the budget refused it; ``deadline``: it waited
-        past its deadline for a concurrency slot or for evidence; ``ended``: the stream ended)."""
-        self.fate(w.condition_id, "dropped_budget")
+        """A look given up without being judged: counted as ``dropped_budget`` (or
+        ``dropped_for_verification``) and, when tracing, recorded one by one (reason ``budget``: the
+        budget refused it; ``verification``: attempts were kept for a verification until its
+        deadline; ``deadline``: it waited past its deadline for a concurrency slot or for evidence;
+        ``ended``: the stream ended)."""
+        self.fate(w.condition_id, "dropped_for_verification" if reason == "verification" else "dropped_budget")
         self.m._rec("drop", self.id, condition_id=w.condition_id, subject=w.subject, reason=reason,
                     purpose="verify" if w.verify is not None else "detect", priority=_PRIORITY_NAMES[w.priority],
                     t_trigger=w.t_trigger, waited_s=max(0.0, now - w.created))
@@ -599,7 +602,7 @@ class _Stream:
         for key, w in list(self.pending.items()):
             if w.deadline is not None and now > w.deadline:
                 del self.pending[key]
-                self.drop(w, "budget" if w.blocked else "deadline", now)
+                self.drop(w, "verification" if w.held else "budget" if w.blocked else "deadline", now)
             elif self.eof and self.current() is None and w.images is None and w.frame is None:
                 del self.pending[key]               # the stream ended: no frame will come
                 self.starve(w)
@@ -632,9 +635,10 @@ class _Stream:
                 held = why == "held"
                 for w in group:
                     w.blocked = True
+                    w.held = held
             deadlines = [w.deadline - now for w in self.pending.values() if w.deadline is not None]
             wait = min([wait] + deadlines)
-        reason = ("attempts are held for a waiting or likely verification" if held
+        reason = ("attempts are held for a waiting verification" if held
                   else f"more than {m.max_requests_per_min} attempts a minute are due") if refused else None
         if refused != self.budget_blocked:
             self.budget_blocked = refused
@@ -671,18 +675,17 @@ class _Stream:
 
     def verify_headroom(self) -> int:
         """Attempts a detection must leave free in the window: verification comes before new
-        detection, so while a verification waits, or a pending look could open a candidate that
-        needs one, a detection keeps room for it. Not applied when the ceiling can't hold a
-        detection and a verification together (first-come order then), or while this stream waits
-        on the dollar cap (holding attempts would not let the verification run)."""
+        detection, so while a verification waits (queued, or between its retries) a detection may
+        not take the attempts it needs. Nothing is held when no verification waits, so capacity
+        never sits idle. Not applied when the ceiling can't hold a detection and a verification
+        together (first-come order then), or while this stream waits on the dollar cap (holding
+        attempts would not let the verification run)."""
         m = self.m
         if m.max_requests_per_min < 2 * m._attempts or self.id in m._cost_waiters:
             return 0
         inflight = self.verify_work if self.verify_task is not None else None
         waiting = any(not w.gone and w is not inflight for w in self.verifies.values())
-        likely = any(m._conds[w.condition_id].verify_mode != "off" for w in self.pending.values()
-                     if w.condition_id in m._conds)
-        return m._attempts if waiting or likely else 0
+        return m._attempts if waiting else 0
 
     def start(self, works: list[_Work], purpose: str, now: float, headroom: int = 0) -> Optional[str]:
         """Send one request, or say why not: "pool", "budget", "held" (the room kept for

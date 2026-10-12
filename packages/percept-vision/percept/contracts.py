@@ -34,6 +34,7 @@ Fate = Literal[
     "dropped_quality",  # frame vetoed as corrupt or blurry
     "stale",            # result arrived for an older epoch, version or generation
     "dropped_capacity", # refused: every decision slot on the stream holds an open occurrence
+    "dropped_for_verification",  # waited past its deadline while attempts were kept for verification
 ]
 BlindKind = Literal["link_down", "degraded_video", "scene_reset", "budget_exhausted", "judge_down", "paused"]
 HealthKind = Literal[
