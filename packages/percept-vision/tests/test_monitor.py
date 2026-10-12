@@ -1902,11 +1902,26 @@ def test_a_waiting_verification_keeps_its_attempts_from_new_detection(monkeypatc
     assert len(busy_detects) >= 3                    # detection kept running: held, never starved
 
 
-def test_held_detections_past_their_deadline_count_as_dropped_for_verification(monkeypatch):
-    _, cov, _, _ = _verify_retry_scenario(monkeypatch, deadlines={rt.EVENT: 0.2, rt.STATE: 0.2})
-    held = sum(f.get("dropped_for_verification", 0) for f in cov["fates"].values())
-    assert held >= 1
+def test_held_detections_past_their_deadline_count_as_dropped_for_verification():
+    cond = Condition("door", "the door is open", trigger=Never())
 
+    async def main():
+        async with percept.Monitor(FakeJudge(answers({"detect": [N], "verify": [Y]})), [cond], store=mem()) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            src.push(image())
+            await asyncio.sleep(0.1)
+            stream = m._streams["cam"]
+            now = m._mono()
+            for held, key in ((True, "s1"), (False, "s2")):
+                w = rt._Work(rt.STATE, "door", key, now - 5.0, deadline=now - 1.0)
+                w.blocked, w.held = True, held
+                stream.pending[("door", key)] = w
+            stream.dispatch(now)
+            return m.coverage("cam")["fates"]["door"]
+
+    fates = run(main())
+    assert fates.get("dropped_for_verification") == 1 and fates.get("dropped_budget") == 1
 
 def _bare_stream(m):
     stream = rt._Stream.__new__(rt._Stream)
