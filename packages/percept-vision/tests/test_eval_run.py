@@ -235,3 +235,20 @@ def test_the_cap_is_never_passed_with_requests_in_flight_and_refusals_fail_with_
     assert held <= guard.cap and len(refused) == 3 and guard.refused == 3 and guard.tripped.is_set()
     assert all(r.observations[0].failure == "budget" and r.observations[0].answer != "no" for r in refused)
     assert guard.spent <= guard.cap and guard.held == 0
+
+
+def test_requests_that_differ_in_prompt_route_token_limit_or_model_do_not_share_an_answer():
+    import dataclasses
+    inner = FakeJudge(lambda r: {"red": ("yes", 0.9, "seen")}, price=PRICE)
+    guard = ev.CachingJudge(inner, cap_usd=None)
+    r = request(1)
+    cond = r.items[0].condition
+    same = dataclasses.replace(r, request_id="x", evidence_t=(100.0, 101.0))   # only wall-clock times moved
+    assert guard.key(same) == guard.key(r)
+    variants = [dataclasses.replace(r, items=(percept.JudgeItem(dataclasses.replace(cond, not_when=("a red cup",))),)),
+                dataclasses.replace(r, items=(percept.JudgeItem(dataclasses.replace(cond, judge="slow")),)),
+                dataclasses.replace(r, max_output_tokens=50), dataclasses.replace(r, purpose="verify")]
+    assert len({guard.key(v) for v in variants} | {guard.key(r)}) == 5
+    other = FakeJudge(lambda r: {}, price=PRICE)
+    other.model = "another-model"
+    assert ev.CachingJudge(other, cap_usd=None).key(r) != guard.key(r)

@@ -118,6 +118,17 @@ def _rebase(old: str, new: str) -> str:
     return new + old[len(old.split("/")[0]):]
 
 
+def _identity(judge: Any) -> Any:
+    """What makes a judge answer as it does: its ``cache_key`` if it has one, else its name, model,
+    price and attempts, and for a cascade its members and thresholds."""
+    if getattr(judge, "cache_key", None) is not None:
+        return judge.cache_key
+    model = getattr(judge, "model", None)
+    members = getattr(judge, "members", None)
+    return [judge.name, model if isinstance(model, str) else None, repr(judge.price), base.max_attempts(judge),
+            [_identity(m) for m in members] if members else None, list(getattr(judge, "thresholds", ()) or ())]
+
+
 class CachingJudge:
     """Wraps a judge with a hard dollar cap, a spend log and a reply cache. Implements the Judge
     protocol.
@@ -130,8 +141,10 @@ class CachingJudge:
     Spend log: with ``spend_log`` (a path), one JSON line per request sent, so spend survives a
     killed run.
 
-    Cache: replies are kept with their usage, by the images (sha256 of their pixels), the conditions (id, text,
-    version, kind, subject, counter-example notes), the purpose and the judge's name. An identical
+    Cache: replies are kept with their usage, by the images (sha256 of their pixels), the prompt
+    as rendered (every condition's wording, ``not_when`` and counter-examples, the verify note; the
+    evidence's wall-clock times made relative), each item's route, ``max_output_tokens`` and the
+    judge's identity (its ``cache_key``, else name, model, price, attempts and cascade members). An identical
     request is answered from the cache and sends nothing, but is replayed as it happened: the
     original usage (attempts, tokens, cost) is returned, so the Monitor's budget and cost settle as
     they did live, and with ``replay_latency`` the reply waits the original latency divided by
@@ -173,9 +186,10 @@ class CachingJudge:
             a = np.ascontiguousarray(image)
             h.update(f"{a.shape}{a.dtype.str}".encode())
             h.update(a.tobytes())
-        items = [[i.condition.id, i.condition.text, i.condition.version, i.condition.kind, i.subject,
-                  [c.note for c in i.counter_examples]] for i in request.items]
-        h.update(json.dumps([items, request.purpose, self.name]).encode())
+        t0, t1 = request.evidence_t     # the prompt as sent, its wall-clock times made relative
+        prompt = base.build_prompt(dataclasses.replace(request, evidence_t=(0.0, round(t1 - t0, 1))))
+        h.update(json.dumps([prompt.system, prompt.user, [i.condition.judge for i in request.items],
+                             request.purpose, request.max_output_tokens, _identity(self.inner)], default=repr).encode())
         return h.hexdigest()
 
     async def judge(self, request: JudgeRequest) -> JudgeResult:
