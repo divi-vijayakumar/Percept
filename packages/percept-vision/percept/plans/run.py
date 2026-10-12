@@ -108,3 +108,93 @@ def attention_only(compiled: Compiled, labels: Labels, clips: Sequence[str], *, 
         return [await attend(f) for f in clips]
 
     return asyncio.run(main())
+
+
+# --------------------------------------------------------------------------- the judge
+
+
+class CachingJudge:
+    """Wraps a judge with a hard dollar cap, a spend log and a reply cache. Implements the Judge
+    protocol.
+
+    Cap: each request reserves the judge's worst case (every attempt, see
+    :func:`percept.judges.base.worst_case_cost_for`) before it is sent. A request whose reservation,
+    added to what was spent and what requests in flight hold, would pass ``cap_usd`` is not sent:
+    it fails with ``budget`` (never an answer) and sets ``tripped``. ``cap_usd=None``: no cap.
+
+    Spend log: with ``spend_log`` (a path), one JSON line per request sent, so spend survives a
+    killed run.
+
+    Cache: replies are kept by the images (sha256 of their pixels), the conditions (id, text,
+    version, kind, subject, counter-example notes), the purpose and the judge's name; an identical
+    request is answered from the cache, sends nothing and costs $0 (and uses no request attempts).
+    Failed replies are not kept. ``cache``: True for a new cache, a mapping to share one across
+    runs, None for none.
+    """
+
+    def __init__(self, inner: Any, *, cap_usd: Optional[float], spend_log: Union[None, str, os.PathLike] = None,
+                 cache: Union[bool, None, MutableMapping[str, tuple[Observation, ...]]] = True) -> None:
+        if cap_usd is not None and (not math.isfinite(cap_usd) or cap_usd < 0):
+            raise ValueError(f"cap_usd must be a finite number >= 0 or None, got {cap_usd!r}")
+        if cap_usd is not None and getattr(inner, "price", None) is None:
+            raise ValueError("a spend cap needs a judge with a PriceModel")
+        self.inner, self.cap, self.spend_log = inner, cap_usd, spend_log
+        self.name, self.can_batch, self.price = inner.name, inner.can_batch, inner.price
+        self.max_attempts = base.max_attempts(inner)
+        self.cache: Optional[MutableMapping] = {} if cache is True else None if cache in (None, False) else cache
+        self.spent = self.held = 0.0
+        self.requests = self.refused = self.hits = 0
+        self.tripped = asyncio.Event()
+
+    def max_attempts_for(self, request: JudgeRequest) -> int:
+        return base.max_attempts_for(self.inner, request)
+
+    def worst_case_cost_for(self, request: JudgeRequest) -> Optional[float]:
+        return base.worst_case_cost_for(self.inner, request)
+
+    def reservation(self, request: JudgeRequest) -> float:
+        """The dollars ``request`` reserves: the worst case, per item for a judge that can't batch."""
+        calls = 1 if self.can_batch else len(request.items)
+        return (base.worst_case_cost_for(self.inner, request) or 0.0) * calls
+
+    def key(self, request: JudgeRequest) -> str:
+        h = hashlib.sha256()
+        for image in request.images:
+            a = np.ascontiguousarray(image)
+            h.update(f"{a.shape}{a.dtype.str}".encode())
+            h.update(a.tobytes())
+        items = [[i.condition.id, i.condition.text, i.condition.version, i.condition.kind, i.subject,
+                  [c.note for c in i.counter_examples]] for i in request.items]
+        h.update(json.dumps([items, request.purpose, self.name]).encode())
+        return h.hexdigest()
+
+    async def judge(self, request: JudgeRequest) -> JudgeResult:
+        key = None if self.cache is None else self.key(request)
+        cached = None if key is None else self.cache.get(key)  # type: ignore[union-attr]
+        if cached is not None:
+            self.hits += 1
+            gen = {i.condition.id: i.occurrence_gen for i in request.items}
+            return JudgeResult(tuple(dataclasses.replace(
+                o, request_id=request.request_id, stream_id=request.stream_id, stream_epoch=request.stream_epoch,
+                evidence_t=request.evidence_t, occurrence_gen=gen[o.condition_id]) for o in cached), ())
+        reserve = self.reservation(request)
+        if self.cap is not None and self.spent + self.held + reserve > self.cap:
+            self.refused += 1
+            self.tripped.set()
+            return JudgeResult(base.failed_observations(request, "budget", self.name, "spend cap reached"), ())
+        self.held += reserve
+        result = None
+        try:
+            result = await self.inner.judge(request)
+            if key is not None and not any(o.failed for o in result.observations):
+                self.cache[key] = result.observations  # type: ignore[index]
+            return result
+        finally:
+            self.held -= reserve
+            self.requests += 1
+            cost = reserve if result is None else sum(u.usage.cost_usd for u in result.usage)
+            self.spent += cost
+            if self.spend_log is not None:
+                with open(self.spend_log, "a") as f:
+                    f.write(json.dumps({"t": round(time.time(), 3), "request_id": request.request_id,
+                                        "cost_usd": cost, "settled": result is not None}) + "\n")

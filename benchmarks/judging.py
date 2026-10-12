@@ -18,14 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
-import time
 from typing import Optional
 
 import numpy as np
 
 from percept import JudgeRequest, JudgeResult, PriceModel
-from percept.judges import FakeJudge, base, gemini
+from percept.judges import FakeJudge, gemini
+from percept.plans.run import CachingJudge
 
 ONSET_BEFORE_S, ONSET_AFTER_S = 0.5, 2.0    # images showing [onset - 0.5, onset + 2] show the beginning
 
@@ -126,46 +125,12 @@ class CostCapReached(Exception):
     pass
 
 
-class CostGuard:
-    """A judge wrapper holding a run-wide dollar cap (see the module docstring)."""
+class CostGuard(CachingJudge):
+    """A judge wrapper holding a run-wide dollar cap (see the module docstring): Percept's
+    ``CachingJudge`` with its reply cache off, so every request is sent."""
 
     def __init__(self, inner, cap_usd: Optional[float], spend_log=None) -> None:
-        if cap_usd is not None and getattr(inner, "price", None) is None:
-            raise ValueError("a spend cap needs a judge with a PriceModel (pass --price)")
-        self.inner, self.cap = inner, cap_usd
-        self.name, self.can_batch, self.price = inner.name, inner.can_batch, inner.price
-        self.max_attempts = base.max_attempts(inner)
-        self.spent = self.held = 0.0
-        self.requests = self.refused = 0
-        self.tripped = asyncio.Event()
-        self.spend_log = spend_log      # a path: one line per request, so spend survives a killed run
-
-    def reservation(self, request: JudgeRequest) -> float:
-        if self.price is None:
-            return 0.0
-        calls = 1 if self.can_batch else len(request.items)
-        return base.worst_case_cost(request, self.price, retries=self.max_attempts - 1) * calls
-
-    async def judge(self, request: JudgeRequest) -> JudgeResult:
-        reserve = self.reservation(request)
-        if self.cap is not None and self.spent + self.held + reserve > self.cap:
-            self.refused += 1
-            self.tripped.set()
-            return JudgeResult(base.failed_observations(request, "budget", self.name, "harness spend cap reached"), ())
-        self.held += reserve
-        result = None
-        try:
-            result = await self.inner.judge(request)
-            return result
-        finally:
-            self.held -= reserve
-            self.requests += 1
-            cost = reserve if result is None else sum(u.usage.cost_usd for u in result.usage)
-            self.spent += cost
-            if self.spend_log is not None:
-                with open(self.spend_log, "a") as f:
-                    f.write(json.dumps({"t": round(time.time(), 3), "request_id": request.request_id,
-                                        "cost_usd": cost, "settled": result is not None}) + "\n")
+        super().__init__(inner, cap_usd=cap_usd, spend_log=spend_log, cache=None)
 
 
 def build(spec: str, *, cases, timelines: Timelines, price: Optional[PriceModel], oracle: dict) -> object:
