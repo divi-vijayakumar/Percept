@@ -35,6 +35,7 @@ from percept.judges.base import (
     cost_of,
     failed_observations,
     parse_reply,
+    worst_case_tokens,
 )
 from percept.judges.encode import MAX_SIDE, to_jpeg
 
@@ -100,9 +101,10 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
     start = clock()
     attempts = tokens_in = tokens_out = 0
     out_of_time = False  # a retry was skipped because it could not finish before the deadline
+    unreplied = 0  # attempts sent that never replied: possibly billed, tokens unknown
 
     async def attempt() -> RawReply:
-        nonlocal attempts, tokens_in, tokens_out, out_of_time
+        nonlocal attempts, tokens_in, tokens_out, out_of_time, unreplied
         while True:
             attempts += 1
             sent = asyncio.ensure_future(send(prompt, images, request.max_output_tokens, request))
@@ -111,6 +113,7 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
                     limit = max(0.0, deadline_s - (clock() - start)) * ATTEMPT_SHARE
                     await asyncio.wait({sent}, timeout=limit)
                     if not sent.done():
+                        unreplied += 1
                         continue            # it hung: abandoned (finally cancels it), the retry runs
                 reply = await sent
             except RetryableError as exc:
@@ -140,6 +143,7 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
         if clock() - start > deadline_s:
             failure, reason = "timeout", f"reply arrived after the {deadline_s:.1f} s deadline"
     except (asyncio.TimeoutError, TimeoutError):
+        unreplied += 1
         failure, reason = "timeout", f"no reply within {deadline_s:.1f} s"
     except RetryableError as exc:
         cause = "no time to retry before the deadline" if out_of_time else "retries exhausted"
@@ -163,7 +167,9 @@ async def _call_one(send: Send, request: JudgeRequest, images: tuple[bytes, ...]
         observations = failed_observations(request, failure, judge_name, reason)
         request_failure = failure
 
-    cost = cost_of(price, tokens_in, tokens_out) if price is not None else 0.0
+    cost = 0.0
+    if price is not None:   # an attempt with no reply may still be billed: charged at its worst case
+        cost = cost_of(price, tokens_in, tokens_out) + unreplied * cost_of(price, *worst_case_tokens(request, price))
     used = Usage(attempts, tokens_in, tokens_out, cost, max(0.0, clock() - start))
     return observations, RequestUsage(request.request_id, judge_name, used, request_failure,
                                       tuple(item.condition.id for item in request.items))

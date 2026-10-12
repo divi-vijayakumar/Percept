@@ -213,6 +213,43 @@ def test_a_cancelled_request_cancels_its_attempt():
     assert cancelled == [True]
 
 
+def test_an_attempt_with_no_reply_is_charged_at_its_worst_case():
+    # It was sent and may be billed though no tokens came back: the dollar window must not
+    # release that money as if it had cost nothing.
+    from percept.judges.base import worst_case_tokens
+    one = cost_of(PRICE, *worst_case_tokens(make_request(), PRICE))
+    calls = []
+
+    async def first_hangs(prompt, images, max_output_tokens, request):
+        calls.append(1)
+        if len(calls) == 1:
+            await asyncio.sleep(60)
+        return RawReply(OK, 100, 10)
+
+    hung_then_ok = asyncio.run(policy.call(first_hangs, make_request(deadline_s=0.5), judge_name="j", price=PRICE))
+    assert hung_then_ok.usage[0].usage.cost_usd == pytest.approx(cost_of(PRICE, 100, 10) + one)
+
+    async def hang(*_):
+        await asyncio.sleep(60)
+
+    timed_out = asyncio.run(policy.call(hang, make_request(deadline_s=0.2), judge_name="j", price=PRICE))
+    assert timed_out.usage[0].usage.attempts == 2
+    assert timed_out.usage[0].usage.cost_usd == pytest.approx(2 * one)       # never above the reservation
+    from percept.judges.base import worst_case_cost
+    assert timed_out.usage[0].usage.cost_usd <= worst_case_cost(make_request(), PRICE, retries=1) + 1e-12
+
+
+@pytest.mark.parametrize("retries", [0, 1, 2])
+def test_hung_attempts_never_exceed_the_reserved_attempts_or_become_answers(retries):
+    async def hang(*_):
+        await asyncio.sleep(60)
+
+    result = asyncio.run(policy.call(hang, make_request(deadline_s=0.2), judge_name="j", retries=retries))
+    assert result.usage[0].usage.attempts == retries + 1          # what the monitor reserved
+    assert kinds(result) == ["timeout"] * 2
+    assert all(o.answer == "unknown" and o.failed for o in result.observations)   # a failure is never a "no"
+
+
 def test_deadline_override():
     assert kinds(run(Provider((3.0, RawReply(OK))), deadline_s=2.0)) == ["timeout"] * 2
 
