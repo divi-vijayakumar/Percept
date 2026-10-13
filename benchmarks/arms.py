@@ -461,14 +461,29 @@ def _rusage() -> tuple[float, float]:
     return r.ru_utime + r.ru_stime, r.ru_maxrss / scale
 
 
+def _asleep_s() -> Optional[float]:
+    """Seconds the machine has spent asleep or suspended since boot: a clock that keeps counting
+    through sleep minus one that stops. None where the platform has no such pair."""
+    if sys.platform == "darwin":
+        return time.clock_gettime(time.CLOCK_MONOTONIC_RAW) - time.clock_gettime(time.CLOCK_UPTIME_RAW)
+    if hasattr(time, "CLOCK_BOOTTIME"):
+        return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
+    return None
+
+
 class Footprint:
-    """CPU seconds over a block of work, and the process's peak resident memory when it ended
-    (a high-water mark for the whole run so far: run one arm per process for a per-arm peak)."""
+    """CPU seconds over a block of work, the process's peak resident memory when it ended (a
+    high-water mark for the whole run so far: run one arm per process for a per-arm peak), and
+    the seconds the machine slept during it (None where unmeasurable). A sleep stops the clock the
+    footage is paced by, so a run that slept is not a real-time run."""
 
     def __enter__(self) -> "Footprint":
         self.cpu0, _ = _rusage()
+        self.asleep0 = _asleep_s()
         return self
 
     def __exit__(self, *exc) -> None:
         cpu, self.peak_rss_mb = _rusage()
         self.cpu_s = cpu - self.cpu0
+        asleep = _asleep_s()
+        self.slept_s = None if asleep is None or self.asleep0 is None else round(max(0.0, asleep - self.asleep0), 3)

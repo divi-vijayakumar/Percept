@@ -83,7 +83,8 @@ class OracleJudge:
         self.timelines, self.seed, self.latency_s = timelines, seed, latency_s
         self.fn_rate, self.fp_rate, self.unknown_rate = fn_rate, fp_rate, unknown_rate
         self.realtime = False           # sleep the latency for real (the Percept arm runs in real time)
-        self._fake = FakeJudge(self._answer, name="oracle", price=price, latency_s=latency_s)
+        self._fake = FakeJudge(self._answer, name="oracle", price=price, latency_s=latency_s,
+                               record_requests=False)    # a record would keep every frame it showed alive
         self.name, self.can_batch, self.price = "oracle", True, price
         self.max_attempts = self._fake.max_attempts
 

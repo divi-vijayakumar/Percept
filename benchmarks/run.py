@@ -22,6 +22,7 @@ import dataclasses
 import hashlib
 import inspect
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -301,6 +302,11 @@ def not_publishable(m: dict, table: dict) -> list[str]:
     if lost:        # intentional sampling (the fps policies) never disqualifies; unintended loss does
         why.append("frames were lost to decoding, queues or lag (unintended_loss: "
                    + ", ".join(f"{a} {n}" for a, n in lost.items()) + ")")
+    slept = {arm: s["footprint"]["slept_s"] for arm, s in table.items() if s["footprint"].get("slept_s")}
+    if slept:       # the machine slept: the stream stopped, whatever the frame counts say
+        why.append("the machine slept during the run (" + ", ".join(f"{a} {v:g} s" for a, v in slept.items()) + ")")
+    if any(s["footprint"].get("slept_s") is None for s in table.values()):    # missing: written before it was measured
+        why.append("sleep was not measured (unsupported platform, or a run recorded before it was)")
     lag = max((s["footprint"].get("max_push_lag_s", 0.0) for s in table.values()), default=0.0)
     if lag > MAX_LAG_S:
         why.append(f"the Percept feed fell {lag:.1f} s behind real time")
@@ -562,6 +568,20 @@ def finish(out: Path, manifest: dict, results: dict, cases: dict, args, footprin
     return table
 
 
+def stay_awake() -> bool:
+    """Keep the machine from sleeping while this process lives (macOS: ``caffeinate`` tied to our
+    pid, so it holds however the run was launched; a closed lid can still sleep a laptop). False
+    where unavailable; a sleep is then caught afterwards by the run's ``slept_s``."""
+    if sys.platform != "darwin" or not shutil.which("caffeinate"):
+        return False
+    try:
+        subprocess.Popen(["caffeinate", "-ims", "-w", str(os.getpid())], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    return True
+
+
 async def main_async(args) -> int:
     if not args.dataset:
         raise SystemExit("--dataset is required (or a --config that sets it)")
@@ -573,6 +593,7 @@ async def main_async(args) -> int:
     if not cases:
         raise SystemExit(f"no cases for {args.dataset}: is the data where the adapter looks?")
     by_id = {c.case_id: c for c in cases}
+    awake = stay_awake()
     timelines = judging.Timelines()
     oracle = dict(fn_rate=args.oracle_fn, fp_rate=args.oracle_fp, latency_s=args.oracle_latency, seed=args.seed)
     inner = judging.build(args.judge, cases=cases, timelines=timelines,
@@ -589,7 +610,8 @@ async def main_async(args) -> int:
         foot: dict = {}
         with A.Footprint() as fp:
             res = await run_arm(arm, cases, judge, timelines, out, args, foot)
-        results[arm], footprints[arm] = res, dict(cpu_s=round(fp.cpu_s, 2), peak_rss_mb=fp.peak_rss_mb, **foot)
+        results[arm], footprints[arm] = res, dict(cpu_s=round(fp.cpu_s, 2), peak_rss_mb=fp.peak_rss_mb,
+                                                  slept_s=fp.slept_s, **foot)
         write_raw(out, arm, res, footprints[arm])
         s = metrics.score(res, by_id, args.tolerance, seed=args.seed)
         print(f"{arm}: recall {_fmt(s['recall'], True)} precision {_fmt(s['precision'], True)} "
@@ -616,7 +638,7 @@ async def main_async(args) -> int:
                     "worker_threads": worker_threads(args)},
         "seeds": {"seed": args.seed}, "config": args.config, "tolerance_s": args.tolerance, "cooldown_s": args.cooldown,
         "fps": args.fps, "speed": args.speed, "parallel": args.parallel, "max_cost_usd": args.max_cost_usd,
-        "pace_baselines": bool(getattr(args, "pace_baselines", False)),
+        "pace_baselines": bool(getattr(args, "pace_baselines", False)), "sleep_prevented": awake,
         "spent_usd": judge.spent, "requests": judge.requests, "refused_by_cap": judge.refused,
         "aborted": judge.tripped.is_set(), "args": vars(args),
     }

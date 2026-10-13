@@ -351,7 +351,7 @@ def test_dry_run_end_to_end(tmp_path):
 def _meva_run(**arm):
     manifest = {"judge": {"spec": "gemini:m"}, "dataset": "meva", "speed": 1.0, "aborted": False,
                 "pace_baselines": True}
-    s = dict(skipped=[], footprint={"max_push_lag_s": 0.1}, intentional_sampling={}, unintended_loss={},
+    s = dict(skipped=[], footprint={"max_push_lag_s": 0.1, "slept_s": 0.0}, intentional_sampling={}, unintended_loss={},
              unintended_loss_total=0)
     s.update(arm)
     return manifest, {"percept": s}
@@ -364,6 +364,37 @@ def test_intentional_sampling_is_publishable_unintended_loss_is_not():
                                          unintended_loss_total=3))
     assert len(why) == 1 and "unintended_loss" in why[0]
     assert run.not_publishable(*_meva_run(footprint={"max_push_lag_s": 2.5}))       # the lag limit still holds
+
+
+def test_a_run_the_machine_slept_through_is_not_publishable():
+    def why(slept):
+        return run.not_publishable(*_meva_run(footprint={"max_push_lag_s": 0.1, "slept_s": slept}))
+    assert why(0.0) == []
+    assert len(why(772.0)) == 1 and "slept" in why(772.0)[0]
+    assert why(None) == ["sleep was not measured (unsupported platform, or a run recorded before it was)"]
+    old = _meva_run(footprint={"max_push_lag_s": 0.1})      # a run recorded before sleep was measured
+    assert run.not_publishable(*old) == ["sleep was not measured (unsupported platform, or a run recorded before it was)"]
+
+
+def test_footprint_measures_sleep_where_the_platform_can():
+    with arms.Footprint() as fp:
+        pass
+    assert fp.slept_s == (0.0 if arms._asleep_s() is not None else None)
+
+
+@pytest.mark.parametrize("readings, slept", [((10.0, 15.25), 5.25), ((10.0, 10.0), 0.0), ((10.0, 9.0), 0.0),
+                                             ((None, 15.0), None), ((10.0, None), None)])
+def test_footprint_sleep_is_the_growth_of_time_asleep(monkeypatch, readings, slept):
+    it = iter(readings)
+    monkeypatch.setattr(arms, "_asleep_s", lambda: next(it))
+    with arms.Footprint() as fp:
+        pass
+    assert fp.slept_s == slept
+
+
+def test_the_oracle_keeps_no_request():
+    oracle = judging.OracleJudge([], judging.Timelines())
+    assert oracle._fake.sent is None
 
 
 def test_loss_accounting_adds_up_per_arm():

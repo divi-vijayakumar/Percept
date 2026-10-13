@@ -6,6 +6,10 @@ Notable changes to Percept.
 
 ### API
 
+- `FakeJudge(..., record_requests=False)` keeps no record of the requests it serves (`sent` is
+  None, as on the vendor judges). Recording stays on by default. A request's images are views of
+  the source frames, so each record kept whole frames alive: a long offline run grew without
+  bound. The benchmark's offline oracle no longer records.
 - Evaluation driver `percept.plans.run` (experimental; reached as a module, no new top-level
   names): `attention_only(compiled, labels, clips, video_root=)` runs the Monitor's attention step
   over labelled clips with no judge calls and records the looks made due as `Fire`s (the candidate

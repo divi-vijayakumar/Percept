@@ -89,7 +89,10 @@ removed it; with OpenCV 5 installed, no condition is person-expressible and the 
 - whether the run is **publishable**, and if not, why: an oracle judge, a dataset other than
   MEVA (every such report carries a "diagnostic, not publishable" banner), `--speed` other
   than 1, a spend-cap abort, skipped cases, unintended frame loss, a Percept feed that fell
-  more than a second behind real time, or an arm whose judge failed on more than 5% of its looks;
+  more than a second behind real time, an arm whose judge failed on more than 5% of its looks,
+  or a machine that slept during the run (the footprint's `slept_s`: a clock that counts through
+  sleep minus one that stops; on macOS the harness also holds `caffeinate` while it runs, but a
+  closed laptop lid can still sleep it);
 - frames, in two separate counts. **Intentional sampling**: frames the configured policies
   skip (the harness's `--fps` sampling of the source, the Monitor's processing fps cap if set);
   expected, never disqualifying. **Unintended loss**: frames lost because decoding, a queue or
