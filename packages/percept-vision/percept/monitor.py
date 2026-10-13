@@ -230,6 +230,21 @@ class _Window:
         return self.spent[0][0] - now if self.spent else None
 
 
+@dataclass(eq=False)
+class _Flight:
+    """One judge request in flight. It owns one slot and its budget and dollar reservations until
+    ``_Stream.settle`` returns them, exactly once, however its task ends."""
+    request: JudgeRequest
+    works: list
+    reserve: int
+    cost: float
+    t0: float
+    task: Optional[asyncio.Task] = None
+    result: Optional[JudgeResult] = None
+    unknown: bool = True        # cancelled, or the judge raised: what it sent and spent is unknown
+    settled: bool = False
+
+
 @dataclass
 class _Work:
     """A pending look at one (condition, subject). Detections coalesce per key."""
@@ -671,7 +686,9 @@ class _Stream:
         if self.verify_task is None and self.verifies:
             for key in [k for k in self.verifies if k[0] not in m._conds]:
                 del self.verifies[key]
-            ready = [w for w in self.verifies.values() if w.not_before <= now and not w.gone]
+            wall = m._wall()     # past its deadline the reducer resolves it: a request could not count
+            ready = [w for w in self.verifies.values()
+                     if w.not_before <= now and not w.gone and wall < w.verify.deadline]
             for w in sorted(ready, key=lambda w: (w.verify.deadline, w.created)):
                 why = self.start([w], "verify", now)
                 if why == "gone":
@@ -808,7 +825,11 @@ class _Stream:
         self.remember(self.req_frames, request.request_id, frames, KEEP_REQUEST_FRAMES)
         if purpose == "detect" and works[0].clip is not None:
             self.remember(self.req_window, request.request_id, works[0].clip, 256)
-        task = self.spawn(self.call(request, works, reserve, cost))
+        flight = _Flight(request, works, reserve, cost, m._mono())
+        flight.task = task = self.spawn(self.call(flight))
+        # A task cancelled before its first step never runs its body, so its finally never runs:
+        # the done-callback settles it then (and is a no-op for one that settled itself).
+        task.add_done_callback(lambda t, f=flight: self.settle(f, t))
         if purpose == "verify":
             self.verify_task, self.verify_work = task, works[0]
         else:
@@ -821,40 +842,57 @@ class _Stream:
         while len(lru) > size:
             lru.popitem(last=False)
 
-    async def call(self, request: JudgeRequest, works: list[_Work], reserve: int, cost: float) -> None:
-        m, result, t0 = self.m, None, self.m._mono()
-        unknown = True      # cancelled, or the judge raised: what it sent and spent is unknown
+    async def call(self, f: _Flight) -> None:
+        m = self.m
         try:
-            result = await m.judge.judge(request)
-            unknown = False
+            f.result = await m.judge.judge(f.request)
+            f.unknown = False
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a judge that raises broke its contract: an outage
-            result = JudgeResult(failed_observations(request, "unavailable", m.judge.name, f"judge raised {type(exc).__name__}"), ())
-        finally:  # unknown usage keeps the whole reservation charged for the window, and reports 0 spent
-            usage = Usage() if unknown or result is None else sum((u.usage for u in result.usage), Usage())
-            used = reserve if unknown else usage.attempts
-            self.budget.settle(reserve, used, m._mono())
-            m._cost.settle(cost, cost if unknown else usage.cost_usd, m._mono())
-            self.held_cost.settle(cost, cost if unknown else 0.0, m._mono())
-            self.totals["requests"] += 1
-            self.totals["attempts"] += used
-            self.cost_usd += usage.cost_usd
-            shares = (item_usage(request, result) if not unknown and result is not None
-                      else (Usage(),) * len(request.items))
-            for item, share in zip(request.items, shares):
-                row = self.per_condition.setdefault(item.condition.id, [0, 0, 0.0])
-                row[0] += 1
-                row[1] += share.attempts
-                row[2] += share.cost_usd
-            if m._trace is not None:
-                self.trace_request(request, result, m._mono() - t0)
-            if request.purpose == "verify":
+            f.result = JudgeResult(failed_observations(f.request, "unavailable", m.judge.name,
+                                                       f"judge raised {type(exc).__name__}"), ())
+        finally:
+            self.settle(f)
+        self.absorb(f.request, f.result, f.works)
+
+    def settle(self, f: _Flight, task: Optional[asyncio.Task] = None) -> None:
+        """Return a request's slot and reservations and clear it from the stream, exactly once:
+        whether it finished, failed, was cancelled mid-call, or was cancelled before it ever ran.
+        Unknown usage keeps the whole reservation charged for the window and reports 0 spent.
+        Never touches occurrence state. ``task`` (from the done-callback) has its error, if any,
+        logged rather than lost."""
+        if task is not None and not task.cancelled() and task.exception() is not None:
+            log.error("percept: stream %s: request %s failed", self.id, f.request.request_id,
+                      exc_info=task.exception())
+        if f.settled:
+            return
+        f.settled = True
+        m, request, result, unknown = self.m, f.request, f.result, f.unknown
+        usage = Usage() if unknown or result is None else sum((u.usage for u in result.usage), Usage())
+        used = f.reserve if unknown else usage.attempts
+        self.budget.settle(f.reserve, used, m._mono())
+        m._cost.settle(f.cost, f.cost if unknown else usage.cost_usd, m._mono())
+        self.held_cost.settle(f.cost, f.cost if unknown else 0.0, m._mono())
+        self.totals["requests"] += 1
+        self.totals["attempts"] += used
+        self.cost_usd += usage.cost_usd
+        shares = (item_usage(request, result) if not unknown and result is not None
+                  else (Usage(),) * len(request.items))
+        for item, share in zip(request.items, shares):
+            row = self.per_condition.setdefault(item.condition.id, [0, 0, 0.0])
+            row[0] += 1
+            row[1] += share.attempts
+            row[2] += share.cost_usd
+        if m._trace is not None:
+            self.trace_request(request, result, m._mono() - f.t0)
+        if request.purpose == "verify":
+            if self.verify_task is f.task:
                 self.verify_task = None
-            else:
-                self.detect_task = None
-            m._release()
-        self.absorb(request, result, works)
+        elif self.detect_task is f.task:
+            self.detect_task = None
+        m._release()
+        self.wake.set()
 
     def trace_request(self, request: JudgeRequest, result: Optional[JudgeResult], latency: float) -> None:
         if result is None:

@@ -78,6 +78,15 @@ Notable changes to Percept.
   compile to them (a state with either is a `PlanError`); plans without them keep their
   `plan_hash`.
 
+### Fixed
+
+- A verification cancelled by its deadline before its request task first ran (a scheduling race,
+  seen under heavy load) never returned its request slot or budget reservation, and its stream
+  never finished: the watch hung, and the leaked slot could hold back other streams. Every request
+  is now settled exactly once however its task ends (finished, failed, cancelled mid-call or before
+  it ran), charging unknown usage at its full reservation as before. A verification whose deadline
+  has already passed is no longer started. Decisions are unchanged.
+
 ## 0.9.0 — Developer Preview (2026-10-11)
 
 Percept 0.9.0, the Developer Preview, is a rewrite around one job: a decision layer that turns a
