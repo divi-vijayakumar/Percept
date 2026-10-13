@@ -486,4 +486,4 @@ class Footprint:
         cpu, self.peak_rss_mb = _rusage()
         self.cpu_s = cpu - self.cpu0
         asleep = _asleep_s()
-        self.slept_s = None if asleep is None or self.asleep0 is None else round(max(0.0, asleep - self.asleep0), 1)
+        self.slept_s = None if asleep is None or self.asleep0 is None else round(max(0.0, asleep - self.asleep0), 3)

@@ -305,7 +305,7 @@ def not_publishable(m: dict, table: dict) -> list[str]:
     slept = {arm: s["footprint"]["slept_s"] for arm, s in table.items() if s["footprint"].get("slept_s")}
     if slept:       # the machine slept: the stream stopped, whatever the frame counts say
         why.append("the machine slept during the run (" + ", ".join(f"{a} {v:g} s" for a, v in slept.items()) + ")")
-    if any(s["footprint"].get("slept_s", 0) is None for s in table.values()):
+    if any(s["footprint"].get("slept_s") is None for s in table.values()):    # missing: written before it was measured
         why.append("sleep could not be measured on this platform")
     lag = max((s["footprint"].get("max_push_lag_s", 0.0) for s in table.values()), default=0.0)
     if lag > MAX_LAG_S:
@@ -574,8 +574,11 @@ def stay_awake() -> bool:
     where unavailable; a sleep is then caught afterwards by the run's ``slept_s``."""
     if sys.platform != "darwin" or not shutil.which("caffeinate"):
         return False
-    subprocess.Popen(["caffeinate", "-ims", "-w", str(os.getpid())], stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.Popen(["caffeinate", "-ims", "-w", str(os.getpid())], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
     return True
 
 
