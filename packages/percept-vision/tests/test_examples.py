@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 EXAMPLES = Path(__file__).resolve().parents[3] / "examples"
 
 
@@ -66,6 +68,7 @@ def test_watch_plan_compiles_explains_and_runs():
 
 
 def test_plan_evaluation_runs_attention_only_a_sweep_and_a_registered_test_split():
+    pytest.importorskip("cv2")          # the example reads video files: the [video] extra
     out = run("plan_evaluation.py").stdout
     assert "dev, attention only: candidate 1/1, $0.0000" in out, out
     assert "validation, on_change (default):" in out and "validation, every 3 s:" in out, out

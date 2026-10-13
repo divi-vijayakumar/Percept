@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: pip install -e "packages/percept-vision[dev]"
+      - run: pip install -e "packages/percept-vision[dev,video]"    # video tests and examples run too
       - run: make test
 
   validate:
