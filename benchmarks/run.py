@@ -306,7 +306,7 @@ def not_publishable(m: dict, table: dict) -> list[str]:
     if slept:       # the machine slept: the stream stopped, whatever the frame counts say
         why.append("the machine slept during the run (" + ", ".join(f"{a} {v:g} s" for a, v in slept.items()) + ")")
     if any(s["footprint"].get("slept_s") is None for s in table.values()):    # missing: written before it was measured
-        why.append("sleep could not be measured on this platform")
+        why.append("sleep was not measured (unsupported platform, or a run recorded before it was)")
     lag = max((s["footprint"].get("max_push_lag_s", 0.0) for s in table.values()), default=0.0)
     if lag > MAX_LAG_S:
         why.append(f"the Percept feed fell {lag:.1f} s behind real time")

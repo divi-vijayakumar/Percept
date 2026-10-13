@@ -371,9 +371,9 @@ def test_a_run_the_machine_slept_through_is_not_publishable():
         return run.not_publishable(*_meva_run(footprint={"max_push_lag_s": 0.1, "slept_s": slept}))
     assert why(0.0) == []
     assert len(why(772.0)) == 1 and "slept" in why(772.0)[0]
-    assert why(None) == ["sleep could not be measured on this platform"]
+    assert why(None) == ["sleep was not measured (unsupported platform, or a run recorded before it was)"]
     old = _meva_run(footprint={"max_push_lag_s": 0.1})      # a run recorded before sleep was measured
-    assert run.not_publishable(*old) == ["sleep could not be measured on this platform"]
+    assert run.not_publishable(*old) == ["sleep was not measured (unsupported platform, or a run recorded before it was)"]
 
 
 def test_footprint_measures_sleep_where_the_platform_can():
