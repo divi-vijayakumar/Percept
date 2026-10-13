@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import numpy as np
 import pytest
@@ -120,14 +121,18 @@ def test_attention_only_fires_are_the_looks_a_live_monitor_makes(monkeypatch, cl
 # --------------------------------------------------------------------------- the full runtime and the cache
 
 
-def counting(sent):
+def counting(sent, latency_s=0.0):
     def answer(request):
         sent.append(request.request_id)
         return script(request)
-    return FakeJudge(answer, price=PRICE)
+    return FakeJudge(answer, price=PRICE, latency_s=latency_s)
 
 
-def test_run_finds_the_square_and_a_second_identical_run_replays_it_exactly_for_nothing(clip):
+def test_run_finds_the_square_and_a_second_run_replays_identical_evidence_from_the_cache(clip):
+    # A paced run is the live runtime: which frames a request carries depends on timing, so two
+    # runs are not frame-for-frame identical (a request may pick 1.2 s once and 1.4 s the next).
+    # What holds: the same detections, and every request with identical evidence is replayed from
+    # the cache at its original cost while only new evidence is paid for.
     root, name = clip
     sent, cache, labels = [], {}, labels_for([name])
     c = compiled(counting(sent))
@@ -138,11 +143,23 @@ def test_run_finds_the_square_and_a_second_identical_run_replays_it_exactly_for_
     n = len(sent)
     second = ev.run(c, labels, [name], video_root=root, judge_cap_usd=1.0, cache=cache, speed=SPEED)
     again = plans.evaluate(labels, second)
-    assert len(sent) == n and again.paid_usd == 0 and second[0].paid_usd == 0
-    for a, b in zip(first, second):     # the same looks, drops and decisions, at the live cost
-        assert (a.predictions, a.looks, a.drops, a.cost_usd) == (b.predictions, b.looks, b.drops, b.cost_usd)
-    skip = {"compute_s", "compute_s_per_true_event", "paid_usd"}
-    assert {k: v for k, v in vars(score).items() if k not in skip} == {k: v for k, v in vars(again).items() if k not in skip}
+    assert (again.tp, again.fp, again.fn) == (score.tp, score.fp, score.fn)
+    new = len(sent) - n                                       # requests whose evidence was new
+    looks = sum(1 for lk in second[0].looks)
+    assert new < looks                                        # most of the second run was replayed
+    assert again.paid_usd <= again.cost_usd                   # paid only for the new evidence
+    assert (again.paid_usd == 0) == (new == 0)
+
+
+def test_a_cache_hit_waits_the_original_latency_scaled_by_speed():
+    sent = []
+    guard = ev.CachingJudge(counting(sent, latency_s=0.2), cap_usd=1.0, speed=2.0)
+    asyncio.run(guard.judge(request(1)))
+    t0 = time.monotonic()
+    asyncio.run(guard.judge(request(2, image=np.full((8, 8, 3), 1, np.uint8))))
+    took = time.monotonic() - t0
+    assert guard.hits == 1 and len(sent) == 1
+    assert took >= 0.2 / 2.0 * 0.9                            # the original latency, divided by speed
 
 
 def request(i: int, image=None) -> percept.JudgeRequest:

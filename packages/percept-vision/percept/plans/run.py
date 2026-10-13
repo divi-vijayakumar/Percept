@@ -324,7 +324,9 @@ def run(compiled: Compiled, labels: Labels, clips: Sequence[str], *, video_root:
     cached reply counts its original cost); ``paid_usd``: what was actually paid; ``compute_s``:
     CPU seconds of the whole process while the clip ran (decoding and the runtime included).
     ``refused``: requests the cap refused (they failed with ``budget``); a run that hit the cap
-    warns, and its :class:`~percept.plans.score.Score` says ``capped``.
+    warns, and its :class:`~percept.plans.score.Score` says ``capped``. A paced run is the live
+    runtime, timing included: which frames a request carries can differ between two runs of the
+    same clip, so a re-run replays from the cache only the requests whose evidence is identical.
 
     Frames are fed at ``speed`` times real time (None: as fast as the Monitor takes them, which
     leaves it little time to look). The Monitor's request budget, deadlines and timers run on the
