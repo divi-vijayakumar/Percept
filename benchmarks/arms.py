@@ -299,12 +299,14 @@ async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, coo
 async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, speed: float = 1.0,
                       fps: float = 5.0, max_requests_per_min: Optional[int] = None,
                       rearm_s: Optional[float] = None, arm: str = "percept",
-                      stats: Optional[dict] = None) -> ArmResult:
+                      stats: Optional[dict] = None, conditions: Optional[list] = None) -> ArmResult:
     """One ``Monitor`` per case, frames pushed at ``speed`` times real time (1.0 is the faithful
     setting: Percept's budget and timers run on the real clock). ``None`` keeps a default. Frames
-    are already sampled to ``fps``, so the Monitor processes every one (``watch(fps=None)``)."""
+    are already sampled to ``fps``, so the Monitor processes every one (``watch(fps=None)``).
+    ``conditions`` (a compiled plan's) replace the ones built from the case's condition text."""
     extra = {} if rearm_s is None else {"rearm_s": rearm_s}
-    conditions = [Condition(c.id, c.text, kind=c.kind, **extra) for c in case.conditions]
+    if conditions is None:
+        conditions = [Condition(c.id, c.text, kind=c.kind, **extra) for c in case.conditions]
     result = ArmResult(arm, case.case_id, cooldown_s=conditions[0].rearm_s if conditions else 0.0)
     preroll = PreRoll()
     source = PushSource(case.case_id, preroll=preroll)

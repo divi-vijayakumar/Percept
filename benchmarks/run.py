@@ -39,6 +39,21 @@ from benchmarks import arms as A
 from benchmarks import datasets, judging, metrics
 
 ARMS = ("percept", "percept-matched", "chunk5", "chunk10", "chunk30", "detector_debounce", "detector_then_vlm")
+PLAN_ARM = "percept-plan-"  # percept-plan-<name>: per-case plans from --percept-plans <dir>/<name>/<source id>.json
+
+
+def plan_for(case, arm: str, args, judge):
+    """The compiled plan of a ``percept-plan-<name>`` arm for ``case``: the file in
+    ``<percept_plans>/<name>/`` whose single source id appears in the case id (a camera id)."""
+    from percept import plans
+    matches = []
+    for path in sorted((Path(args.percept_plans) / arm[len(PLAN_ARM):]).glob("*.json")):
+        plan = json.loads(path.read_text())
+        if plan["sources"][0]["id"] in case.case_id:
+            matches.append(plan)
+    if len(matches) != 1:
+        raise ValueError(f"{arm}: {len(matches)} plans match case {case.case_id!r} (need exactly one)")
+    return plans.compile(matches[0], {r: judge for r in {c["judgment"]["route"] for c in matches[0]["concerns"]}})
 MAX_LAG_S = A.MAX_LAG_S     # a Percept feed further behind real time than this is not publishable
 PRODUCT_REARM_S = Condition("x", "x", kind="event").rearm_s
 PRODUCT_BUDGET = inspect.signature(Monitor.__init__).parameters["max_requests_per_min"].default
@@ -66,6 +81,8 @@ def arm_label(arm: str, args) -> str:
     """How an arm is named in tables: a Percept arm says what it changed from the product defaults."""
     if not arm.startswith("percept"):
         return arm
+    if arm.startswith(PLAN_ARM):
+        return f"{arm} (per-source plans in {args.percept_plans}/{arm[len(PLAN_ARM):]})"
     changed = [] if arm == "percept" else [f"max_requests_per_min {args.percept_budget}"]
     if args.percept_rearm is not None and args.percept_rearm != PRODUCT_REARM_S:
         changed.append(f"rearm standardised to {args.percept_rearm:g} s")
@@ -82,6 +99,15 @@ def worker_threads(args) -> int:
 
 def monitor_config(arm: str, args, judge) -> dict:
     """Everything that configures a Percept arm's ``Monitor`` and conditions."""
+    if arm.startswith(PLAN_ARM):     # a plan arm is configured by its plans: record each one's hash
+        from percept import plans
+        out = {}
+        for path in sorted((Path(args.percept_plans) / arm[len(PLAN_ARM):]).glob("*.json")):
+            plan = json.loads(path.read_text())
+            c = plans.compile(plan, {r: judge for r in {k["judgment"]["route"] for k in plan["concerns"]}})
+            out[path.name] = {"plan_hash": c.plan_hash, "max_requests_per_min": c.monitor_kwargs["max_requests_per_min"]}
+        return {"label": arm_label(arm, args), "plans": out, "store": "MemoryStore", "watch_fps": None,
+                "attempts_reserved_per_request": base.max_attempts(judge)}
     defaults = {k: v.default for k, v in inspect.signature(Monitor.__init__).parameters.items()
                 if v.default is not inspect.Parameter.empty and k not in ("store", "trace")}
     if arm == "percept-matched":
@@ -128,6 +154,12 @@ async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot
         async with sem:
             if judge.tripped.is_set():
                 return A.ArmResult(arm, case.case_id, aborted=True)
+            if realtime and arm.startswith(PLAN_ARM):
+                compiled = plan_for(case, arm, args, judge)
+                return await A.run_percept(case, judge, timelines, traces / f"{case.case_id}.jsonl",
+                                           speed=args.speed, fps=args.fps,
+                                           max_requests_per_min=compiled.monitor_kwargs["max_requests_per_min"],
+                                           arm=arm, stats=foot, conditions=list(compiled.conditions))
             if realtime:
                 budget = args.percept_budget if arm == "percept-matched" else None
                 return await A.run_percept(case, judge, timelines, traces / f"{case.case_id}.jsonl",
@@ -369,6 +401,11 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               f"percept {m['percept']['version']}. Actual spend ${m['spent_usd']:.4f}, from the usage the judge "
               f"reported ({m['requests']} requests).", ""]
     for _arm, c in m["monitor_config"].items():
+        if "plans" in c:        # a plan arm: its plans configure it
+            lines.append(f"- {c['label']}: " + "; ".join(
+                f"{name} (plan `{v['plan_hash'][:12]}`, {v['max_requests_per_min']} attempts a minute per stream)"
+                for name, v in c["plans"].items()) + ".")
+            continue
         changed = c["changed_from_product_defaults"]
         conc = c.get("concurrency", {})
         lines.append(f"- {c['label']}: {c['max_requests_per_min']} attempts a minute per stream, "
@@ -542,7 +579,8 @@ async def main_async(args) -> int:
                           price=judging.parse_price(args.price) if args.price else None, oracle=oracle)
     judge = judging.CostGuard(inner, args.max_cost_usd, spend_log=out / "spend.jsonl")
     arm_names = [a for a in args.arms.split(",") if a]
-    bad = [a for a in arm_names if a not in ARMS and not (a.startswith("chunk") and a[5:].replace(".", "").isdigit())]
+    bad = [a for a in arm_names if a not in ARMS and not (a.startswith("chunk") and a[5:].replace(".", "").isdigit())
+           and not (a.startswith(PLAN_ARM) and a[len(PLAN_ARM):] and args.percept_plans)]
     if bad:
         raise SystemExit(f"unknown arms {bad}; choose from {ARMS}")
     asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(worker_threads(args)))
@@ -681,6 +719,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id")
     p.add_argument("--tolerance", type=float, default=2.0, help="matching tolerance, seconds")
     p.add_argument("--cooldown", type=float, default=A.COOLDOWN_S, help="baseline cooldown, seconds")
+    p.add_argument("--percept-plans", help="a directory of plans: percept-plan-<name> arms use <dir>/<name>/*.json, "
+                   "one plan per source; the plan whose source id is in the case id is used")
     p.add_argument("--percept-budget", type=int, default=13,
                    help="max_requests_per_min (attempts) of the percept-matched arm; 13 admits at most 12 "
                         "requests a minute when each succeeds first time (chunk5's rate)")
