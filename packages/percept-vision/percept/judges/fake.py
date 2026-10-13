@@ -71,12 +71,17 @@ class FakeJudge:
     to the conditions' zones; a state's newest frame, an event's short clip, oldest first),
     ``items[i].condition`` the conditions asked about and ``purpose`` ``"detect"`` or
     ``"verify"``. A script that inspects the images behaves like a model watching the scene, so
-    states can clear. ``sent`` records every provider request.
+    states can clear.
+
+    ``sent`` records every provider request. A record holds the request, and a request's images
+    are views of the source frames (a zone crop is a slice, not a copy), so each record keeps
+    whole frames alive. For a long run, such as an evaluation over hours of footage, pass
+    ``record_requests=False``: nothing is kept and ``sent`` is None, as on the vendor judges.
     """
 
     def __init__(self, script: Script | ScriptReply, *, name: str = "fake", can_batch: bool = True,
                  price: PriceModel | None = None, latency_s: float = 0.0, retries: int = 1,
-                 clock: VirtualClock | None = None) -> None:
+                 clock: VirtualClock | None = None, record_requests: bool = True) -> None:
         self.name = name
         self.can_batch = can_batch
         self.price = price
@@ -85,7 +90,8 @@ class FakeJudge:
         self.max_attempts = attempts_for(retries)
         self.clock = clock or VirtualClock()
         # Every provider request, retries included: (prompt, jpeg images, max_output_tokens, request).
-        self.sent: list[tuple[Prompt, tuple[bytes, ...], int, JudgeRequest]] = []
+        self.sent: list[tuple[Prompt, tuple[bytes, ...], int, JudgeRequest]] | None = (
+            [] if record_requests else None)
         self._script = script if callable(script) else (lambda _request: script)
 
     async def judge(self, request: JudgeRequest) -> JudgeResult:
@@ -95,7 +101,8 @@ class FakeJudge:
 
     async def _send(self, prompt: Prompt, images: tuple[bytes, ...], max_output_tokens: int,
                     request: JudgeRequest) -> RawReply:
-        self.sent.append((prompt, images, max_output_tokens, request))
+        if self.sent is not None:
+            self.sent.append((prompt, images, max_output_tokens, request))
         reply: Any = self._script(request)
         await self.clock.sleep(self.latency_s)
         if isinstance(reply, BaseException):

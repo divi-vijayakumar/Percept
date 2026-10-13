@@ -366,6 +366,25 @@ def test_intentional_sampling_is_publishable_unintended_loss_is_not():
     assert run.not_publishable(*_meva_run(footprint={"max_push_lag_s": 2.5}))       # the lag limit still holds
 
 
+def test_a_run_the_machine_slept_through_is_not_publishable():
+    def why(slept):
+        return run.not_publishable(*_meva_run(footprint={"max_push_lag_s": 0.1, "slept_s": slept}))
+    assert why(0.0) == []
+    assert len(why(772.0)) == 1 and "slept" in why(772.0)[0]
+    assert why(None) == ["sleep could not be measured on this platform"]
+
+
+def test_footprint_measures_sleep_where_the_platform_can():
+    with arms.Footprint() as fp:
+        pass
+    assert fp.slept_s == (0.0 if arms._asleep_s() is not None else None)
+
+
+def test_the_oracle_keeps_no_request():
+    oracle = judging.OracleJudge([], judging.Timelines())
+    assert oracle._fake.sent is None
+
+
 def test_loss_accounting_adds_up_per_arm():
     case = VideoCase("x", "t", (Segment("u.mp4", 0, 60),), (CondSpec("a", "a"),), ())
     r = [watched("percept", "x", 60, intentional_sampling={"harness_fps": 1500, "monitor_fps_cap": 0},

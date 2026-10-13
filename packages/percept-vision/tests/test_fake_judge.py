@@ -1,5 +1,7 @@
 import asyncio
 import dataclasses
+import gc
+import weakref
 
 import numpy as np
 import pytest
@@ -102,6 +104,44 @@ def test_deterministic():
         judge = FakeJudge(lambda r: RetryableError(), price=PRICE)
         return asyncio.run(judge.judge(request("a")))
     assert run() == run()
+
+
+def frames_and_crops(n):
+    """``n`` distinct frames and a zone crop of each: a slice, as the Monitor sends it, so a view."""
+    frames = [np.full((64, 64, 3), i, np.uint8) for i in range(n)]
+    return frames, [f[8:24, 8:24] for f in frames]
+
+
+def judge_each(judge, crops):
+    return [asyncio.run(judge.judge(dataclasses.replace(request("a"), request_id=f"r-{i}", images=(crop,))))
+            for i, crop in enumerate(crops)]
+
+
+def odd_frames_are_yes(r):
+    return {"a": ("yes" if r.images[0][0, 0, 0] % 2 else "no", 0.9, "seen")}
+
+
+def test_a_recorded_crop_keeps_its_whole_frame_alive():
+    frames, crops = frames_and_crops(3)
+    judge = FakeJudge(odd_frames_are_yes)
+    judge_each(judge, crops)
+    refs = [weakref.ref(f) for f in frames]
+    del frames, crops
+    gc.collect()
+    assert len(judge.sent) == 3 and all(r() is not None for r in refs)
+
+
+def test_without_recording_no_frame_is_kept_and_the_replies_are_the_same():
+    recorded = judge_each(FakeJudge(odd_frames_are_yes, price=PRICE), frames_and_crops(200)[1])
+    judge = FakeJudge(odd_frames_are_yes, price=PRICE, record_requests=False)
+    frames, crops = frames_and_crops(200)
+    replies = judge_each(judge, crops)
+    refs = [weakref.ref(f) for f in frames]
+    del frames, crops
+    gc.collect()
+    assert judge.sent is None
+    assert not any(r() is not None for r in refs)      # memory stays bounded however long the run
+    assert replies == recorded
 
 
 def test_reported_cost_is_within_the_worst_case_reservation():
