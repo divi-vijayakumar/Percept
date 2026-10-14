@@ -226,10 +226,10 @@ class _Flaky(judging.FakeJudge):
 def test_a_run_stops_only_once_its_arm_cannot_be_valid():
     guard = judging.CostGuard(_Flaky(), None)
     guard.new_arm(1000)
-    _ask(guard, 100, lambda i: i < 50)                      # 50 of at most 1000: could still end at 5.0%
-    assert not guard.tripped.is_set()
+    _ask(guard, 100, lambda i: i % 2 == 0)                  # 50 of at most 1000: could still end at 5.0%
+    assert not guard.tripped.is_set()                       # (spread out: no outage window fills)
     _ask(guard, 1, lambda i: True)                          # 51: at least 5.1% however it ends
-    assert guard.tripped.is_set()
+    assert guard.tripped.is_set() and guard.status == "aborted_failed_looks"
     assert guard.stopped_for == "51 looks failed, more than 5% of the 1000 this arm can make"
     why = run.not_publishable(*_meva_run_aborted(guard.stopped_for))
     assert why == [f"the run was stopped early: {guard.stopped_for}"]
@@ -242,10 +242,10 @@ def test_an_early_burst_in_a_long_arm_does_not_stop_it():
     assert not guard.tripped.is_set()
 
 
-def test_an_arm_without_a_bound_is_never_stopped_for_failures():
+def test_an_arm_without_a_bound_is_never_stopped_for_its_failure_rate():
     guard = judging.CostGuard(_Flaky(), None)
     guard.new_arm(None)
-    _ask(guard, 200, lambda i: True)
+    _ask(guard, 200, lambda i: i % 5 < 2)                   # 40% failed, but never 45 of any 50
     assert not guard.tripped.is_set() and guard.stopped_for is None
 
 
@@ -278,6 +278,77 @@ def test_a_dead_judge_stops_the_percept_arm_early(clips, tmp_path):
     assert guard.tripped.is_set() and guard.failed > 1 and guard.stopped_for.endswith("of the 20 this arm can make")
     assert result.aborted
     assert result.seconds < clips[0].duration
+
+
+def test_a_sustained_provider_outage_aborts_the_run_as_such():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)                                     # no validity bound: only the outage rule
+    _ask(guard, 50, lambda i: i >= 6)                       # 44 of the last 50 failed: not yet
+    assert not guard.tripped.is_set() and guard.status is None
+    _ask(guard, 1, lambda i: True)                          # the window now holds 45 failures
+    assert guard.tripped.is_set() and guard.status == "aborted_provider_outage"
+    assert guard.stopped_for == "provider outage: 45 of the last 50 looks failed"
+    _ask(guard, 5, lambda i: False)                         # a recovery does not undo it
+    assert guard.status == "aborted_provider_outage"
+
+
+def test_a_burst_of_failures_in_a_healthy_run_is_no_outage_and_each_arm_starts_fresh():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)
+    _ask(guard, 500, lambda i: 200 <= i < 240)              # 40 failures in a row, then healthy
+    assert not guard.tripped.is_set()
+    _ask(guard, 44, lambda i: True)                         # 44 failed...
+    guard.new_arm(None)                                     # ...but a new arm starts its own window
+    _ask(guard, 6, lambda i: True)
+    assert not guard.tripped.is_set() and len(guard.recent) == 6
+
+
+def test_an_aborted_run_keeps_its_status_through_a_real_merge(tmp_path):
+    base = ["--dataset", "synthetic", "--limit", "1", "--seed", "3"]
+    for name, arm in (("p1", "chunk5"), ("p2", "detector_debounce"), ("p3", "chunk10")):
+        assert run.main(base + ["--arms", arm, "--out", str(tmp_path / name)]) == 0
+
+    def edit(name, **changes):
+        path = tmp_path / name / "manifest.json"
+        m = json.loads(path.read_text())
+        m.update(changes)
+        for k in [k for k, v in changes.items() if v is None]:
+            m.pop(k)
+        path.write_text(json.dumps(m))
+
+    edit("p1", aborted=True, stopped_for="provider outage: 50 of the last 50 looks failed",
+         status="aborted_provider_outage")
+    edit("p3", aborted=True, status=None)                   # a run recorded before status existed
+    run.merge([tmp_path / "p2", tmp_path / "p1"], tmp_path / "m")
+    m = json.loads((tmp_path / "m" / "manifest.json").read_text())
+    assert m["status"] == "aborted_provider_outage" and m["aborted"] and m["stopped_for"].startswith("provider")
+    run.merge([tmp_path / "p2", tmp_path / "p3"], tmp_path / "legacy")
+    legacy = json.loads((tmp_path / "legacy" / "manifest.json").read_text())
+    assert legacy["aborted"] and legacy["status"] == "aborted_spend_cap"      # never "complete"
+    why = run.not_publishable(*_meva_run_aborted("provider outage: 50 of the last 50 looks failed"))
+    assert why == ["the run was stopped early: provider outage: 50 of the last 50 looks failed"]
+
+
+def test_how_a_run_ended_is_named_once_and_by_its_first_cause():
+    capped = judging.CostGuard(_Flaky(), 0.0)               # the cap refuses everything...
+    capped.new_arm(10)
+    _ask(capped, 60, lambda i: True)                        # ...so no look counts toward either rule
+    assert capped.status == "aborted_spend_cap" and len(capped.recent) == 0
+    first = judging.CostGuard(_Flaky(), None)
+    first.new_arm(100)                                      # validity trips at 6 failures (> 5 of 100)
+    _ask(first, 60, lambda i: True)                         # the outage window fills later: status stays
+    assert first.status == "aborted_failed_looks"
+
+
+def test_one_failed_request_counts_one_look_per_condition():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)
+    for i in range(25):                                     # 25 two-condition requests, all failed: 50 looks
+        req = JudgeRequest(f"r{i}", "cam", 0, (JudgeItem(Condition("a", "a")), JudgeItem(Condition("b", "b"))),
+                           (np.zeros((8, 8, 3), np.uint8),), (0.0, 1.0))
+        guard.inner.fail = True
+        asyncio.run(guard.judge(req))
+    assert guard.status == "aborted_provider_outage" and guard.looks == 50
 
 
 def test_looks_the_cap_refused_are_not_judge_failures():

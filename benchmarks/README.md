@@ -91,7 +91,11 @@ removed it; with OpenCV 5 installed, no condition is person-expressible and the 
   than 1, a spend-cap abort, skipped cases, unintended frame loss, a Percept feed that fell
   more than a second behind real time, an arm whose judge failed on more than 5% of its looks
   (the run stops, and says why, once an arm's failed looks pass 5% of the most looks it can make:
-  its rate can then only end above the limit, so a provider outage costs minutes, not the run),
+  its rate can then only end above the limit, so a provider outage costs minutes, not the run;
+  separately, 45 failed looks among an arm's last 50 (a look is one condition in one request) stop
+  the run as `aborted_provider_outage`, a partial run that is never scored as complete, even if the
+  provider recovers; on a short run whose arms can make fewer than 900 looks the validity stop comes
+  first, and the run is marked `aborted_failed_looks`),
   or a machine that slept during the run (the footprint's `slept_s`: a clock that counts through
   sleep minus one that stops; on macOS the harness also holds `caffeinate` while it runs, but a
   closed laptop lid can still sleep it);
