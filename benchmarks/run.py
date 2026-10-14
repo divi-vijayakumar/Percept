@@ -751,7 +751,8 @@ def merge(parts: list, out: Path, root: str | None = None) -> int:
         spent_usd=sum(m["spent_usd"] for m in ms), requests=sum(m["requests"] for m in ms),
         refused_by_cap=sum(m["refused_by_cap"] for m in ms), aborted=any(m["aborted"] for m in ms),
         stopped_for=next((m["stopped_for"] for m in ms if m.get("stopped_for")), None),
-        status=next((m["status"] for m in ms if m.get("status", "complete") != "complete"), "complete"),
+        status=next((st for st in (m.get("status") or ("aborted_spend_cap" if m["aborted"] else "complete")
+                                   for m in ms) if st != "complete"), "complete"),     # a part without one: older run
         max_cost_usd=cap,
         args=dict(first["args"], arms=",".join(arms), max_cost_usd=cap,
                   out=str(out), run_id=out.name),
