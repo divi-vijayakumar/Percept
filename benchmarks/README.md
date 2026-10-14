@@ -90,8 +90,8 @@ removed it; with OpenCV 5 installed, no condition is person-expressible and the 
   MEVA (every such report carries a "diagnostic, not publishable" banner), `--speed` other
   than 1, a spend-cap abort, skipped cases, unintended frame loss, a Percept feed that fell
   more than a second behind real time, an arm whose judge failed on more than 5% of its looks
-  (the run stops as soon as an arm can no longer pass that, or after 20 failed looks in a row, and
-  says so: it does not keep paying for or waiting on a run that cannot be valid),
+  (the run stops, and says why, once an arm's failed looks pass 5% of the most looks it can make:
+  its rate can then only end above the limit, so a provider outage costs minutes, not the run),
   or a machine that slept during the run (the footprint's `slept_s`: a clock that counts through
   sleep minus one that stops; on macOS the harness also holds `caffeinate` while it runs, but a
   closed laptop lid can still sleep it);

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import unittest
 
 try:
@@ -222,46 +223,66 @@ class _Flaky(judging.FakeJudge):
         self.fail = False
 
 
-def test_a_judge_that_goes_down_stops_the_run():
+def test_a_run_stops_only_once_its_arm_cannot_be_valid():
     guard = judging.CostGuard(_Flaky(), None)
-    _ask(guard, 1000, lambda i: i % 100 == 0)               # 1% failed: an arm that stays valid
-    _ask(guard, 19, lambda i: True)                         # 29 of 1,019 failed (2.8%)
+    guard.new_arm(1000)
+    _ask(guard, 100, lambda i: i < 50)                      # 50 of at most 1000: could still end at 5.0%
     assert not guard.tripped.is_set()
-    _ask(guard, 1, lambda i: True)                          # the 20th failure in a row: the judge is down
-    assert guard.tripped.is_set() and guard.stopped_for == "the judge failed 30 of 1020 looks"
-
-
-def test_each_arm_is_judged_on_its_own_looks():
-    guard = judging.CostGuard(_Flaky(), None)
-    _ask(guard, 49, lambda i: i < 2)                        # 2 failed in the first arm
-    guard.new_arm()
-    _ask(guard, 50, lambda i: i == 0)                       # 1 of 50 in the next: no stop, though 3 of 99 overall
-    assert not guard.tripped.is_set() and (guard.looks, guard.failed) == (50, 1)
-
-
-def test_an_arm_failing_more_than_it_may_stops_and_says_so():
-    guard = judging.CostGuard(_Flaky(), None)
-    _ask(guard, 49, lambda i: i < 3)
-    assert not guard.tripped.is_set()                       # too few looks to judge the rate yet
-    _ask(guard, 1, lambda i: False)
-    assert guard.tripped.is_set() and guard.stopped_for == "the judge failed 3 of 50 looks"
+    _ask(guard, 1, lambda i: True)                          # 51: at least 5.1% however it ends
+    assert guard.tripped.is_set()
+    assert guard.stopped_for == "51 looks failed, more than 5% of the 1000 this arm can make"
     why = run.not_publishable(*_meva_run_aborted(guard.stopped_for))
-    assert why == ["the run was stopped early: the judge failed 3 of 50 looks"]
+    assert why == [f"the run was stopped early: {guard.stopped_for}"]
 
 
-def test_a_dead_judge_stops_the_percept_arm_early(clips, tmp_path, monkeypatch):
-    monkeypatch.setattr(judging, "FAIL_FAST_IN_A_ROW", 3)      # the clip is 12 s: a handful of looks
+def test_an_early_burst_in_a_long_arm_does_not_stop_it():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(2000)
+    _ask(guard, 100, lambda i: i < 40)                      # 40% of the first 100, but 40 of 2000 is 2%
+    assert not guard.tripped.is_set()
+
+
+def test_an_arm_without_a_bound_is_never_stopped_for_failures():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)
+    _ask(guard, 200, lambda i: True)
+    assert not guard.tripped.is_set() and guard.stopped_for is None
+
+
+def test_a_new_arm_keeps_why_the_run_stopped():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(20)
+    _ask(guard, 2, lambda i: True)
+    reason = guard.stopped_for
+    guard.new_arm(1000)
+    assert guard.tripped.is_set() and guard.stopped_for == reason and (guard.looks, guard.failed) == (0, 0)
+
+
+def test_the_look_bound_of_each_arm(clips):
+    args = run.parser().parse_args(["--dataset", "synthetic", "--percept-budget", "24"])
+    case, n = clips[0], len(clips[0].conditions)
+    minutes = math.ceil(case.duration / 60 + 2)
+    assert run.look_bound("percept-matched", [case], args, None) == minutes * 24 * n
+    assert run.look_bound("percept", [case], args, None) == minutes * 6 * n
+    assert run.look_bound("chunk5", [case], args, None) == (math.floor(case.duration / 5) + 2) * n
+    assert run.look_bound("detector_debounce", [case], args, None) is None
+
+
+def test_a_dead_judge_stops_the_percept_arm_early(clips, tmp_path):
     flaky = _Flaky()
     flaky.fail = True
     guard = judging.CostGuard(flaky, None)
+    guard.new_arm(20)                                       # a bound small enough for a 12 s clip
     result = asyncio.run(arms.run_percept(clips[0], guard, judging.Timelines(), tmp_path / "t.jsonl", speed=4.0,
                                           max_requests_per_min=600))
-    assert guard.tripped.is_set() and guard.stopped_for == "the judge failed 3 of 3 looks" and result.aborted
+    assert guard.tripped.is_set() and guard.failed > 1 and guard.stopped_for.endswith("of the 20 this arm can make")
+    assert result.aborted
     assert result.seconds < clips[0].duration
 
 
 def test_looks_the_cap_refused_are_not_judge_failures():
     guard = judging.CostGuard(_Flaky(), 0.0)                # every request refused by the cap
+    guard.new_arm(10)
     _ask(guard, 60, lambda i: False)
     assert guard.tripped.is_set() and guard.stopped_for is None and guard.looks == 0
 

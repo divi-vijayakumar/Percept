@@ -9,7 +9,8 @@
 ``report.md`` from it without calling any judge.
 
 Every arm sees the same frames (checked by digest) and the same condition text. A run that
-reaches ``--max-cost-usd`` stops cleanly, writes what it has, marks itself aborted and exits 3.
+reaches ``--max-cost-usd``, or has an arm whose failed looks already make it invalid, stops cleanly,
+writes what it has, marks itself aborted (saying why) and exits 3.
 A case that fails is recorded as skipped with its reason; it never loses the run. Results
 directories are ignored by git: footage, labels and results are never committed.
 """
@@ -22,6 +23,7 @@ import dataclasses
 import hashlib
 import inspect
 import json
+import math
 import os
 import platform
 import shutil
@@ -392,7 +394,7 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
                   "(MEVA, fixed cameras). Results here locate where Percept wins and loses; they are not a "
                   "published comparison.", ""]
     if m["aborted"] and m.get("stopped_for"):
-        lines += [f"> **Aborted: {m['stopped_for']}**, more than this arm could fail and stay valid "
+        lines += [f"> **Aborted: {m['stopped_for']}**, so the arm was already invalid "
                   f"(${m['spent_usd']:.4f} spent). Cases after it are skipped; see Coverage.", ""]
     elif m["aborted"]:
         lines += [f"> **Aborted: spend cap reached** (${m['spent_usd']:.4f} of ${m['max_cost_usd']}). "
@@ -572,6 +574,29 @@ def finish(out: Path, manifest: dict, results: dict, cases: dict, args, footprin
     return table
 
 
+def look_bound(arm: str, cases, args, judge) -> Optional[int]:
+    """The most looks ``arm`` can make on ``cases`` (one look = one condition in one judge request),
+    or None when it has no fixed bound. A Percept stream starts at most ``max_requests_per_min``
+    requests in any minute (each holds at least one attempt for the window), plus two minutes for
+    verifications still open when its footage ends; a chunk arm asks once per period, plus a last
+    short chunk."""
+    total = 0
+    for case in cases:
+        n = len(case.conditions)
+        if arm.startswith(PLAN_ARM):
+            limit = plan_for(case, arm, args, judge).monitor_kwargs["max_requests_per_min"]
+        elif arm.startswith("percept"):
+            budget = args.percept_budget if arm == "percept-matched" else None
+            limit = budget if budget is not None else inspect.signature(Monitor).parameters["max_requests_per_min"].default
+        elif arm.startswith("chunk"):
+            total += (math.floor(case.duration / float(arm[5:])) + 2) * n
+            continue
+        else:
+            return None
+        total += math.ceil(case.duration / 60 + 2) * limit * n
+    return total
+
+
 def stay_awake() -> bool:
     """Keep the machine from sleeping while this process lives (macOS: ``caffeinate`` tied to our
     pid, so it holds however the run was launched; a closed lid can still sleep a laptop). False
@@ -612,7 +637,7 @@ async def main_async(args) -> int:
     results, footprints = {}, {}
     for arm in arm_names:
         foot: dict = {}
-        judge.new_arm()
+        judge.new_arm(look_bound(arm, cases, args, judge))
         with A.Footprint() as fp:
             res = await run_arm(arm, cases, judge, timelines, out, args, foot)
         results[arm], footprints[arm] = res, dict(cpu_s=round(fp.cpu_s, 2), peak_rss_mb=fp.peak_rss_mb,
@@ -648,7 +673,8 @@ async def main_async(args) -> int:
         "aborted": judge.tripped.is_set(), "stopped_for": judge.stopped_for, "args": vars(args),
     }
     finish(out, manifest, results, by_id, args, footprints)
-    print(f"wrote {out}/report.md" + (" (ABORTED: spend cap reached)" if manifest["aborted"] else ""))
+    print(f"wrote {out}/report.md" + (f" (ABORTED: {manifest['stopped_for'] or 'spend cap reached'})"
+                                      if manifest["aborted"] else ""))
     return 3 if manifest["aborted"] else 0
 
 
@@ -716,11 +742,13 @@ def merge(parts: list, out: Path, root: str | None = None) -> int:
         monitor_config={k: v for m in ms for k, v in m.get("monitor_config", {}).items()},
         spent_usd=sum(m["spent_usd"] for m in ms), requests=sum(m["requests"] for m in ms),
         refused_by_cap=sum(m["refused_by_cap"] for m in ms), aborted=any(m["aborted"] for m in ms),
+        stopped_for=next((m["stopped_for"] for m in ms if m.get("stopped_for")), None),
         max_cost_usd=cap,
         args=dict(first["args"], arms=",".join(arms), max_cost_usd=cap,
                   out=str(out), run_id=out.name),
         merged_from=[{"run_id": m["run_id"], "arms": m["arms"], "created_utc": m["created_utc"],
-                      "max_cost_usd": m["max_cost_usd"], "spent_usd": m["spent_usd"], "aborted": m["aborted"]}
+                      "max_cost_usd": m["max_cost_usd"], "spent_usd": m["spent_usd"], "aborted": m["aborted"],
+                      "stopped_for": m.get("stopped_for")}
                      for m in ms])
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1, default=str))
     return rescore(out, root)
