@@ -2,7 +2,13 @@
 
 Notable changes to Percept.
 
-## Unreleased
+## 1.0.0 — Developer Preview
+
+Percept 1.0 is an open-source runtime for continuous vision applications: configure what to
+inspect, how to escalate to vision models, how much inference to spend and when to deliver a
+decision, then evaluate those choices on your own clips. The runtime API is the 1.0 contract;
+watch plans and the evaluation toolkit (`percept.plans`) are experimental. Code written for 0.9.0
+runs unchanged.
 
 ### API
 

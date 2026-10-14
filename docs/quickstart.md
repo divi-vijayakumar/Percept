@@ -1,6 +1,6 @@
 # Quickstart
 
-Percept 0.9.0 is a Developer Preview; the API may change before 1.0.
+Percept 1.0 Developer Preview. The runtime API (`Monitor`, `Condition`, decisions, judges, sources, stores, `health()`, `coverage()`, trace and replay) is the 1.0 contract: it changes incompatibly only in a new major version. Watch plans and the evaluation toolkit (`percept.plans`) are experimental and may change in a minor release.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate

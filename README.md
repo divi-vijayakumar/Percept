@@ -1,9 +1,17 @@
 # Percept
 
-**Percept watches a live video stream for plain-language conditions and tells your agent, once per
-occurrence, when one becomes true.**
+**Percept is an open-source runtime for continuous vision applications.** You configure what to
+inspect, how to escalate to vision models, how much inference to spend, and when to deliver an
+actionable decision. Then you evaluate those choices with reproducible precision, recall, latency
+and cost measurements.
 
-> **Status: 0.9.0 Developer Preview.** The API may change before 1.0.
+In practice: give Percept a live video stream and plain-language conditions, and it tells your
+agent, once per occurrence, when one becomes true.
+
+> **Status: Percept 1.0, Developer Preview.** The runtime API (`Monitor`, `Condition`, decisions,
+> judges, sources, stores, `health()`, `coverage()`, trace and replay) is the 1.0 contract: it
+> changes incompatibly only in a new major version. Watch plans and the evaluation toolkit
+> (`percept.plans`) are experimental and may change in a minor release.
 
 ## Who it is for
 
@@ -92,6 +100,37 @@ Each decision has a `type` (`met`, `uncertain`, `cleared` or `expired`), a stabl
 the `occurrence_id` it belongs to, a machine-readable `cause`, a `reason` for people, a
 `confidence`, the time the evidence shows it (`t_observed`), its `cost` and a keyframe. See
 [docs/delivery.md](docs/delivery.md#the-decision-contract).
+
+## Configure with a watch plan
+
+A watch plan is one document that describes a whole watch: its sources, its request budget, and
+for each concern what to look at (`attention`), which judge to ask (`judgment`) and when to
+decide (`decision`). `percept.plans.compile` checks it, says where every setting came from, checks
+the periodic demand against the budget, and returns the `Monitor`'s arguments.
+
+```python
+compiled = percept.plans.compile(plan, {"fast": percept.judges.gemini("gemini-2.5-flash-lite")})
+print(compiled.explain())        # every setting and whether the plan or a default set it
+print(compiled.feasibility())    # can the budget carry the periodic looks?
+async with percept.Monitor(**compiled.monitor_kwargs) as monitor:
+    ...
+```
+
+Runnable offline: [examples/watch_plan.py](examples/watch_plan.py). Details:
+[docs/plans.md](docs/plans.md).
+
+## Evaluate your configuration
+
+Percept measures what a configuration does on your own labelled clips: recall, precision, false
+alerts per hour, onset-to-decision latency, cost per correct detection, and where each missed
+occurrence was lost (the trigger never fired, the budget dropped it, the judge said no, and so on).
+The toolkit freezes a dev / validation / test split by recording group, runs the trigger stage
+alone with no model calls, compares the configurations you declare, and scores the test split
+once against a registered plan. It reports; choosing between configurations is yours.
+
+Runnable offline: [examples/plan_evaluation.py](examples/plan_evaluation.py). Details:
+[docs/evaluation.md](docs/evaluation.md). The benchmark harness in [benchmarks/](benchmarks/README.md)
+runs Percept against the pipelines a developer would otherwise write, on public footage.
 
 ## Integrating Percept
 
@@ -241,8 +280,13 @@ decision without the video or the judge. More in [docs/concepts.md](docs/concept
   and check `coverage()`. See [docs/concepts.md](docs/concepts.md#known-limitation-small-distant-or-brief-activity).
 - **Slow providers can time out.** Each judge request has an 8 s deadline; sparse requests to a
   slow provider can exceed it and are reported as failures.
-- **No performance numbers are published for this release.** Semantic accuracy depends on the
-  judge and the condition wording, and Percept can't guarantee it.
+- **Hard footage stays hard.** On busy surveillance scenes, people who appear only a few dozen
+  pixels tall in the frames the judge receives are rarely detected by any configuration we have
+  measured, and every configuration was far from reliable there. Evaluate on your own footage
+  before relying on a condition.
+- **No accuracy, latency or cost figures are claimed for this release.** Semantic accuracy depends
+  on the judge, the condition wording and the footage, and Percept can't guarantee it. Measure it
+  with the evaluation toolkit.
 
 What this release assumes, in full: [docs/concepts.md](docs/concepts.md#what-this-release-assumes).
 
@@ -258,10 +302,12 @@ What this release assumes, in full: [docs/concepts.md](docs/concepts.md#what-thi
 | [docs/sources.md](docs/sources.md) | `open_source`, push sources, `set_link`, the static-camera assumption |
 | [docs/delivery.md](docs/delivery.md) | the decision contract, acknowledgement, stores, health, trace and replay |
 | [docs/decision-semantics.md](docs/decision-semantics.md) | the exact decision rules |
+| [docs/plans.md](docs/plans.md) | watch plans: the schema, `compile`, `explain`, `feasibility` (experimental) |
+| [docs/evaluation.md](docs/evaluation.md) | labels, splits, scoring, the trigger stage, comparing configurations, the test split (experimental) |
 
 - [examples/](examples/): the offline quickstart, Frigate person events, a kitchen state on a
-  heartbeat (all run offline with no arguments), and the webhook integration recipe
-  (`--offline`).
+  heartbeat, a watch plan and a plan evaluation (all run offline with no arguments), and the
+  webhook integration recipe (`--offline`).
 - [benchmarks/](benchmarks/README.md): the reproducible benchmark harness and its methodology.
 
 ## Contributing

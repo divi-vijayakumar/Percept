@@ -9,7 +9,7 @@ Instructions for contributors and coding agents. Read this before changing code.
 ## What Percept is
 
 A decision layer for live video: a stream plus plain-language conditions in, one decision per real
-occurrence out. This is the 0.9.0 Developer Preview; the API may change before 1.0. The design is
+occurrence out. This is the 1.0 Developer Preview. The design is
 Trigger → Judge → Decide: cheap triggers decide when to look, a judge decides what is true, and a
 pure reducer decides whether the agent hears about it.
 

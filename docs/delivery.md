@@ -98,7 +98,7 @@ A consumer that never reads loses nothing: decisions accumulate in the store, an
 bounded.
 
 `percept.Sink` (an object with `async def emit(decision)`) is an interface only: no sinks ship
-in 0.9.0 and the monitor does not call one. Read decisions from `watch()` and forward them from
+in 1.0 and the monitor does not call one. Read decisions from `watch()` and forward them from
 your own loop.
 
 ## Stores

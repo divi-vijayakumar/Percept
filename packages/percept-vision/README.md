@@ -1,10 +1,13 @@
 # percept-vision
 
-**Percept watches a live video stream for plain-language conditions and tells your agent, once per
-occurrence, when one becomes true.** This is its Python SDK.
+**Percept is an open-source runtime for continuous vision applications.** Configure what to
+inspect, how to escalate to vision models, how much inference to spend, and when to deliver an
+actionable decision; then evaluate those choices with reproducible precision, recall, latency and
+cost measurements. This is its Python SDK.
 
-**Status: 0.9.0 Developer Preview.** The API may change before 1.0. Releases 0.7.0 and earlier
-are a research preview with a different API.
+**Status: Percept 1.0, Developer Preview.** The runtime API is the 1.0 contract: it changes
+incompatibly only in a new major version. Watch plans and the evaluation toolkit (`percept.plans`)
+are experimental. Releases 0.7.0 and earlier are a research preview with a different API.
 
 It is for developers building agents that must react to what fixed cameras see. It is not for
 PTZ, body-worn, vehicle, drone or phone video, or screen content.

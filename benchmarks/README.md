@@ -2,7 +2,7 @@
 
 A reproducible harness that runs Percept and the pipelines a developer would otherwise write over
 the same public footage, with the same condition text and the same judge, and reports every arm,
-including the ones Percept loses. No benchmark results are published for the 0.9.0 Developer
+including the ones Percept loses. No benchmark results are published with the 1.0 Developer
 Preview; this directory is the method, so anyone can run it.
 
 ```bash

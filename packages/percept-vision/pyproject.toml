@@ -1,21 +1,21 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "percept-vision"
-version = "0.9.0"
-description = "A decision layer for live video: tells your agent, once per occurrence, when a plain-language condition becomes true."
+version = "1.0.0"
+description = "An open-source runtime for continuous vision applications: configure what to inspect, how to escalate to vision models, how much to spend, and when to decide; evaluate it with reproducible measurements."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Velvee, Inc.", email = "support@velvee.ai" }]
 maintainers = [{ name = "Velvee, Inc.", email = "support@velvee.ai" }]
 keywords = ["video", "agents", "vlm", "monitoring", "events", "real-time"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

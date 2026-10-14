@@ -3,7 +3,7 @@
 Values are frozen dataclasses. Behaviour is limited to validation and pure conversion
 (``Decision.to_dict`` / ``from_dict``). Extension points are ``Protocol`` classes: a
 ``Source`` brings frames, a ``Trigger`` decides when to look, a ``Judge`` decides what is
-true, a ``Sink`` receives decisions (interface only; none ship in 0.9.0) and a ``Store`` persists
+true, a ``Sink`` receives decisions (interface only; none ship in 1.0) and a ``Store`` persists
 state.
 
 This module imports nothing else from ``percept`` and does no I/O.
@@ -635,7 +635,7 @@ class Delivery(Protocol):
 class Sink(Protocol):
     """Receives decisions, for example to forward them to a webhook.
 
-    Interface only: no sinks ship in 0.9.0 and the monitor does not call one. Consume decisions
+    Interface only: no sinks ship in 1.0 and the monitor does not call one. Consume decisions
     from ``Monitor.watch`` and forward them yourself.
     """
 

@@ -36,7 +36,7 @@ from percept.plans import run as _evaluation  # noqa: E402  experimental: percep
 
 del _evaluation
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "Condition",
