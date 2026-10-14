@@ -12,6 +12,10 @@ runs unchanged.
 
 ### API
 
+- `percept.clips.PreRoll` is supported API, imported from `percept.clips` (not exported from
+  `percept`): pass one as `preroll=` to `open_source` or `PushSource` to give event evidence a
+  longer or denser window than the default 8 s at 2 frames a second.
+
 - `FakeJudge(..., record_requests=False)` keeps no record of the requests it serves (`sent` is
   None, as on the vendor judges). Recording stays on by default. A request's images are views of
   the source frames, so each record kept whole frames alive: a long offline run grew without

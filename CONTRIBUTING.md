@@ -8,7 +8,7 @@ Contact: support@velvee.ai
 ## Setup
 
 ```bash
-git clone <repository-url> percept && cd percept
+git clone https://github.com/divi-vijayakumar/Percept.git percept && cd percept
 python -m venv .venv && . .venv/bin/activate
 pip install -e "packages/percept-vision[dev]"
 make check      # guardrails + tests, offline, no API keys

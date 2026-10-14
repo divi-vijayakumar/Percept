@@ -39,6 +39,9 @@ dev = ["pytest>=8", "hypothesis>=6.100"]
 [project.urls]
 Homepage = "https://percept.percia.ai/"
 Documentation = "https://percept.percia.ai/"
+Repository = "https://github.com/divi-vijayakumar/Percept"
+Issues = "https://github.com/divi-vijayakumar/Percept/issues"
+Changelog = "https://github.com/divi-vijayakumar/Percept/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["percept*"]

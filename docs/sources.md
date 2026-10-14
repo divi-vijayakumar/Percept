@@ -61,7 +61,8 @@ verifications are cut) is fed at the capture rate, so the processing cap never t
 evidence of an event. An event window (`Condition.clip_s`, `clip_frames`) the pre-roll can't
 hold, longer than its seconds or with more frames than its rate can give, is refused with
 `ValueError` when the condition or the stream is added; a source with its own `PreRoll` sets
-both. To give an event a longer or denser window, pass one to the source:
+both. To give an event a longer or denser window, pass one to the source (`percept.clips.PreRoll`
+is supported API, imported from that module):
 
 ```python
 from percept.clips import PreRoll
