@@ -11,7 +11,8 @@ pip install -e "packages/percept-vision[dev]" -r benchmarks/requirements.txt   #
 # Offline dry run: generated clips, an oracle judge, no key, no network (about 15 s)
 python -m benchmarks.run --dataset synthetic --judge fake --out benchmarks/results/dry-run
 
-# E1 on MEVA with a real judge and a hard spend cap
+# The E1 comparison (configs/e1.json: same judge, evidence and suppression window for every arm) on MEVA,
+# with a real judge and a hard spend cap
 python -m benchmarks.fetch_meva --hours 5                 # about 8.3 GB, into eval/bench-staging/meva (ignored by git)
 python -m benchmarks.run --config benchmarks/configs/e1.json --judge gemini:<model> \
     --price <usd_per_mtok_in>,<usd_per_mtok_out>,<tokens_per_image> --max-cost-usd 10 \
@@ -63,7 +64,8 @@ and used under its own license.
 | `chunk5`, `chunk10`, `chunk30` | judge the last T seconds every T seconds, all conditions batched, then a cooldown |
 | `detector_debounce` | a people (HOG) or motion (MOG2) detector with a cooldown; only conditions a detector can express |
 | `detector_then_vlm` | the same detectors gate judge calls; other conditions are gated by motion |
-| `detector_track_rule` | a person detector, a tracker and a zone-entry rule: one event per track whose box centre enters the condition's zone, then the cooldown; no judge. Only entry conditions (`enter`) |
+| `percept-plan-<name>` | a `Monitor` configured by a compiled watch plan: with `--percept-plans <dir>`, one plan per source in `<dir>/<name>/`, the plan used for a case being the one whose source id is in the case id; fed in real time |
+| `detector_track_rule` | a person detector, a tracker and a zone-entry rule: one event per track whose box centre enters the condition's zone, then the cooldown; no judge. Only entry conditions (`enter`, or MEVA's `person_enters_scene_through_structure`) |
 | `detector_track_decide` | the same tracker entries poke a real `Monitor` (subject `track <id>`) whose judge is a free rule judge (`yes` for what the tracker poked); Percept's occurrence, verify and rearm (`--cooldown`) semantics decide; real-time pacing |
 
 All arms decode the same frames (5 per second, longest side 640 px; checked by digest) and judge
@@ -147,6 +149,9 @@ removed it; with OpenCV 5 installed, no condition is person-expressible and the 
   or a machine that slept during the run (the footprint's `slept_s`: a clock that counts through
   sleep minus one that stops; on macOS the harness also holds `caffeinate` while it runs, but a
   closed laptop lid can still sleep it);
+- how the run ended, as the manifest's `status`: `complete`, `aborted_spend_cap`,
+  `aborted_failed_looks` or `aborted_provider_outage` (a run merged from parts is complete only
+  when every part is);
 - frames, in two separate counts. **Intentional sampling**: frames the configured policies
   skip (the harness's `--fps` sampling of the source, the Monitor's processing fps cap if set);
   expected, never disqualifying. **Unintended loss**: frames lost because decoding, a queue or

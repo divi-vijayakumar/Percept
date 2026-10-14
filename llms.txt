@@ -11,6 +11,8 @@
 - [Conditions](docs/conditions.md): every `Condition` field, its default, triggers, and how fast a state clears
 - [Judges](docs/judges.md): Gemini, Claude, OpenAI-compatible, cascades, FakeJudge, prices and request budgets
 - [Sources](docs/sources.md): `open_source` for cameras and files, `PushSource` for app-owned capture, link health
+- [Watch plans](docs/plans.md): one document for a whole watch; `percept.plans.compile`, `explain`, `feasibility` (experimental)
+- [Evaluation](docs/evaluation.md): labels, frozen splits, the trigger stage alone, comparing configurations, scoring the test split once (experimental)
 
 ## Examples
 
@@ -25,6 +27,4 @@
 
 - [Concepts](docs/concepts.md): Trigger, Judge, Decide; states and events; occurrences; coverage and blind intervals; what this release assumes
 - [Decision semantics](docs/decision-semantics.md): the exact decision rules
-- [Watch plans](docs/plans.md): one document for a whole watch; `percept.plans.compile`, `explain`, `feasibility` (experimental)
-- [Evaluation](docs/evaluation.md): labels, frozen splits, the trigger stage alone, comparing configurations, scoring the test split once (experimental)
 - [Changelog](CHANGELOG.md): what changed in each release
