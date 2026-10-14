@@ -198,6 +198,7 @@ def score(results: list, cases: dict, tol: float, *, only: set | None = None, se
         "preds_without_yes_frames": sum(r.preds_without_yes_frames for r in results),
         "budget_drops": sum(r.budget_dropped for r in results),
         "drops_budget": drop_reasons.get("budget", 0), "drops_deadline": drop_reasons.get("deadline", 0),
+        "drops_verification": drop_reasons.get("verification", 0),
         **looks_by_failure(results),
         "trigger_never_fired": stages.get("trigger_never_fired", 0),
         "verify_rejected": stages.get("verify_rejected", 0),

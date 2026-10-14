@@ -168,8 +168,9 @@ removed it; with OpenCV 5 installed, no condition is person-expressible and the 
 - per arm: judge looks, failed looks by failure type (`timeout`, `malformed`, `refused`,
   `unavailable`, ...) and their rate, looks the spend cap refused (reported apart, never in the
   rate), `unknown` answers and their rate, and baseline judge calls skipped for an empty clip;
-- per arm: dropped looks, split for Percept into `budget` (the request budget refused it) and
-  `deadline` (it waited past its deadline for a request slot or for evidence),
+- per arm: dropped looks, split for Percept into `budget` (the request budget refused it),
+  `deadline` (it waited past its deadline for a request slot or for evidence) and `verification`
+  (attempts were kept for a waiting verification until its deadline passed),
   `trigger_never_fired` and `verify_rejected` misses, unverified and uncertain decisions, and the
   seconds of footage actually watched;
 - every miss attributed to a stage: `trigger_never_fired`, `budget_dropped`, `judge_failed`,

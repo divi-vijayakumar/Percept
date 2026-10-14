@@ -636,15 +636,18 @@ def test_percept_drops_are_split_by_reason_and_a_null_trigger_time_falls_back(tm
              "t_trigger": None},
             {"v": 1, "t_wall": 120.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "budget",
              "t_trigger": 115.0},
+            {"v": 1, "t_wall": 125.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "verification",
+             "t_trigger": 124.0},
             {"v": 1, "t_wall": 130.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "ended",
              "t_trigger": 129.0}]
     trace.write_text("".join(json.dumps(r) + "\n" for r in recs))
     r = watched("percept", "x", 60)
     arms._read_trace(r, trace, lambda w: w - 100.0)
-    assert r.budget_drops == [("a", 7.0 - arms.CLIP_S, 7.0, "deadline"), ("a", 15.0 - arms.CLIP_S, 15.0, "budget")]
+    assert r.budget_drops == [("a", 7.0 - arms.CLIP_S, 7.0, "deadline"), ("a", 15.0 - arms.CLIP_S, 15.0, "budget"),
+                              ("a", 24.0 - arms.CLIP_S, 24.0, "verification")]
     case = VideoCase("x", "t", (Segment("u.mp4", 0, 60),), (CondSpec("a", "a"),), (Occurrence("a", 6, 8),))
     s = metrics.score([r], {"x": case}, tol=1.0)
-    assert s["drops_budget"] == 1 and s["drops_deadline"] == 1
+    assert s["drops_budget"] == 1 and s["drops_deadline"] == 1 and s["drops_verification"] == 1
     assert s["misses_by_stage"]["budget_dropped"] == 1
 
 

@@ -450,9 +450,10 @@ def _read_trace(result: ArmResult, path: Path, media, frames: Optional[dict] = N
             result.looks.append(Look(o["condition_id"], media(o["evidence_t"][0]), media(o["evidence_t"][1]),
                                      o["answer"], o["failure"], o["purpose"], o.get("confidence") or 0.0,
                                      tuple(shown), o["request_id"]))
-        elif rec["kind"] == "drop" and rec.get("reason") in ("budget", "deadline"):
-            # One record per dropped look: the request budget refused it (``budget``), or it waited
-            # past its deadline for a request slot or evidence (``deadline``). Its evidence would
+        elif rec["kind"] == "drop" and rec.get("reason") in ("budget", "deadline", "verification"):
+            # One record per dropped look: the request budget refused it (``budget``), it waited
+            # past its deadline for a request slot or evidence (``deadline``), or attempts were kept
+            # for a waiting verification until its deadline passed (``verification``). Its evidence would
             # have been the clip ending at the trigger (or, without one, when it was dropped).
             t = rec.get("t_trigger")
             t1 = media(rec["t_wall"] if t is None else t)
