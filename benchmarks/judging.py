@@ -26,6 +26,8 @@ from percept import JudgeRequest, JudgeResult, PriceModel
 from percept.judges import FakeJudge, gemini
 from percept.plans.run import CachingJudge
 
+from benchmarks.metrics import MAX_FAILED_LOOK_RATE
+
 ONSET_BEFORE_S, ONSET_AFTER_S = 0.5, 2.0    # images showing [onset - 0.5, onset + 2] show the beginning
 
 
@@ -126,12 +128,40 @@ class CostCapReached(Exception):
     pass
 
 
+FAIL_FAST_MIN_LOOKS = 50     # an arm's failed-look rate is judged from this many looks on
+FAIL_FAST_IN_A_ROW = 20      # this many failed looks in a row: the judge is down
+
+
 class CostGuard(CachingJudge):
     """A judge wrapper holding a run-wide dollar cap (see the module docstring): Percept's
-    ``CachingJudge`` with its reply cache off, so every request is sent."""
+    ``CachingJudge`` with its reply cache off, so every request is sent.
+
+    It also stops the run (``tripped``, as the cap does) once the current arm can no longer be
+    valid: more than ``MAX_FAILED_LOOK_RATE`` of its looks failed after ``FAIL_FAST_MIN_LOOKS``, or
+    ``FAIL_FAST_IN_A_ROW`` failed in a row. ``stopped_for`` says why; None for the cap. Looks the
+    cap refused are not judge failures and are not counted."""
 
     def __init__(self, inner, cap_usd: Optional[float], spend_log=None) -> None:
         super().__init__(inner, cap_usd=cap_usd, spend_log=spend_log, cache=None)
+        self.stopped_for: Optional[str] = None
+        self.new_arm()
+
+    def new_arm(self) -> None:
+        self.looks = self.failed = self.in_a_row = 0
+
+    async def judge(self, request: JudgeRequest) -> JudgeResult:
+        result = await super().judge(request)
+        for ob in result.observations:
+            if ob.failure == "budget":
+                continue
+            self.looks += 1
+            self.failed += ob.failed
+            self.in_a_row = self.in_a_row + 1 if ob.failed else 0
+        failing = (self.looks >= FAIL_FAST_MIN_LOOKS and self.failed > MAX_FAILED_LOOK_RATE * self.looks)
+        if not self.tripped.is_set() and (failing or self.in_a_row >= FAIL_FAST_IN_A_ROW):
+            self.stopped_for = f"the judge failed {self.failed} of {self.looks} looks"
+            self.tripped.set()
+        return result
 
 
 def build(spec: str, *, cases, timelines: Timelines, price: Optional[PriceModel], oracle: dict) -> object:

@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from percept import JudgeItem, JudgeRequest, Condition
+from percept.judges.base import RetryableError
 from benchmarks import arms, datasets, judging, metrics, run
 from benchmarks.arms import ArmResult, Look, Pred
 from benchmarks.cases import CondSpec, Occurrence, Segment, VideoCase
@@ -203,6 +204,68 @@ def test_cost_cap_stops_the_percept_arm(clips, tmp_path):
     assert result.seconds < clips[0].duration
 
 
+def _ask(guard, n, failing):
+    """``n`` one-look requests through ``guard``, each failing when ``failing(i)``."""
+    for i in range(n):
+        req = JudgeRequest(f"r{i}", "cam", 0, (JudgeItem(Condition("c", "c")),), (np.zeros((8, 8, 3), np.uint8),),
+                           (0.0, 1.0))
+        guard.inner.fail = failing(i)
+        asyncio.run(guard.judge(req))
+
+
+class _Flaky(judging.FakeJudge):
+    """Answers yes, or fails as unavailable while ``fail`` is set."""
+
+    def __init__(self):
+        super().__init__(lambda r: RetryableError("down") if self.fail else {"c": ("yes", 0.9, "seen")},
+                         price=judging.PriceModel(0.10, 0.40, 258), retries=0)
+        self.fail = False
+
+
+def test_a_judge_that_goes_down_stops_the_run():
+    guard = judging.CostGuard(_Flaky(), None)
+    _ask(guard, 1000, lambda i: i % 100 == 0)               # 1% failed: an arm that stays valid
+    _ask(guard, 19, lambda i: True)                         # 29 of 1,019 failed (2.8%)
+    assert not guard.tripped.is_set()
+    _ask(guard, 1, lambda i: True)                          # the 20th failure in a row: the judge is down
+    assert guard.tripped.is_set() and guard.stopped_for == "the judge failed 30 of 1020 looks"
+
+
+def test_each_arm_is_judged_on_its_own_looks():
+    guard = judging.CostGuard(_Flaky(), None)
+    _ask(guard, 49, lambda i: i < 2)                        # 2 failed in the first arm
+    guard.new_arm()
+    _ask(guard, 50, lambda i: i == 0)                       # 1 of 50 in the next: no stop, though 3 of 99 overall
+    assert not guard.tripped.is_set() and (guard.looks, guard.failed) == (50, 1)
+
+
+def test_an_arm_failing_more_than_it_may_stops_and_says_so():
+    guard = judging.CostGuard(_Flaky(), None)
+    _ask(guard, 49, lambda i: i < 3)
+    assert not guard.tripped.is_set()                       # too few looks to judge the rate yet
+    _ask(guard, 1, lambda i: False)
+    assert guard.tripped.is_set() and guard.stopped_for == "the judge failed 3 of 50 looks"
+    why = run.not_publishable(*_meva_run_aborted(guard.stopped_for))
+    assert why == ["the run was stopped early: the judge failed 3 of 50 looks"]
+
+
+def test_a_dead_judge_stops_the_percept_arm_early(clips, tmp_path, monkeypatch):
+    monkeypatch.setattr(judging, "FAIL_FAST_IN_A_ROW", 3)      # the clip is 12 s: a handful of looks
+    flaky = _Flaky()
+    flaky.fail = True
+    guard = judging.CostGuard(flaky, None)
+    result = asyncio.run(arms.run_percept(clips[0], guard, judging.Timelines(), tmp_path / "t.jsonl", speed=4.0,
+                                          max_requests_per_min=600))
+    assert guard.tripped.is_set() and guard.stopped_for == "the judge failed 3 of 3 looks" and result.aborted
+    assert result.seconds < clips[0].duration
+
+
+def test_looks_the_cap_refused_are_not_judge_failures():
+    guard = judging.CostGuard(_Flaky(), 0.0)                # every request refused by the cap
+    _ask(guard, 60, lambda i: False)
+    assert guard.tripped.is_set() and guard.stopped_for is None and guard.looks == 0
+
+
 def test_a_cap_needs_a_price(clips):
     oracle = judging.OracleJudge(clips, judging.Timelines(), price=None)
     with pytest.raises(ValueError):
@@ -355,6 +418,12 @@ def _meva_run(**arm):
              unintended_loss_total=0)
     s.update(arm)
     return manifest, {"percept": s}
+
+
+def _meva_run_aborted(stopped_for):
+    manifest, table = _meva_run()
+    manifest.update(aborted=True, stopped_for=stopped_for)
+    return manifest, table
 
 
 def test_intentional_sampling_is_publishable_unintended_loss_is_not():

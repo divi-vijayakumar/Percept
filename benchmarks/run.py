@@ -295,7 +295,8 @@ def not_publishable(m: dict, table: dict) -> list[str]:
     if m["speed"] != 1.0:
         why.append(f"Percept ran at {m['speed']}x real time")
     if m["aborted"]:
-        why.append("the spend cap stopped the run")
+        why.append(f"the run was stopped early: {m['stopped_for']}" if m.get("stopped_for")
+                   else "the spend cap stopped the run")
     if any(s["skipped"] for s in table.values()):
         why.append("some cases were skipped")
     lost = {arm: s["unintended_loss_total"] for arm, s in table.items() if s["unintended_loss_total"]}
@@ -390,7 +391,10 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
         lines += [f"> **Diagnostic, not publishable.** Dataset `{m['dataset']}` is not the published benchmark "
                   "(MEVA, fixed cameras). Results here locate where Percept wins and loses; they are not a "
                   "published comparison.", ""]
-    if m["aborted"]:
+    if m["aborted"] and m.get("stopped_for"):
+        lines += [f"> **Aborted: {m['stopped_for']}**, more than this arm could fail and stay valid "
+                  f"(${m['spent_usd']:.4f} spent). Cases after it are skipped; see Coverage.", ""]
+    elif m["aborted"]:
         lines += [f"> **Aborted: spend cap reached** (${m['spent_usd']:.4f} of ${m['max_cost_usd']}). "
                   "Cases after the cap are skipped and excluded from every figure; see Coverage.", ""]
     if m["speed"] != 1.0:
@@ -608,6 +612,7 @@ async def main_async(args) -> int:
     results, footprints = {}, {}
     for arm in arm_names:
         foot: dict = {}
+        judge.new_arm()
         with A.Footprint() as fp:
             res = await run_arm(arm, cases, judge, timelines, out, args, foot)
         results[arm], footprints[arm] = res, dict(cpu_s=round(fp.cpu_s, 2), peak_rss_mb=fp.peak_rss_mb,
@@ -640,7 +645,7 @@ async def main_async(args) -> int:
         "fps": args.fps, "speed": args.speed, "parallel": args.parallel, "max_cost_usd": args.max_cost_usd,
         "pace_baselines": bool(getattr(args, "pace_baselines", False)), "sleep_prevented": awake,
         "spent_usd": judge.spent, "requests": judge.requests, "refused_by_cap": judge.refused,
-        "aborted": judge.tripped.is_set(), "args": vars(args),
+        "aborted": judge.tripped.is_set(), "stopped_for": judge.stopped_for, "args": vars(args),
     }
     finish(out, manifest, results, by_id, args, footprints)
     print(f"wrote {out}/report.md" + (" (ABORTED: spend cap reached)" if manifest["aborted"] else ""))
