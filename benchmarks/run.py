@@ -578,13 +578,17 @@ def look_bound(arm: str, cases, args, judge) -> Optional[int]:
     """The most looks ``arm`` can make on ``cases`` (one look = one condition in one judge request),
     or None when it has no fixed bound. A Percept stream starts at most ``max_requests_per_min``
     requests in any minute (each holds at least one attempt for the window), plus two minutes for
-    verifications still open when its footage ends; a chunk arm asks once per period, plus a last
-    short chunk."""
+    verifications still open when its footage ends (for a judge that reports its attempts, as the
+    built-in ones do); a chunk arm asks once per period, plus a last short chunk."""
     total = 0
     for case in cases:
         n = len(case.conditions)
         if arm.startswith(PLAN_ARM):
-            limit = plan_for(case, arm, args, judge).monitor_kwargs["max_requests_per_min"]
+            try:
+                compiled = plan_for(case, arm, args, judge)
+            except ValueError:      # no single plan for this case: it is skipped later; no bound
+                return None
+            limit, n = compiled.monitor_kwargs["max_requests_per_min"], len(compiled.conditions)
         elif arm.startswith("percept"):
             budget = args.percept_budget if arm == "percept-matched" else None
             limit = budget if budget is not None else inspect.signature(Monitor).parameters["max_requests_per_min"].default
