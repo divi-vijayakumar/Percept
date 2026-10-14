@@ -1,4 +1,5 @@
-"""End-to-end validation: guardrails, the test suite, the offline quickstart, and a clean install.
+"""End-to-end validation: guardrails, the test suite, the offline quickstart, and a clean install
+that runs the quickstart, the watch-plan example and the plan-evaluation example from the wheel.
 
 Portable (no shell `timeout`): every step runs as a subprocess with a Python-side timeout,
 and the quickstart's output is checked, not just its exit code.
@@ -28,6 +29,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "packages" / "percept-vision"
 QUICKSTART_EXPECTS = ("met ", "cleared ", "uncertain ", "coverage:", "reproduced exactly")
+# The 1.0 examples, run against the installed wheel too: each must exit 0 and print these.
+EXAMPLE_EXPECTS = {"watch_plan.py": ("plan dock-watch", "feasibility:", "met "),
+                   "plan_evaluation.py": ("split:", "dev, attention only:", "validation, ", "test: recall")}
 
 
 def run(cmd: list[str], *, timeout: float, cwd: Path, env: dict[str, str] | None = None
@@ -47,6 +51,19 @@ def quickstart(py: str, *, env: dict[str, str] | None = None, label: str = "quic
     if result.returncode != 0 or missing:
         print(result.stderr[-2000:], file=sys.stderr)
         print(f"FAILED: {label} exited {result.returncode}; missing output: {missing}")
+        return False
+    return True
+
+
+def example(py: str, name: str, *, env: dict[str, str] | None = None) -> bool:
+    """Run one of the 1.0 examples and check its output, not just its exit code."""
+    with tempfile.TemporaryDirectory() as tmp:
+        result = run([py, str(ROOT / "examples" / name)], timeout=300, cwd=Path(tmp), env=env)
+    print(result.stdout[-1500:], end="")
+    missing = [s for s in EXAMPLE_EXPECTS[name] if s not in result.stdout]
+    if result.returncode != 0 or missing:
+        print(result.stderr[-2000:], file=sys.stderr)
+        print(f"FAILED: {name} against the installed wheel exited {result.returncode}; missing output: {missing}")
         return False
     return True
 
@@ -116,7 +133,9 @@ def clean_install(py: str) -> bool:
             print(f"FAILED: the installed wheel is not what imports: {where!r} version {got!r}")
             return False
         print(f"installed: percept {got} from the wheel")
-        return quickstart(py, env=env, label="quickstart against the installed wheel")
+        if not quickstart(py, env=env, label="quickstart against the installed wheel"):
+            return False
+        return all(example(py, name, env=env) for name in EXAMPLE_EXPECTS)
 
 
 def main(argv: list[str] | None = None) -> int:
