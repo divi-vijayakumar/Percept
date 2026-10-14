@@ -149,6 +149,8 @@ def _spread(frames: tuple[Frame, ...], n: int) -> tuple[Frame, ...]:
     m = len(frames)
     if m <= n:
         return frames
+    if n == 1:                  # one frame: the newest, as PreRoll.select
+        return (frames[-1],)
     return tuple(frames[round(i * (m - 1) / (n - 1))] for i in range(n))
 
 

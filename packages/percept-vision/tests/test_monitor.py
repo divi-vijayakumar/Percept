@@ -695,6 +695,29 @@ class TickingReader(Reader):
         return image(self.i), None
 
 
+def test_spread_keeps_the_newest_frame_when_asked_for_one():
+    frames = tuple(percept.Frame("cam", 0, i, float(i), float(i), image(i)) for i in range(3))
+    assert rt._spread(frames, 1) == (frames[-1],)
+    assert rt._spread(frames, 2) == (frames[0], frames[-1]) and rt._spread(frames, 3) == frames
+
+
+def test_an_event_judged_on_one_frame_is_judged_and_decided():
+    fall = Condition("fall", "a person falls", kind="event", trigger=At(4), clip_frames=1)
+    judge = FakeJudge(answers({"detect": [Y], "verify": [Y]}))
+
+    async def main():
+        async with percept.Monitor(judge, [fall], store=mem(), max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            await push_frames(src, 8)
+            src.close()
+            return await collect(watch)
+
+    got = run(main())
+    assert [d.decision.type for d in got] == ["met"]
+    assert judge.sent and all(len(s[3].images) == 1 for s in judge.sent)
+
+
 def test_shutdown_order_and_no_leaked_threads_or_tasks(tmp_path):
     before = {t.name for t in threading.enumerate()}
     judge = SlowJudge(10.0)
