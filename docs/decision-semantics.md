@@ -215,8 +215,8 @@ happen.
 **Verification on the original interval.** `verify="auto"` means `"original"` for events. When
 the occurrence is confirmed, one verification is requested on **the same interval the counted
 "yes" answers covered**, from the epoch of the first of them. The runtime re-judges the exact
-frames of the request that produced that interval when it still holds them, otherwise up to 4
-frames held in its pre-roll inside the interval. The verifier is asked to be strict. Then:
+frames of the request that produced that interval when it still holds them, otherwise up to the
+condition's `clip_frames` (4 by default) frames held in its pre-roll inside the interval. The verifier is asked to be strict. Then:
 
 - a verify "yes" accepts the event;
 - a verify "no" rejects it: the key returns to idle with the evidence floor at the interval's end;
@@ -351,5 +351,6 @@ Every judged answer ends up in exactly one coverage fate, reported by `Monitor.c
 | `dropped_capacity` | refused by [Capacity](#17-capacity) |
 
 The runtime adds the fates of looks that never reached a judge: `coalesced` (merged into a look
-already waiting), `dropped_budget` (waited past its deadline), `dropped_quality` (the frame was
-vetoed as corrupt or blurry). See [concepts.md](concepts.md#coverage-and-blind-intervals).
+already waiting), `dropped_budget` (waited past its deadline), `dropped_for_verification`
+(waited past its deadline while its attempts were kept for a waiting verification),
+`dropped_quality` (the frame was vetoed as corrupt or blurry). See [concepts.md](concepts.md#coverage-and-blind-intervals).

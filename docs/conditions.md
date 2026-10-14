@@ -27,7 +27,9 @@ and the [trace](delivery.md#trace-and-replay) to tune them on your own footage.
 | `not_when` | `()` | Plain-language cases that are **not** the condition, sent to the judge as "answer no" cases: `not_when=("a person lying on the sofa",)`. The cheapest fix for a recurring false alarm. |
 | `zones` | `()` | Polygons in normalised image coordinates (`(x, y)`, both in `[0, 1]`, `x` right, `y` down), at least 3 points each. The judge sees the frame cropped to the zones' bounding box (plus a 5% margin), and change triggers only look inside the zones. No zones: the whole frame. |
 | `exclude_zones` | `()` | Polygons subtracted from what change triggers watch (a clock, a TV, a road). The judge's crop is a rectangle, so it may still show them. |
-| `trigger` | `None` | When to look. `None`: `on_change()` for events; `on_change()` plus `every(300)` for states. See [Triggers](#triggers). |
+| `trigger` | `None` | When to look: one trigger, or a tuple of triggers, due when any fires (`(percept.on_change(), percept.every(60))`). `None`: `on_change()` for events; `on_change()` plus `every(300)` for states. See [Triggers](#triggers). |
+| `clip_s` | `None` (4 s) | Events only. Seconds of evidence before the trigger the event is judged on. Above 0, and at most the stream's pre-roll (8 s unless the source has its own `PreRoll`): a longer window raises `ValueError` when the condition or stream is added. |
+| `clip_frames` | `None` (4) | Events only. Frames judged from that window, 1 to 16, spread over it with the newest always included. The pre-roll must be able to hold them at its frame rate, or adding raises `ValueError`. |
 | `judge` | `None` | The name of a member judge inside a `cascade` to ask for this condition only (a route). An unknown name raises when the condition is added. See [judges.md](judges.md#cascades-and-routes). |
 
 ## How sure to be
@@ -80,8 +82,8 @@ one computation per frame.
 - `percept.every(seconds)` is a heartbeat: one look per period on the stream clock, and one at
   the start. A gap never causes a burst of catch-up looks.
 - `Monitor.poke(stream_id, condition_ids, subject=None, observed_at=None, reason=..., evidence=None)`
-  asks for a look now, from your own code. `observed_at` (wall time) anchors an event's clip (up
-  to 4 frames from the 4 s before it); `evidence` (one or more `uint8` images) is judged instead of
+  asks for a look now, from your own code. `observed_at` (wall time) anchors an event's clip (by
+  default up to 4 frames from the 4 s before it; see `clip_s` and `clip_frames`); `evidence` (one or more `uint8` images) is judged instead of
   the stream's frames.
 - A custom trigger is any object with
   `step(frame, conditions, state, now) -> (due, state)`, where `due` maps the ids of conditions to
@@ -89,7 +91,9 @@ one computation per frame.
   so only pokes cause looks.
 
 Looks are limited by the stream's request budget: a trigger that fires on every frame (a busy or
-moving scene) queues looks that are then dropped as `dropped_budget`. Coverage shows it.
+moving scene) queues looks that are then dropped as `dropped_budget` (or
+`dropped_for_verification`, while a verification waits). Coverage shows it, per trigger under
+`triggers`.
 
 ## Changing conditions at runtime
 

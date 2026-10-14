@@ -46,21 +46,25 @@ same prompt, parsing, retry and failure code as a real judge; only the provider 
 `{condition_id: (answer, confidence, reason)}` (`answer`: `"yes"`, `"no"` or `"unknown"`), a raw
 reply string, or an exception instance to raise (`base.RetryableError()`, `base.RefusalError()`,
 `TimeoutError()`); a non-callable `script` is that reply for every request. `request.images` are
-the BGR `uint8` frames a real judge would be sent, so a script can look at them. See
+the BGR `uint8` frames a real judge would be sent, so a script can look at them. `sent` lists
+the requests served; `record_requests=False` keeps none (`sent` is None), for long offline runs,
+where each kept request holds whole frames in memory. See
 [integration.md](integration.md#3-test-offline-with-fakejudge).
 
 ## What a request looks like
 
 - **Images**: JPEG, quality 80, longest side at most 640 px, cropped to the condition's zones.
-  A state is judged on the newest frame; an event on up to 4 frames from the 4 s before its
-  trigger, oldest first.
+  A state is judged on the newest frame; an event, by default, on up to 4 frames from the 4 s
+  before its trigger, oldest first (set per condition with `clip_s` and `clip_frames`).
 - **Prompt**: each condition's id, text and kind, its `not_when` cases, and up to 3 notes from
   occurrences marked as false alarms. Verification asks the judge to be strict.
 - **Reply**: JSON, `{"results": [{"id", "answer", "confidence", "reason"}]}`, one entry per
   condition. A missing entry fails that condition as `missing`; a broken one as `malformed`.
 - **Deadline and retries**: each request has 8 s. A rate limit (408, 429), a server error (5xx)
   or a dropped connection is retried once, after 0.25 to 0.5 s or the provider's retry-after hint,
-  if that still fits in the deadline. Any other error fails the request as `unavailable`.
+  if that still fits in the deadline. Any other error fails the request as `unavailable`. While a
+  retry is left, an attempt may use at most 60% of the time remaining, so a hung attempt is
+  abandoned in time for the retry to run.
   A provider that is slow to answer (a cold start, a long queue, a large model with few requests
   to keep it warm) can exceed the 8 s deadline: the request fails as `timeout`, is reported on
   the health channel (`judge_unavailable`) and in coverage (`failed`), and changes no decision.
@@ -97,8 +101,10 @@ percept.PriceModel(usd_per_mtok_in=..., usd_per_mtok_out=..., tokens_per_image=.
 Prices are yours to set from your provider's price list; Percept ships none. A judge with a price
 reports its cost per request, and the monitor reserves each request's **worst case** before it is
 sent: every attempt it may make, each with every image at `tokens_per_image`, the prompt text
-counted generously (3 characters a token) and a full reply at the reply limit. A judge without a
-price reports no cost, and the cost cap can only count what is reported.
+counted generously (3 characters a token) and a full reply at the reply limit. An attempt that
+never replied (abandoned or timed out) may still be billed by the provider, so it is charged at
+its worst-case cost. A judge without a price reports no cost, and the cost cap can only count
+what is reported.
 
 ## Budgets
 
@@ -121,6 +127,10 @@ price reports no cost, and the cost cap can only count what is reported.
 - **Priority** when the budget is short: verifications first, then event detections, state
   detections, heartbeats and rechecks. An event detection waits at most 3 s and a state detection
   10 s before it is dropped (`dropped_budget`); heartbeats and rechecks wait for the next slot.
+  Verification comes before new detection: while a verification waits (queued, or between its
+  retries), a detection may not take the attempts it needs, and a detection held that way past
+  its deadline is dropped as `dropped_for_verification`. Nothing is held when no verification
+  waits.
   A budget that refuses due looks opens a `budget_exhausted` blind interval.
 - **Single flight.** Per stream, one detection request and one verification may be in flight;
   looks that become due meanwhile are merged into the next request.
@@ -147,3 +157,9 @@ satisfies `percept.Judge`. It must return exactly one `Observation` per item in 
 never raise, and report every provider request it made as a `RequestUsage`. Optional attributes
 narrow the budget's reservation: `max_attempts` (default 2), `max_attempts_for(request)` and
 `worst_case_cost_for(request)`. They are trusted: a judge that under-reports is under-reserved.
+
+The types it works with are exported from `percept`: a `JudgeRequest` (`request_id`,
+`stream_id`, `items`, `images`, `evidence_t`, `purpose` (`"detect"` or `"verify"`), `deadline_s`,
+`max_output_tokens`) carries one `JudgeItem` per condition (`condition`, `subject`,
+`counter_examples`); the judge returns a `JudgeResult` (`observations`, `usage`); `price` is a
+`PriceModel` or None.

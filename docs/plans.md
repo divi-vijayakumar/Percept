@@ -48,7 +48,7 @@ offline version is [examples/watch_plan.py](../examples/watch_plan.py).
 | `plan_id`, `revision` | yes | your identifiers; `revision` is an integer of 1 or more |
 | `sources[]` | yes | `id`, `kind` (`video` only) and optional `max_side` (default 640): the longest side, in pixels, of the frames the judge sees |
 | `budget` | no | `max_requests_per_min` (attempts per stream, default 6), `max_cost_per_hour`, `max_concurrent_requests` |
-| `judges.order` | when several judges | the route names, cheapest first; verification uses the last |
+| `judges.order` | when routes map to more than one judge | the route names, cheapest first; they become a cascade, and verification uses the last |
 | `concerns[]` | yes | one per condition (below) |
 | `metadata` | no | free-form; not hashed |
 
@@ -57,13 +57,14 @@ Each concern becomes one `Condition`:
 - **`attention`** (optional) decides when the concern is worth a look. `{"any": [...]}` lists
   `on_change` (a scene change inside the concern's zones; `threshold`, `exit_threshold`,
   `baseline_s`), `every` (a heartbeat in seconds) and `external_event` (a name; the concern is
-  judged when your code calls `monitor.poke(stream_id, condition_id)`). Several entries combine:
-  the concern is due when any fires. Without `attention`, an event is looked at on a scene change
+  judged when your code calls `monitor.poke(stream_id, condition_id)`). Several entries combine
+  into one combined trigger (a tuple in `Condition.trigger`): the concern is due when any fires. Without `attention`, an event is looked at on a scene change
   and a state on a scene change plus every 300 s.
 - **`judgment`** (`route` required) says how to ask: `zones` and `exclude_zones` (normalised
   polygons; the judge sees the zone crop), `not_when`, `verification`, `min_confidence`,
   `fast_path_confidence`, and for events `evidence.pre_seconds` and `evidence.frames` (the clip the
-  judge sees, at most the 8 s pre-roll).
+  judge sees: `pre_seconds` above 0 and at most the 8 s pre-roll, default 4; `frames` from 1 to 16,
+  default 4). A state with either is refused: it is judged on the newest frame.
 - **`decision`** (`kind`: `event` or `state`, required) says when to tell your agent: `confirm`,
   `confirm_window_s`, `rearm_s`, `recheck_every_s`, `clear_after_no`, `max_open_s`,
   `cooldown_s`, `emit_cleared`, `on_unverified`, `candidate_deadline_s`. These map one-to-one onto
@@ -82,9 +83,20 @@ field (`concerns[0].judgment.zones: ...`).
 - **`plan_hash`**: covers every effective setting, the runtime's fixed values and the judges'
   names, whatever the order of keys, concerns or sources. Two plans with the same hash watch the
   same way. `metadata` is not hashed.
-- **`provenance()`**: the SDK version, the judges and the prompt a run used. The trace records it
-  when a monitor runs a compiled plan.
+- **`provenance()`**: the SDK version, the plan's identity and hash, the judges and the prompt
+  hash a run used, without secrets. Nothing records it for you:
+  `compiled.trace_record(t_wall, stream_id=None)` returns it as a trace record you may write
+  yourself, to a file of your own, with `percept.trace.TraceWriter.write`. Replay ignores such records.
 - **`events`**: each external event name mapped to the condition ids to poke.
+
+## Types
+
+- **`percept.plans.Compiled`**: `plan_hash`, `monitor_kwargs`, `conditions`, `sources`, `events`,
+  `plan_id`, `revision`, and the methods `explain()`, `feasibility()`, `provenance()` and
+  `trace_record(t_wall, stream_id=None)`.
+- **`percept.plans.SCHEMA_VERSION`**: `"percept.watch/v1alpha1"`, the only accepted
+  `schema_version`.
+- **`percept.plans.PlanError`**: a malformed plan; the message starts with the field's dotted path.
 
 ## Choosing settings
 

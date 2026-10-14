@@ -92,12 +92,17 @@ look, counted per minute:
 - `failed`: a timeout, outage, refusal or malformed reply;
 - `coalesced`: merged into a look already waiting;
 - `dropped_budget`: waited past its deadline (3 s for an event detection, 10 s for a state), or the stream ended first;
+- `dropped_for_verification`: a detection that waited past its deadline because the attempts it needed were kept for a waiting verification;
 - `dropped_quality`: the frame was vetoed as corrupt or blurry;
 - `stale`: the answer arrived for an earlier epoch, condition version or occurrence;
 - `dropped_capacity`: refused because the stream's 64 decision slots were all in use.
 
-It also counts `frames_capped` (frames skipped by the processing rate) and `evidence_unavailable`
-(looks that waited for a current frame).
+It also counts `frames_capped` (frames skipped by the processing rate), `evidence_unavailable`
+(looks that waited for a current frame) and `evidence_short` per condition (events judged on less
+of their evidence window than asked, because the stream had just started or reconnected).
+`triggers` splits the looks per condition by what made them due (a trigger's label such as
+`on_change(0.2)` or `every(5)`, or `poke`, `settled`, `recheck`, `verify`), counting `due`,
+`admitted`, `coalesced`, `dropped_budget` and `dropped_for_verification`.
 
 **Blind intervals** are spans of wall-clock time when Percept could not see or could not judge:
 

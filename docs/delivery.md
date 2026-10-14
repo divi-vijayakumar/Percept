@@ -153,10 +153,12 @@ Nothing raises during operation. Configuration errors raise when you build the `
   | `trace_dropped` | trace records were lost |
 
 - `Monitor.stats()` returns exact counters at any time: per stream `frames`, `frames_capped`,
-  `frames_vetoed`, `requests`, `attempts`, `evidence_unavailable`, fates, `decisions`,
+  `frames_vetoed`, `requests`, `attempts`, `evidence_unavailable`, `evidence_short`, fates,
+  per-trigger-label totals under `triggers`, `decisions`,
   `delivered`, `redelivered`, `acked`, `unacked`, pending looks and verifications; the cost fields
   described in [judges.md](judges.md#reporting-cost); health counts; store and trace counters.
-- `Monitor.coverage(stream_id, since_wall=0.0)` returns fates per condition (per minute) and the
+- `Monitor.coverage(stream_id, since_wall=0.0)` returns fates per condition (per minute), the
+  looks per condition and trigger label (`triggers`), `evidence_short` per condition, and the
   blind intervals overlapping that time. See [concepts.md](concepts.md#coverage-and-blind-intervals).
 
 ## Trace and replay
