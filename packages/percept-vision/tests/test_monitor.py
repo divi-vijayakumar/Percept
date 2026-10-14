@@ -1923,6 +1923,232 @@ def test_held_detections_past_their_deadline_count_as_dropped_for_verification()
     fates = run(main())
     assert fates.get("dropped_for_verification") == 1 and fates.get("dropped_budget") == 1
 
+# A verification task, however it ends, returns its slot and reservations exactly once
+# (test_a_dead_verifier_ends_in_uncertain_at_the_deadline used to hang about once in 50 runs under
+# load: the deadline timer cancelled a verification task before its first step, so its finally,
+# the only cleanup, never ran and the stream never finished). Each case below forces one ordering.
+
+class Gated(FakeJudge):
+    """A FakeJudge whose verify requests wait on ``gate`` (when set) and are counted."""
+
+    def __init__(self, script) -> None:
+        super().__init__(script)
+        self.gate: asyncio.Event | None = None
+        self.started = {"detect": 0, "verify": 0}
+
+    async def judge(self, request):
+        self.started[request.purpose] += 1
+        if request.purpose == "verify" and self.gate is not None:
+            await self.gate.wait()
+        return await super().judge(request)
+
+
+FALL = Condition("fall", "a person falls", kind="event", trigger=At(2), candidate_deadline_s=60)
+TIMER = ("fall", "scene", "verify")
+
+
+async def _parked_verification(m, judge, stream_id="cam"):
+    """A stream in VERIFYING whose verification failed once and waits to retry (not in flight)."""
+    src = PushSource(stream_id)
+    watch = m.watch(src, fps=None)
+    await push_frames(src, 4)
+    stream = m._streams[stream_id]
+    for _ in range(500):
+        if stream.verifies and stream.verify_task is None and judge.started["verify"]:
+            break
+        await asyncio.sleep(0.01)
+    (w,) = stream.verifies.values()
+    return src, watch, stream, w
+
+
+def _settled(m, stream):
+    """No slot, attempt or dollar is still held for a request in flight."""
+    return m._slots == 0 and stream.budget.held == 0 and stream.held_cost.held == 0 and m._cost.held == 0
+
+
+async def _ends_and_frees_capacity(m, src, watch, judge):
+    """The watch ends with the timeout, and a second stream then gets the (single) slot."""
+    src.close()
+    got = await asyncio.wait_for(collect(watch), 5)
+    assert [(d.decision.type, d.decision.cause) for d in got] == [("uncertain", "timeout")]
+    before = judge.started["detect"]
+    src2 = PushSource("cam2")
+    m.watch(src2, fps=None)
+    await push_frames(src2, 4, t0=m._wall())        # on the monitor's clock, which the test moved
+    for _ in range(500):
+        if judge.started["detect"] > before:
+            break
+        await asyncio.sleep(0.01)
+    assert judge.started["detect"] > before
+
+
+def test_a_verification_cancelled_before_its_first_step_is_settled(monkeypatch):
+    monkeypatch.setattr(rt, "VERIFY_RETRY_S", 1000)
+    judge = Gated(answers({"detect": [Y], "verify": [RetryableError("down")]}))
+
+    async def main():
+        async with percept.Monitor(judge, [FALL], store=mem(), max_requests_per_min=1000,
+                                   max_concurrent_requests=1) as m:
+            src, watch, stream, w = await _parked_verification(m, judge)
+            requests, verifies = stream.totals["requests"], judge.started["verify"]
+            w.not_before = 0.0
+            stream.dispatch(m._mono())                  # the retry starts a task...
+            task = stream.verify_task
+            assert task is not None and not task.done()
+            wall = m._wall
+            m._wall = lambda: wall() + 120
+            stream.fire(TIMER)                          # ...the deadline cancels it before it runs
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert task.cancelled() and judge.started["verify"] == verifies       # it never ran
+            assert stream.verify_task is None and _settled(m, stream)
+            assert stream.totals["requests"] == requests + 1       # charged once, at its reservation
+            await _ends_and_frees_capacity(m, src, watch, judge)
+
+    run(main())
+
+
+def test_a_verification_cancelled_during_the_call_is_settled_once(monkeypatch):
+    monkeypatch.setattr(rt, "VERIFY_RETRY_S", 1000)
+    judge = Gated(answers({"detect": [Y], "verify": [RetryableError("down")]}))
+
+    async def main():
+        async with percept.Monitor(judge, [FALL], store=mem(), max_requests_per_min=1000,
+                                   max_concurrent_requests=1) as m:
+            src, watch, stream, w = await _parked_verification(m, judge)
+            requests, verifies = stream.totals["requests"], judge.started["verify"]
+            judge.gate = asyncio.Event()                # the next verification hangs at the provider
+            w.not_before = 0.0
+            stream.wake.set()
+            for _ in range(500):
+                if judge.started["verify"] > verifies:
+                    break
+                await asyncio.sleep(0.01)
+            task = stream.verify_task
+            assert task is not None and not task.done()
+            wall = m._wall
+            m._wall = lambda: wall() + 120
+            stream.fire(TIMER)
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert task.cancelled() and stream.verify_task is None and _settled(m, stream)
+            assert stream.totals["requests"] == requests + 1
+            await _ends_and_frees_capacity(m, src, watch, judge)
+
+    run(main())
+
+
+def test_a_verification_past_its_deadline_is_never_started(monkeypatch):
+    monkeypatch.setattr(rt, "VERIFY_RETRY_S", 1000)
+    judge = Gated(answers({"detect": [Y], "verify": [RetryableError("down")]}))
+
+    async def main():
+        async with percept.Monitor(judge, [FALL], store=mem(), max_requests_per_min=1000,
+                                   max_concurrent_requests=1) as m:
+            src, watch, stream, w = await _parked_verification(m, judge)
+            requests, verifies = stream.totals["requests"], judge.started["verify"]
+            w.not_before = 0.0
+            wall = m._wall
+            m._wall = lambda: wall() + 120              # the deadline passed; its timer is late
+            stream.dispatch(m._mono())
+            assert stream.verify_task is None and _settled(m, stream)      # nothing taken
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert judge.started["verify"] == verifies and stream.totals["requests"] == requests
+            stream.fire(TIMER)
+            await _ends_and_frees_capacity(m, src, watch, judge)
+
+    run(main())
+
+
+def test_a_verification_that_finished_is_not_settled_again(monkeypatch):
+    judge = Gated(answers({"detect": [Y], "verify": [Y]}))
+    calls = []
+    settle = rt._Stream.settle
+
+    def spy(self, f, task=None):
+        calls.append((self, f))
+        settle(self, f, task)
+
+    monkeypatch.setattr(rt._Stream, "settle", spy)
+
+    async def main():
+        async with percept.Monitor(judge, [FALL], store=mem(), max_requests_per_min=1000,
+                                   max_concurrent_requests=1) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            await push_frames(src, 4)
+            src.close()
+            got = await asyncio.wait_for(collect(watch), 5)
+            for _ in range(5):                          # let the last done-callbacks run
+                await asyncio.sleep(0)
+            flights = {id(f): (stream, f) for stream, f in calls}
+            # each request settles from its finally and again from its done-callback: counted once
+            assert len(calls) == 2 * len(flights) == 2 * sum(judge.started.values())
+            for stream, f in flights.values():          # a late cancel or settle changes nothing
+                f.task.cancel()
+                settle(stream, f, f.task)
+            return got, m._slots, m.stats()["streams"]["cam"]["requests"], len(flights)
+
+    got, slots, requests, flights = run(main())
+    assert [d.decision.type for d in got] == ["met"] and slots == 0 and requests == flights == 2
+
+
+def test_a_cancel_racing_the_answer_settles_once_and_ends_in_the_timeout(monkeypatch):
+    monkeypatch.setattr(rt, "VERIFY_RETRY_S", 1000)
+    judge = Gated(answers({"detect": [Y], "verify": [Y]}))
+
+    async def main():
+        async with percept.Monitor(judge, [FALL], store=mem(), max_requests_per_min=1000,
+                                   max_concurrent_requests=1) as m:
+            judge.gate = asyncio.Event()                # the verification waits at the provider
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            await push_frames(src, 4)
+            stream = m._streams["cam"]
+            for _ in range(500):
+                if stream.verify_task is not None and judge.started["verify"]:
+                    break
+                await asyncio.sleep(0.01)
+            task, requests = stream.verify_task, stream.totals["requests"]
+            judge.gate.set()                            # the answer is ready...
+            wall = m._wall
+            m._wall = lambda: wall() + 120
+            stream.fire(TIMER)                          # ...and the deadline cancels it in the same turn
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert task.done() and stream.verify_task is None and _settled(m, stream)
+            assert stream.totals["requests"] == requests + 1
+            await _ends_and_frees_capacity(m, src, watch, judge)
+
+    run(main())
+
+
+def test_an_error_after_the_answer_is_logged_and_its_request_settled(monkeypatch, caplog):
+    def absorb(self, request, result, works):
+        raise RuntimeError("absorb broke")
+
+    monkeypatch.setattr(rt._Stream, "absorb", absorb)
+    judge = Gated(answers({"detect": [Y]}))
+
+    async def main():
+        async with percept.Monitor(judge, [FALL], store=mem(), max_requests_per_min=1000,
+                                   max_concurrent_requests=1) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            await push_frames(src, 4)
+            src.close()
+            await asyncio.wait_for(collect(watch), 5)
+            return m._slots, judge.started["detect"]
+
+    with caplog.at_level("ERROR", logger="percept"):
+        slots, detects = run(main())
+    assert slots == 0 and detects == 1
+    # reported when the task ends, naming its request, not only when the monitor closes
+    failed = [r for r in caplog.records if r.getMessage().startswith("percept: stream cam: request ")]
+    assert len(failed) == 1 and "absorb broke" in str(failed[0].exc_info[1])
+
+
 def _bare_stream(m):
     stream = rt._Stream.__new__(rt._Stream)
     stream.m, stream.id, stream.verify_task, stream.verify_work = m, "cam", None, None
