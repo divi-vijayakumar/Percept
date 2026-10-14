@@ -393,7 +393,10 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
         lines += [f"> **Diagnostic, not publishable.** Dataset `{m['dataset']}` is not the published benchmark "
                   "(MEVA, fixed cameras). Results here locate where Percept wins and loses; they are not a "
                   "published comparison.", ""]
-    if m["aborted"] and m.get("stopped_for"):
+    if m.get("status") == "aborted_provider_outage":
+        lines += [f"> **Aborted (provider outage): {m['stopped_for']}** (${m['spent_usd']:.4f} spent). A partial "
+                  "run, never a complete one, whether or not the provider recovered; see Coverage.", ""]
+    elif m["aborted"] and m.get("stopped_for"):
         lines += [f"> **Aborted: {m['stopped_for']}**, so the arm was already invalid "
                   f"(${m['spent_usd']:.4f} spent). Cases after it are skipped; see Coverage.", ""]
     elif m["aborted"]:
@@ -674,7 +677,8 @@ async def main_async(args) -> int:
         "fps": args.fps, "speed": args.speed, "parallel": args.parallel, "max_cost_usd": args.max_cost_usd,
         "pace_baselines": bool(getattr(args, "pace_baselines", False)), "sleep_prevented": awake,
         "spent_usd": judge.spent, "requests": judge.requests, "refused_by_cap": judge.refused,
-        "aborted": judge.tripped.is_set(), "stopped_for": judge.stopped_for, "args": vars(args),
+        "aborted": judge.tripped.is_set(), "stopped_for": judge.stopped_for,
+        "status": (judge.status or "aborted_spend_cap") if judge.tripped.is_set() else "complete", "args": vars(args),
     }
     finish(out, manifest, results, by_id, args, footprints)
     print(f"wrote {out}/report.md" + (f" (ABORTED: {manifest['stopped_for'] or 'spend cap reached'})"
@@ -747,6 +751,7 @@ def merge(parts: list, out: Path, root: str | None = None) -> int:
         spent_usd=sum(m["spent_usd"] for m in ms), requests=sum(m["requests"] for m in ms),
         refused_by_cap=sum(m["refused_by_cap"] for m in ms), aborted=any(m["aborted"] for m in ms),
         stopped_for=next((m["stopped_for"] for m in ms if m.get("stopped_for")), None),
+        status=next((m["status"] for m in ms if m.get("status", "complete") != "complete"), "complete"),
         max_cost_usd=cap,
         args=dict(first["args"], arms=",".join(arms), max_cost_usd=cap,
                   out=str(out), run_id=out.name),

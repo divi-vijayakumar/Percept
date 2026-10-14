@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections import deque
 from typing import Optional
 
 import numpy as np
@@ -128,6 +129,10 @@ class CostCapReached(Exception):
     pass
 
 
+OUTAGE_WINDOW = 50       # the provider is down when OUTAGE_FAILED of the last OUTAGE_WINDOW looks failed
+OUTAGE_FAILED = 45
+
+
 class CostGuard(CachingJudge):
     """A judge wrapper holding a run-wide dollar cap (see the module docstring): Percept's
     ``CachingJudge`` with its reply cache off, so every request is sent.
@@ -138,16 +143,23 @@ class CostGuard(CachingJudge):
     failed looks over that bound, so it is already over the limit; a provider outage then costs
     minutes, not the rest of the run. An arm without a bound is never stopped this way. Looks the
     cap refused are not judge failures and are not counted. ``stopped_for`` says why it stopped
-    (None for the cap)."""
+    (None for the cap).
+
+    Separately, an operational safeguard rather than a validity rule: once ``OUTAGE_FAILED`` of the
+    current arm's last ``OUTAGE_WINDOW`` looks failed, the provider is taken to be down and the run
+    stops as ``aborted_provider_outage``. Such a run is never complete, even if the provider would
+    have recovered. ``status`` names how the run ended (None while it has not stopped)."""
 
     def __init__(self, inner, cap_usd: Optional[float], spend_log=None) -> None:
         super().__init__(inner, cap_usd=cap_usd, spend_log=spend_log, cache=None)
         self.stopped_for: Optional[str] = None
+        self.status: Optional[str] = None
         self.new_arm(None)
 
     def new_arm(self, max_looks: Optional[int]) -> None:
         self.looks = self.failed = 0
         self.max_looks = max_looks
+        self.recent: deque = deque(maxlen=OUTAGE_WINDOW)
 
     async def judge(self, request: JudgeRequest) -> JudgeResult:
         result = await super().judge(request)
@@ -155,10 +167,17 @@ class CostGuard(CachingJudge):
             if ob.failure != "budget":
                 self.looks += 1
                 self.failed += ob.failed
-        if (self.max_looks is not None and not self.tripped.is_set()
-                and self.failed > MAX_FAILED_LOOK_RATE * self.max_looks):
+                self.recent.append(bool(ob.failed))
+        if self.tripped.is_set():
+            self.status = self.status or "aborted_spend_cap"
+        elif len(self.recent) == OUTAGE_WINDOW and sum(self.recent) >= OUTAGE_FAILED:
+            self.stopped_for = f"provider outage: {sum(self.recent)} of the last {OUTAGE_WINDOW} looks failed"
+            self.status = "aborted_provider_outage"
+            self.tripped.set()
+        elif self.max_looks is not None and self.failed > MAX_FAILED_LOOK_RATE * self.max_looks:
             self.stopped_for = (f"{self.failed} looks failed, more than {MAX_FAILED_LOOK_RATE:.0%} of the "
                                 f"{self.max_looks} this arm can make")
+            self.status = "aborted_failed_looks"
             self.tripped.set()
         return result
 
