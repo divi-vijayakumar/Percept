@@ -41,22 +41,53 @@ from percept.judges import base
 from benchmarks import arms as A
 from benchmarks import datasets, judging, metrics
 
-ARMS = ("percept", "percept-matched", "chunk5", "chunk10", "chunk30", "detector_debounce", "detector_then_vlm")
+ARMS = ("percept", "percept-matched", "chunk5", "chunk10", "chunk30", "detector_debounce", "detector_then_vlm",
+        "detector_track_rule", "detector_track_decide")
+DEFAULT_ARMS = ARMS[:7]     # the tracker arms need benchmarks/requirements-detector.txt: run them by name
+TRACK_ARMS = ("detector_track_rule", "detector_track_decide")
 PLAN_ARM = "percept-plan-"  # percept-plan-<name>: per-case plans from --percept-plans <dir>/<name>/<source id>.json
 
 
-def plan_for(case, arm: str, args, judge):
-    """The compiled plan of a ``percept-plan-<name>`` arm for ``case``: the file in
-    ``<percept_plans>/<name>/`` whose single source id appears in the case id (a camera id)."""
-    from percept import plans
+def plan_file_for(case, directory, arm: str):
+    """The plan in ``directory`` whose single source id appears in the case id (a camera id)."""
     matches = []
-    for path in sorted((Path(args.percept_plans) / arm[len(PLAN_ARM):]).glob("*.json")):
+    for path in sorted(Path(directory).glob("*.json")):
         plan = json.loads(path.read_text())
         if plan["sources"][0]["id"] in case.case_id:
             matches.append(plan)
     if len(matches) != 1:
         raise ValueError(f"{arm}: {len(matches)} plans match case {case.case_id!r} (need exactly one)")
-    return plans.compile(matches[0], {r: judge for r in {c["judgment"]["route"] for c in matches[0]["concerns"]}})
+    return matches[0]
+
+
+def compile_plan(plan: dict, judge):
+    from percept import plans
+    return plans.compile(plan, {r: judge for r in {c["judgment"]["route"] for c in plan["concerns"]}})
+
+
+def plan_for(case, arm: str, args, judge):
+    """The compiled plan of a ``percept-plan-<name>`` arm for ``case``: the file in
+    ``<percept_plans>/<name>/`` whose single source id appears in the case id (a camera id)."""
+    return compile_plan(plan_file_for(case, Path(args.percept_plans) / arm[len(PLAN_ARM):], arm), judge)
+
+
+def detector_zones(case, arm: str, args, judge) -> dict:
+    """``{condition id: zones}`` for a tracker arm: the zones the case's plan in
+    ``--detector-plans`` gives each condition (the same plan files a ``percept-plan-<name>`` arm
+    uses, compiled the same way). Without plans each condition covers the frame, which only the
+    synthetic dataset allows; a supported condition the plan gives no zone is an error, never the
+    whole frame by default."""
+    from benchmarks import tracking
+    if not getattr(args, "detector_plans", None):
+        if case.dataset != "synthetic":
+            raise ValueError(f"{arm} needs --detector-plans on real footage (zones per condition)")
+        return {}
+    compiled = compile_plan(plan_file_for(case, args.detector_plans, arm), tracking.rule_judge(set()))
+    zones = {c.id: tuple(c.zones) for c in compiled.conditions}
+    missing = sorted(cid for cid in tracking.supported(case) if not zones.get(cid))
+    if missing:
+        raise ValueError(f"{arm}: the plan for {case.case_id} gives no zones for {missing}")
+    return zones
 MAX_LAG_S = A.MAX_LAG_S     # a Percept feed further behind real time than this is not publishable
 PRODUCT_REARM_S = Condition("x", "x", kind="event").rearm_s
 PRODUCT_BUDGET = inspect.signature(Monitor.__init__).parameters["max_requests_per_min"].default
@@ -138,11 +169,28 @@ def monitor_config(arm: str, args, judge) -> dict:
                              "decode": "one thread per case", "worker_threads": worker_threads(args)})
 
 
+def tracker_config(arm: str, args) -> dict:
+    """Everything that configures a ``detector_track_*`` arm."""
+    from benchmarks import tracking as T
+    out = {"detector": "torchvision ssdlite320_mobilenet_v3_large, COCO_V1 weights, person class",
+           "score": T.SCORE, "low_score": T.LOW_SCORE, "tracker": "two-stage association after the ByteTrack paper (benchmarks/tracker.py)",
+           "track_buffer_s": T.TRACK_BUFFER_S, "rule": {"border": T.BORDER, "inward": T.INWARD},
+           "zones": args.detector_plans or "whole frame", "device": args.detector_device, "fps": args.fps}
+    if arm == "detector_track_decide":
+        out.update(judge="rule judge (yes 0.9 for a poked condition and subject, else no 0.9; free)",
+                   max_requests_per_min=T.RULE_BUDGET, rearm_s=args.cooldown, trigger="none: pokes only",
+                   verify_mode=Condition("x", "x", kind="event").verify_mode, speed=args.speed)
+    else:
+        out.update(cooldown_s=args.cooldown, pace=args.speed)       # always real time, as the Percept arms
+    return out
+
+
 async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot: dict) -> list:
     """Every case of one arm, ``--parallel`` at a time (Percept in real time, baselines as fast as
     decoding and the judge allow). A case that raises becomes a result with ``error`` set. Each
     Percept case has its own ``Monitor``, so its request slots are never shared with another case."""
-    sem, traces, realtime = asyncio.Semaphore(args.parallel), out / "traces" / arm, arm.startswith("percept")
+    sem, traces = asyncio.Semaphore(args.parallel), out / "traces" / arm
+    realtime = arm.startswith("percept") or arm == "detector_track_decide"     # paced by the clock, traced
     if isinstance(judge.inner, judging.OracleJudge):
         judge.inner.realtime = realtime
     if realtime:
@@ -151,12 +199,24 @@ async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot
     if missing:     # the media went away (e.g. a drive unmounted): stop loudly, keep finished arms
         raise SystemExit(f"{arm}: {len(missing)} media files are missing, first {missing[0]}")
 
-    pace = args.speed if getattr(args, "pace_baselines", False) else None
+    pace = args.speed if getattr(args, "pace_baselines", False) or arm in TRACK_ARMS else None
+    if arm in TRACK_ARMS:
+        from benchmarks import tracking
+        tracking.require()      # a clear SystemExit naming requirements-detector.txt, before any case runs
 
     async def one(case):
         async with sem:
             if judge.tripped.is_set():
                 return A.ArmResult(arm, case.case_id, aborted=True)
+            if arm in TRACK_ARMS:
+                from benchmarks import tracking
+                zones = detector_zones(case, arm, args, judge)
+                if arm == "detector_track_rule":
+                    return await tracking.run_track_rule(case, timelines, zones=zones, cooldown_s=args.cooldown,
+                                                         fps=args.fps, pace=pace, device=args.detector_device)
+                return await tracking.run_track_decide(case, judge, timelines, traces / f"{case.case_id}.jsonl",
+                                                       zones=zones, rearm_s=args.cooldown, speed=args.speed,
+                                                       fps=args.fps, device=args.detector_device, stats=foot)
             if realtime and arm.startswith(PLAN_ARM):
                 compiled = plan_for(case, arm, args, judge)
                 return await A.run_percept(case, judge, timelines, traces / f"{case.case_id}.jsonl",
@@ -178,8 +238,18 @@ async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot
     finally:
         if isinstance(judge.inner, judging.OracleJudge):
             judge.inner.realtime = False
-    return [r if isinstance(r, A.ArmResult) else
-            A.ArmResult(arm, c.case_id, error=f"{type(r).__name__}: {r}"[:300]) for c, r in zip(cases, done)]
+    res = [r if isinstance(r, A.ArmResult) else
+           A.ArmResult(arm, c.case_id, error=f"{type(r).__name__}: {r}"[:300]) for c, r in zip(cases, done)]
+    computed = [r for r in res if r.compute]
+    if computed:        # tracker arms: detection and tracking CPU, summed over cases (decoding excluded).
+        # Thread CPU of the calling threads: torch's own worker threads are not in it, so the arm's
+        # process CPU (the footprint's cpu_s) is the figure of record; GPU time is not measured.
+        from benchmarks import tracking
+        cpu, minutes = sum(r.compute["cpu_s"] for r in computed), sum(r.seconds for r in computed) / 60
+        foot.update(detector_cpu_s=round(cpu, 2), detector_device=computed[0].compute["device"],
+                    detector_cpu_s_per_clip_minute=round(cpu / minutes, 3) if minutes else None,
+                    detector_weights=tracking.weights_record())
+    return res
 
 
 # --------------------------------------------------------------------------- raw results
@@ -667,6 +737,7 @@ async def main_async(args) -> int:
                                      "price": dataclasses.asdict(judge.price) if judge.price else None,
                                      "oracle": oracle if args.judge == "fake" else None},
         "monitor_config": {a: monitor_config(a, args, judge) for a in arm_names if a.startswith("percept")},
+        "tracker_config": {a: tracker_config(a, args) for a in arm_names if a in TRACK_ARMS},
         "harness": {"clip_frames": A.CLIP_FRAMES, "clip_s": A.CLIP_S, "min_confidence": A.MIN_CONFIDENCE,
                     "baseline_history_spacing_s": A.HISTORY_SPACING_S,
                     "onset_before_s": judging.ONSET_BEFORE_S, "onset_after_s": judging.ONSET_AFTER_S,
@@ -776,7 +847,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--root", help="dataset root (default: the adapter's staging path)")
     p.add_argument("--limit", type=int, help="at most this many cases")
     p.add_argument("--negatives", type=int, default=2, help="absent labels watched per case")
-    p.add_argument("--arms", default=",".join(ARMS))
+    p.add_argument("--arms", default=",".join(DEFAULT_ARMS))
     p.add_argument("--judge", default="fake", help="fake | gemini:<model>")
     p.add_argument("--price", help="in,out,tokens_per_image: USD per million tokens, and tokens per image")
     p.add_argument("--max-cost-usd", type=float, help="hard cap for the whole run (reserved before each request)")
@@ -786,6 +857,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--cooldown", type=float, default=A.COOLDOWN_S, help="baseline cooldown, seconds")
     p.add_argument("--percept-plans", help="a directory of plans: percept-plan-<name> arms use <dir>/<name>/*.json, "
                    "one plan per source; the plan whose source id is in the case id is used")
+    p.add_argument("--detector-plans", help="a directory of per-source plans (e.g. <dir>/<name>): the "
+                   "detector_track_* arms take each condition's zones from the plan whose source id is in the "
+                   "case id; required on real footage (without it only the synthetic dataset runs, each "
+                   "condition then covering the frame)")
+    p.add_argument("--detector-device", default="cpu", choices=("cpu", "mps", "cuda", "auto"),
+                   help="where the detector_track_* arms run the person detector (auto: cuda, then mps, then cpu)")
     p.add_argument("--percept-budget", type=int, default=13,
                    help="max_requests_per_min (attempts) of the percept-matched arm; 13 admits at most 12 "
                         "requests a minute when each succeeds first time (chunk5's rate)")

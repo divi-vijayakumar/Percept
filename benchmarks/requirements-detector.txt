@@ -1,0 +1,7 @@
+# The detector_track_rule and detector_track_decide arms, on top of benchmarks/requirements.txt.
+# Pinned: a run's detector is part of its configuration (the manifest also records the versions and
+# the sha256 of the weights file). torch and torchvision: BSD-3; scipy: BSD-3. The detector's
+# COCO-trained weights carry no licence of their own: see benchmarks/README.md.
+torch==2.11.0
+torchvision==0.26.0
+scipy==1.15.3

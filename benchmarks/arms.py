@@ -110,6 +110,7 @@ class ArmResult:
     empty_clips: int = 0        # judge calls skipped because the clip held no frame
     preds_without_yes_frames: int = 0   # Percept decisions whose yes-look frames weren't found
     error: str = ""             # the case failed: recorded, scored as skipped
+    compute: dict = field(default_factory=dict)     # detector arms: per-case CPU and wall seconds
 
 
 def _finish(result: ArmResult, feed: Feed, complete: bool) -> ArmResult:
@@ -299,11 +300,15 @@ async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, coo
 async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, speed: float = 1.0,
                       fps: float = 5.0, max_requests_per_min: Optional[int] = None,
                       rearm_s: Optional[float] = None, arm: str = "percept",
-                      stats: Optional[dict] = None, conditions: Optional[list] = None) -> ArmResult:
+                      stats: Optional[dict] = None, conditions: Optional[list] = None,
+                      monitor_judge=None, on_frame=None) -> ArmResult:
     """One ``Monitor`` per case, frames pushed at ``speed`` times real time (1.0 is the faithful
     setting: Percept's budget and timers run on the real clock). ``None`` keeps a default. Frames
     are already sampled to ``fps``, so the Monitor processes every one (``watch(fps=None)``).
-    ``conditions`` (a compiled plan's) replace the ones built from the case's condition text."""
+    ``conditions`` (a compiled plan's) replace the ones built from the case's condition text.
+    ``monitor_judge`` replaces ``judge`` as the Monitor's judge (``judge`` still carries the run's
+    spend cap), and ``await on_frame(monitor, t, image, wall)`` runs after each frame is pushed
+    (a detector that pokes the Monitor)."""
     extra = {} if rearm_s is None else {"rearm_s": rearm_s}
     if conditions is None:
         conditions = [Condition(c.id, c.text, kind=c.kind, **extra) for c in case.conditions]
@@ -314,7 +319,7 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
     timelines.set(case.case_id, anchor, speed)
     peak_preroll, lag, late = 0, 0.0, 0
     budget = {} if max_requests_per_min is None else {"max_requests_per_min": max_requests_per_min}
-    shown = FrameRecorder(judge, timelines)
+    shown = FrameRecorder(judge if monitor_judge is None else monitor_judge, timelines)
     monitor = Monitor(shown, conditions, store=MemoryStore(), trace=trace_path, **budget)
     async with monitor:
         decisions = monitor.watch(source, ack="auto", fps=None)
@@ -333,6 +338,8 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
                     lag, late = max(lag, behind), late + (behind > MAX_LAG_S)
                     shown.pushed(image, t)
                     source.push(image, t_wall=wall)
+                    if on_frame is not None:
+                        await on_frame(monitor, t, image, wall)
                     peak_preroll = max(peak_preroll, len(preroll))
                 else:
                     complete = True
