@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import unittest
 
 try:
@@ -13,6 +14,7 @@ import numpy as np
 import pytest
 
 from percept import JudgeItem, JudgeRequest, Condition
+from percept.judges.base import RetryableError
 from benchmarks import arms, datasets, judging, metrics, run
 from benchmarks.arms import ArmResult, Look, Pred
 from benchmarks.cases import CondSpec, Occurrence, Segment, VideoCase
@@ -203,6 +205,88 @@ def test_cost_cap_stops_the_percept_arm(clips, tmp_path):
     assert result.seconds < clips[0].duration
 
 
+def _ask(guard, n, failing):
+    """``n`` one-look requests through ``guard``, each failing when ``failing(i)``."""
+    for i in range(n):
+        req = JudgeRequest(f"r{i}", "cam", 0, (JudgeItem(Condition("c", "c")),), (np.zeros((8, 8, 3), np.uint8),),
+                           (0.0, 1.0))
+        guard.inner.fail = failing(i)
+        asyncio.run(guard.judge(req))
+
+
+class _Flaky(judging.FakeJudge):
+    """Answers yes, or fails as unavailable while ``fail`` is set."""
+
+    def __init__(self):
+        super().__init__(lambda r: RetryableError("down") if self.fail else {"c": ("yes", 0.9, "seen")},
+                         price=judging.PriceModel(0.10, 0.40, 258), retries=0)
+        self.fail = False
+
+
+def test_a_run_stops_only_once_its_arm_cannot_be_valid():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(1000)
+    _ask(guard, 100, lambda i: i < 50)                      # 50 of at most 1000: could still end at 5.0%
+    assert not guard.tripped.is_set()
+    _ask(guard, 1, lambda i: True)                          # 51: at least 5.1% however it ends
+    assert guard.tripped.is_set()
+    assert guard.stopped_for == "51 looks failed, more than 5% of the 1000 this arm can make"
+    why = run.not_publishable(*_meva_run_aborted(guard.stopped_for))
+    assert why == [f"the run was stopped early: {guard.stopped_for}"]
+
+
+def test_an_early_burst_in_a_long_arm_does_not_stop_it():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(2000)
+    _ask(guard, 100, lambda i: i < 40)                      # 40% of the first 100, but 40 of 2000 is 2%
+    assert not guard.tripped.is_set()
+
+
+def test_an_arm_without_a_bound_is_never_stopped_for_failures():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)
+    _ask(guard, 200, lambda i: True)
+    assert not guard.tripped.is_set() and guard.stopped_for is None
+
+
+def test_a_new_arm_keeps_why_the_run_stopped():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(20)
+    _ask(guard, 2, lambda i: True)
+    reason = guard.stopped_for
+    guard.new_arm(1000)
+    assert guard.tripped.is_set() and guard.stopped_for == reason and (guard.looks, guard.failed) == (0, 0)
+
+
+def test_the_look_bound_of_each_arm(clips):
+    args = run.parser().parse_args(["--dataset", "synthetic", "--percept-budget", "24"])
+    case, n = clips[0], len(clips[0].conditions)
+    minutes = math.ceil(case.duration / 60 + 2)
+    assert run.look_bound("percept-matched", [case], args, None) == minutes * 24 * n
+    assert run.look_bound("percept", [case], args, None) == minutes * 6 * n
+    assert run.look_bound("chunk5", [case], args, None) == (math.floor(case.duration / 5) + 2) * n
+    assert run.look_bound("detector_debounce", [case], args, None) is None
+
+
+def test_a_dead_judge_stops_the_percept_arm_early(clips, tmp_path):
+    flaky = _Flaky()
+    flaky.fail = True
+    guard = judging.CostGuard(flaky, None)
+    guard.new_arm(20)                                       # a bound small enough for a 12 s clip
+    result = asyncio.run(arms.run_percept(clips[0], guard, judging.Timelines(), tmp_path / "t.jsonl", speed=4.0,
+                                          max_requests_per_min=600))
+    assert guard.tripped.is_set() and guard.failed > 1 and guard.stopped_for.endswith("of the 20 this arm can make")
+    assert result.aborted
+    assert result.seconds < clips[0].duration
+
+
+def test_looks_the_cap_refused_are_not_judge_failures():
+    guard = judging.CostGuard(_Flaky(), 0.0)                # every request refused by the cap
+    guard.new_arm(10)
+    _ask(guard, 60, lambda i: False)
+    assert guard.tripped.is_set() and guard.stopped_for is None and guard.looks == 0
+
+
 def test_a_cap_needs_a_price(clips):
     oracle = judging.OracleJudge(clips, judging.Timelines(), price=None)
     with pytest.raises(ValueError):
@@ -355,6 +439,12 @@ def _meva_run(**arm):
              unintended_loss_total=0)
     s.update(arm)
     return manifest, {"percept": s}
+
+
+def _meva_run_aborted(stopped_for):
+    manifest, table = _meva_run()
+    manifest.update(aborted=True, stopped_for=stopped_for)
+    return manifest, table
 
 
 def test_intentional_sampling_is_publishable_unintended_loss_is_not():

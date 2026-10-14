@@ -28,3 +28,15 @@ def test_the_plan_whose_source_is_in_the_case_id_is_compiled(tmp_path):
         R.plan_for(SimpleNamespace(case_id="x.G999"), "percept-plan-zone", args, FakeJudge({}))
     cfg = R.monitor_config("percept-plan-zone", SimpleNamespace(percept_plans=str(tmp_path)), FakeJudge({}))
     assert set(cfg["plans"]) == {"G341.json", "G423.json"} and cfg["plans"]["G341.json"]["max_requests_per_min"] == 24
+
+
+def test_a_plan_arm_is_bounded_by_its_own_conditions_and_never_raises(tmp_path):
+    (tmp_path / "zone").mkdir()
+    two = plan("G341")
+    two["concerns"].append(dict(two["concerns"][0], id="door", description="a door opens"))
+    (tmp_path / "zone" / "G341.json").write_text(json.dumps(two))
+    args = SimpleNamespace(percept_plans=str(tmp_path))
+    case = SimpleNamespace(case_id="x.G341", duration=300.0, conditions=[object()])     # 1 labelled, 2 judged
+    assert R.look_bound("percept-plan-zone", [case], args, FakeJudge({})) == 7 * 24 * 2
+    stray = SimpleNamespace(case_id="x.G999", duration=300.0, conditions=[object()])     # no plan: no bound
+    assert R.look_bound("percept-plan-zone", [case, stray], args, FakeJudge({})) is None

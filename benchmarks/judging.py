@@ -26,6 +26,8 @@ from percept import JudgeRequest, JudgeResult, PriceModel
 from percept.judges import FakeJudge, gemini
 from percept.plans.run import CachingJudge
 
+from benchmarks.metrics import MAX_FAILED_LOOK_RATE
+
 ONSET_BEFORE_S, ONSET_AFTER_S = 0.5, 2.0    # images showing [onset - 0.5, onset + 2] show the beginning
 
 
@@ -128,10 +130,37 @@ class CostCapReached(Exception):
 
 class CostGuard(CachingJudge):
     """A judge wrapper holding a run-wide dollar cap (see the module docstring): Percept's
-    ``CachingJudge`` with its reply cache off, so every request is sent."""
+    ``CachingJudge`` with its reply cache off, so every request is sent.
+
+    It also stops the run (``tripped``, as the cap does) once the current arm cannot be valid
+    whatever happens next: its failed looks exceed ``MAX_FAILED_LOOK_RATE`` of the most looks the
+    arm can make (``new_arm(max_looks)``). An arm's failed-look rate at the end is at least its
+    failed looks over that bound, so it is already over the limit; a provider outage then costs
+    minutes, not the rest of the run. An arm without a bound is never stopped this way. Looks the
+    cap refused are not judge failures and are not counted. ``stopped_for`` says why it stopped
+    (None for the cap)."""
 
     def __init__(self, inner, cap_usd: Optional[float], spend_log=None) -> None:
         super().__init__(inner, cap_usd=cap_usd, spend_log=spend_log, cache=None)
+        self.stopped_for: Optional[str] = None
+        self.new_arm(None)
+
+    def new_arm(self, max_looks: Optional[int]) -> None:
+        self.looks = self.failed = 0
+        self.max_looks = max_looks
+
+    async def judge(self, request: JudgeRequest) -> JudgeResult:
+        result = await super().judge(request)
+        for ob in result.observations:
+            if ob.failure != "budget":
+                self.looks += 1
+                self.failed += ob.failed
+        if (self.max_looks is not None and not self.tripped.is_set()
+                and self.failed > MAX_FAILED_LOOK_RATE * self.max_looks):
+            self.stopped_for = (f"{self.failed} looks failed, more than {MAX_FAILED_LOOK_RATE:.0%} of the "
+                                f"{self.max_looks} this arm can make")
+            self.tripped.set()
+        return result
 
 
 def build(spec: str, *, cases, timelines: Timelines, price: Optional[PriceModel], oracle: dict) -> object:
