@@ -1990,7 +1990,7 @@ def test_a_verification_cancelled_before_its_first_step_is_settled(monkeypatch):
         async with percept.Monitor(judge, [FALL], store=mem(), max_requests_per_min=1000,
                                    max_concurrent_requests=1) as m:
             src, watch, stream, w = await _parked_verification(m, judge)
-            requests = stream.totals["requests"]
+            requests, verifies = stream.totals["requests"], judge.started["verify"]
             w.not_before = 0.0
             stream.dispatch(m._mono())                  # the retry starts a task...
             task = stream.verify_task
@@ -1998,9 +1998,9 @@ def test_a_verification_cancelled_before_its_first_step_is_settled(monkeypatch):
             wall = m._wall
             m._wall = lambda: wall() + 120
             stream.fire(TIMER)                          # ...the deadline cancels it before it runs
-            assert task.cancelled() or task.cancelling()
             for _ in range(5):
                 await asyncio.sleep(0)
+            assert task.cancelled() and judge.started["verify"] == verifies       # it never ran
             assert stream.verify_task is None and _settled(m, stream)
             assert stream.totals["requests"] == requests + 1       # charged once, at its reservation
             await _ends_and_frees_capacity(m, src, watch, judge)
