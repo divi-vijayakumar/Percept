@@ -2144,7 +2144,8 @@ def test_an_error_after_the_answer_is_logged_and_its_request_settled(monkeypatch
     with caplog.at_level("ERROR", logger="percept"):
         slots, detects = run(main())
     assert slots == 0 and detects == 1
-    failed = [r for r in caplog.records if "failed" in r.getMessage() and r.exc_info]
+    # reported when the task ends, naming its request, not only when the monitor closes
+    failed = [r for r in caplog.records if r.getMessage().startswith("percept: stream cam: request ")]
     assert len(failed) == 1 and "absorb broke" in str(failed[0].exc_info[1])
 
 
