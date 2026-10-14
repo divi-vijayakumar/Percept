@@ -704,7 +704,15 @@ def test_shutdown_order_and_no_leaked_threads_or_tasks(tmp_path):
         m = percept.Monitor(judge, conds, store=SqliteStore(tmp_path / "s.db"), max_requests_per_min=100)
         src = CaptureSource("live", TickingReader, live=True, stall_timeout=None)
         m.watch(src, fps=None)
-        await asyncio.sleep(0.3)
+        # Shut down only once the stream is really running: wait for frames instead of a fixed
+        # sleep, which raced the Monitor's start-up on a slow machine (0 frames after 0.3 s).
+        loop = asyncio.get_running_loop()
+        end = loop.time() + 30.0
+        while loop.time() < end:
+            stream = m.stats()["streams"].get("live")
+            if stream is not None and stream["frames"] > 5:
+                break
+            await asyncio.sleep(0.02)
         frames = m.stats()["streams"]["live"]["frames"]
         await m.aclose()
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
