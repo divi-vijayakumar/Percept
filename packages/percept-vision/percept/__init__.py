@@ -28,11 +28,15 @@ from percept import decide  # noqa: F401  internal for now: the runtime drives i
 from percept import judges
 from percept.delivery import MemoryStore, SqliteStore
 from percept.monitor import Monitor
+from percept import plans  # experimental: watch plans, compiled to Monitor arguments
 from percept import trace  # TraceWriter, read, replay(path); the pure replay is percept.replay
 from percept.sources import PushSource, open_source
 from percept.triggers import every, on_change
+from percept.plans import run as _evaluation  # noqa: E402  experimental: percept.plans.run, not exported
 
-__version__ = "0.9.0"
+del _evaluation
+
+__version__ = "1.0.0"
 
 __all__ = [
     "Condition",
@@ -61,5 +65,6 @@ __all__ = [
     "judges",
     "on_change",
     "open_source",
+    "plans",
     "trace",
 ]

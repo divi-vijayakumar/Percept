@@ -19,7 +19,8 @@ request        ``request_id``, ``judge``, ``purpose``, ``stream_epoch``, ``condi
 fate           a decide trace (``event``, ``condition_id``, ``subject``, ``fate``,
                ``occurrence_id``, ``detail``), or runtime fates counted per minute (``event:
                "runtime"``, ``fate``, ``condition_id``, ``n``, ``bucket_wall``)
-drop           one look given up unjudged (each one also counted in the ``dropped_budget`` fate):
+drop           one look given up unjudged (each one also counted in the ``dropped_budget`` or
+               ``dropped_for_verification`` fate):
                ``condition_id``, ``subject``, ``reason`` (``budget``: the request or cost budget
                refused it; ``deadline``: it waited past its deadline for a concurrency slot or
                for evidence; ``ended``: the stream ended), ``purpose``, ``priority``,

@@ -55,7 +55,6 @@ async def main(args) -> None:
     # store=None is the default durable SQLite store (percept.db); MemoryStore suits a demo.
     async with Monitor(judge, [door], store=None if live else MemoryStore(), max_requests_per_min=30) as monitor:
         source = percept.open_source(args.rtsp, stream_id=args.camera) if live else PushSource(args.camera)
-        decisions = monitor.watch(source, ack="manual")
 
         def on_event(payload: dict) -> None:            # runs on the monitor's event loop
             after = payload.get("after") or {}
@@ -75,20 +74,27 @@ async def main(args) -> None:
                 await asyncio.sleep(0.1)
             source.close()
 
-        if args.mqtt:                                   # Frigate's events, live, from its broker
-            import paho.mqtt.client as mqtt
-            loop, client = asyncio.get_running_loop(), mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-            client.on_message = lambda _c, _u, msg: loop.call_soon_threadsafe(on_event, json.loads(msg.payload))
-            client.connect(args.mqtt)
-            client.subscribe("frigate/events")
-            client.loop_start()
-        player = None if live else asyncio.create_task(offline())
-        async for delivery in decisions:
-            d = delivery.decision
-            print(f"{d.type:<9} {d.condition_id} ({d.subject}): {d.reason}  [{d.confidence:.2f}]")
-            await delivery.ack()                        # after your agent has acted on it
-        if player:
-            await player
+        async def detector() -> None:                   # its own task, started before the watch
+            await monitor.ready(args.camera)            # pokes are accepted from here on, whatever the order
+            if args.mqtt:                               # Frigate's events, live, from its broker
+                import paho.mqtt.client as mqtt
+                loop, client = asyncio.get_running_loop(), mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+                client.on_message = lambda _c, _u, msg: loop.call_soon_threadsafe(on_event, json.loads(msg.payload))
+                client.connect(args.mqtt)
+                client.subscribe("frigate/events")
+                client.loop_start()
+            if not live:
+                await offline()
+
+        detecting = asyncio.create_task(detector())
+        try:
+            async for delivery in monitor.watch(source, ack="manual"):
+                d = delivery.decision
+                print(f"{d.type:<9} {d.condition_id} ({d.subject}): {d.reason}  [{d.confidence:.2f}]")
+                await delivery.ack()                    # after your agent has acted on it
+            await detecting
+        finally:
+            detecting.cancel()                          # the watch failed or ended: stop the detector too
 
 
 if __name__ == "__main__":

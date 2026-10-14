@@ -110,6 +110,7 @@ class ArmResult:
     empty_clips: int = 0        # judge calls skipped because the clip held no frame
     preds_without_yes_frames: int = 0   # Percept decisions whose yes-look frames weren't found
     error: str = ""             # the case failed: recorded, scored as skipped
+    compute: dict = field(default_factory=dict)     # detector arms: per-case CPU and wall seconds
 
 
 def _finish(result: ArmResult, feed: Feed, complete: bool) -> ArmResult:
@@ -299,12 +300,18 @@ async def run_detector(case: VideoCase, judge, timelines, *, then_vlm: bool, coo
 async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, speed: float = 1.0,
                       fps: float = 5.0, max_requests_per_min: Optional[int] = None,
                       rearm_s: Optional[float] = None, arm: str = "percept",
-                      stats: Optional[dict] = None) -> ArmResult:
+                      stats: Optional[dict] = None, conditions: Optional[list] = None,
+                      monitor_judge=None, on_frame=None) -> ArmResult:
     """One ``Monitor`` per case, frames pushed at ``speed`` times real time (1.0 is the faithful
     setting: Percept's budget and timers run on the real clock). ``None`` keeps a default. Frames
-    are already sampled to ``fps``, so the Monitor processes every one (``watch(fps=None)``)."""
+    are already sampled to ``fps``, so the Monitor processes every one (``watch(fps=None)``).
+    ``conditions`` (a compiled plan's) replace the ones built from the case's condition text.
+    ``monitor_judge`` replaces ``judge`` as the Monitor's judge (``judge`` still carries the run's
+    spend cap), and ``await on_frame(monitor, t, image, wall)`` runs after each frame is pushed
+    (a detector that pokes the Monitor)."""
     extra = {} if rearm_s is None else {"rearm_s": rearm_s}
-    conditions = [Condition(c.id, c.text, kind=c.kind, **extra) for c in case.conditions]
+    if conditions is None:
+        conditions = [Condition(c.id, c.text, kind=c.kind, **extra) for c in case.conditions]
     result = ArmResult(arm, case.case_id, cooldown_s=conditions[0].rearm_s if conditions else 0.0)
     preroll = PreRoll()
     source = PushSource(case.case_id, preroll=preroll)
@@ -312,7 +319,7 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
     timelines.set(case.case_id, anchor, speed)
     peak_preroll, lag, late = 0, 0.0, 0
     budget = {} if max_requests_per_min is None else {"max_requests_per_min": max_requests_per_min}
-    shown = FrameRecorder(judge, timelines)
+    shown = FrameRecorder(judge if monitor_judge is None else monitor_judge, timelines)
     monitor = Monitor(shown, conditions, store=MemoryStore(), trace=trace_path, **budget)
     async with monitor:
         decisions = monitor.watch(source, ack="auto", fps=None)
@@ -331,6 +338,8 @@ async def run_percept(case: VideoCase, judge, timelines, trace_path: Path, *, sp
                     lag, late = max(lag, behind), late + (behind > MAX_LAG_S)
                     shown.pushed(image, t)
                     source.push(image, t_wall=wall)
+                    if on_frame is not None:
+                        await on_frame(monitor, t, image, wall)
                     peak_preroll = max(peak_preroll, len(preroll))
                 else:
                     complete = True
@@ -441,9 +450,10 @@ def _read_trace(result: ArmResult, path: Path, media, frames: Optional[dict] = N
             result.looks.append(Look(o["condition_id"], media(o["evidence_t"][0]), media(o["evidence_t"][1]),
                                      o["answer"], o["failure"], o["purpose"], o.get("confidence") or 0.0,
                                      tuple(shown), o["request_id"]))
-        elif rec["kind"] == "drop" and rec.get("reason") in ("budget", "deadline"):
-            # One record per dropped look: the request budget refused it (``budget``), or it waited
-            # past its deadline for a request slot or evidence (``deadline``). Its evidence would
+        elif rec["kind"] == "drop" and rec.get("reason") in ("budget", "deadline", "verification"):
+            # One record per dropped look: the request budget refused it (``budget``), it waited
+            # past its deadline for a request slot or evidence (``deadline``), or attempts were kept
+            # for a waiting verification until its deadline passed (``verification``). Its evidence would
             # have been the clip ending at the trigger (or, without one, when it was dropped).
             t = rec.get("t_trigger")
             t1 = media(rec["t_wall"] if t is None else t)
@@ -459,14 +469,29 @@ def _rusage() -> tuple[float, float]:
     return r.ru_utime + r.ru_stime, r.ru_maxrss / scale
 
 
+def _asleep_s() -> Optional[float]:
+    """Seconds the machine has spent asleep or suspended since boot: a clock that keeps counting
+    through sleep minus one that stops. None where the platform has no such pair."""
+    if sys.platform == "darwin":
+        return time.clock_gettime(time.CLOCK_MONOTONIC_RAW) - time.clock_gettime(time.CLOCK_UPTIME_RAW)
+    if hasattr(time, "CLOCK_BOOTTIME"):
+        return time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)
+    return None
+
+
 class Footprint:
-    """CPU seconds over a block of work, and the process's peak resident memory when it ended
-    (a high-water mark for the whole run so far: run one arm per process for a per-arm peak)."""
+    """CPU seconds over a block of work, the process's peak resident memory when it ended (a
+    high-water mark for the whole run so far: run one arm per process for a per-arm peak), and
+    the seconds the machine slept during it (None where unmeasurable). A sleep stops the clock the
+    footage is paced by, so a run that slept is not a real-time run."""
 
     def __enter__(self) -> "Footprint":
         self.cpu0, _ = _rusage()
+        self.asleep0 = _asleep_s()
         return self
 
     def __exit__(self, *exc) -> None:
         cpu, self.peak_rss_mb = _rusage()
         self.cpu_s = cpu - self.cpu0
+        asleep = _asleep_s()
+        self.slept_s = None if asleep is None or self.asleep0 is None else round(max(0.0, asleep - self.asleep0), 3)

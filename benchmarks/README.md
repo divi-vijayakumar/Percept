@@ -2,7 +2,7 @@
 
 A reproducible harness that runs Percept and the pipelines a developer would otherwise write over
 the same public footage, with the same condition text and the same judge, and reports every arm,
-including the ones Percept loses. No benchmark results are published for the 0.9.0 Developer
+including the ones Percept loses. No benchmark results are published with the 1.0 Developer
 Preview; this directory is the method, so anyone can run it.
 
 ```bash
@@ -11,7 +11,8 @@ pip install -e "packages/percept-vision[dev]" -r benchmarks/requirements.txt   #
 # Offline dry run: generated clips, an oracle judge, no key, no network (about 15 s)
 python -m benchmarks.run --dataset synthetic --judge fake --out benchmarks/results/dry-run
 
-# E1 on MEVA with a real judge and a hard spend cap
+# The E1 comparison (configs/e1.json: same judge, evidence and suppression window for every arm) on MEVA,
+# with a real judge and a hard spend cap
 python -m benchmarks.fetch_meva --hours 5                 # about 8.3 GB, into eval/bench-staging/meva (ignored by git)
 python -m benchmarks.run --config benchmarks/configs/e1.json --judge gemini:<model> \
     --price <usd_per_mtok_in>,<usd_per_mtok_out>,<tokens_per_image> --max-cost-usd 10 \
@@ -63,6 +64,9 @@ and used under its own license.
 | `chunk5`, `chunk10`, `chunk30` | judge the last T seconds every T seconds, all conditions batched, then a cooldown |
 | `detector_debounce` | a people (HOG) or motion (MOG2) detector with a cooldown; only conditions a detector can express |
 | `detector_then_vlm` | the same detectors gate judge calls; other conditions are gated by motion |
+| `percept-plan-<name>` | a `Monitor` configured by a compiled watch plan: with `--percept-plans <dir>`, one plan per source in `<dir>/<name>/`, the plan used for a case being the one whose source id is in the case id; fed in real time |
+| `detector_track_rule` | a person detector, a tracker and a zone-entry rule: one event per track whose box centre enters the condition's zone, then the cooldown; no judge. Only entry conditions (`enter`, or MEVA's `person_enters_scene_through_structure`) |
+| `detector_track_decide` | the same tracker entries poke a real `Monitor` (subject `track <id>`) whose judge is a free rule judge (`yes` for what the tracker poked); Percept's occurrence, verify and rearm (`--cooldown`) semantics decide; real-time pacing |
 
 All arms decode the same frames (5 per second, longest side 640 px; checked by digest) and judge
 the same evidence format (up to 4 frames). The frames each arm *judges* differ by its sampling:
@@ -80,7 +84,53 @@ configuration unchanged: every Percept arm's label in the report, and its
 start at different points: a baseline's cooldown runs from the end of the evidence of its last
 decision for the condition, Percept's rearm from its decision time.
 
-The people detector is OpenCV 4's built-in HOG detector run on a 320-pixel frame: a weak
+### The tracker arms
+
+Not run by default: install `pip install -r benchmarks/requirements-detector.txt` (pinned torch,
+torchvision, scipy) and name them in `--arms`; without those packages they stop with that hint.
+They express one goal, entry (`enter` in a local dataset, `person_enters_scene_through_structure`
+in MEVA); every other condition is reported unsupported and left out of their scores.
+`--detector-plans <dir>/<name>` gives each condition the zones of the per-source plan whose source
+id is in the case id (the same files a `percept-plan-<name>` arm uses). It is required on real
+footage, and a plan that gives a supported condition no zone stops that case with an error: a zone
+never silently becomes the whole frame. `--detector-device` picks `cpu` (default), `mps`, `cuda`
+or `auto`. Both arms always play the footage in real time. For example:
+
+    python -m benchmarks.run --dataset local:<dir> --arms detector_track_rule,detector_track_decide \
+        --detector-plans <plans>/<name> --cooldown 30 --parallel 2
+
+* Detector: torchvision `ssdlite320_mobilenet_v3_large` with its `COCO_V1` weights, run on each
+  harness frame (5 a second, longest side 640 px), `person` class, score 0.5 or more (boxes from
+  0.1 feed only the tracker's second association stage). torchvision's code is BSD-3. The weights
+  carry no licence of their own: torchvision states that its pre-trained models "may have their
+  own licenses or terms and conditions derived from the dataset used for training" and that it is
+  the user's responsibility to determine permission. They are trained on COCO (annotations CC BY
+  4.0, images under Flickr terms of use). Their licence is therefore not verified as permissive.
+  They are downloaded from download.pytorch.org on first use; nothing is committed, and the run's
+  footprint records the weights URL, the cached file's sha256 and the torch and torchvision versions.
+* Tracker: `benchmarks/tracker.py`, written for this harness from the association method in the
+  ByteTrack paper (Zhang et al., ECCV 2022, arXiv:2110.06864, Algorithm 1): high-score boxes are
+  matched to tracks first, low-score boxes then only extend tracks seen on the previous frame. No
+  code from the ByteTrack, SORT or DeepSORT repositories was used. Motion is its own (a smoothed
+  per-frame velocity of the box corners, not a Kalman filter). Assignment by
+  `scipy.optimize.linear_sum_assignment` (BSD-3). A track is confirmed on its second matched frame;
+  one unseen for 2 s is dropped, so a person who returns later gets a new id.
+* Rule (a zone-entry rule, not a test of passing through a structure: it has no direction or line
+  check beyond moving inward): a track enters when its box centre goes from outside every zone to inside one, or when
+  it is first seen inside a zone within 0.08 (normalised) of its edge and then moves 0.03 further
+  in. Someone first seen deeper inside never enters, and each track enters at most once. A person
+  who appears mid-zone (e.g. through a doorway inside the zone) is not an entry for this rule.
+* In `detector_track_decide` the rearm is per subject (per track), as in Percept: two people
+  entering within the rearm window are two decisions, where `detector_track_rule`'s cooldown is per
+  condition. Its conditions have no trigger of their own (pokes only) and a budget of 600 attempts
+  a minute, since the rule judge is free.
+* Per case, `compute` records the detection and tracking CPU seconds (thread time; decoding
+  excluded; GPU time not counted on `mps`/`cuda`) and wall seconds; the footprint adds
+  `detector_cpu_s_per_clip_minute`. Thread time leaves out torch's own worker threads, so the
+  arm's process CPU (the footprint's `cpu_s`) is the figure to report. Cost is 0: neither arm calls
+  a provider.
+
+The people detector of `detector_debounce` is OpenCV 4's built-in HOG detector run on a 320-pixel frame: a weak
 detector, there to stand in for "a detector a developer has to hand", not a strong one. OpenCV 5
 removed it; with OpenCV 5 installed, no condition is person-expressible and the report says so.
 
@@ -89,7 +139,19 @@ removed it; with OpenCV 5 installed, no condition is person-expressible and the 
 - whether the run is **publishable**, and if not, why: an oracle judge, a dataset other than
   MEVA (every such report carries a "diagnostic, not publishable" banner), `--speed` other
   than 1, a spend-cap abort, skipped cases, unintended frame loss, a Percept feed that fell
-  more than a second behind real time, or an arm whose judge failed on more than 5% of its looks;
+  more than a second behind real time, an arm whose judge failed on more than 5% of its looks
+  (the run stops, and says why, once an arm's failed looks pass 5% of the most looks it can make:
+  its rate can then only end above the limit, so a provider outage costs minutes, not the run;
+  separately, 45 failed looks among an arm's last 50 (a look is one condition in one request) stop
+  the run as `aborted_provider_outage`, a partial run that is never scored as complete, even if the
+  provider recovers; on a short run whose arms can make fewer than 900 looks the validity stop comes
+  first, and the run is marked `aborted_failed_looks`),
+  or a machine that slept during the run (the footprint's `slept_s`: a clock that counts through
+  sleep minus one that stops; on macOS the harness also holds `caffeinate` while it runs, but a
+  closed laptop lid can still sleep it);
+- how the run ended, as the manifest's `status`: `complete`, `aborted_spend_cap`,
+  `aborted_failed_looks` or `aborted_provider_outage` (a run merged from parts is complete only
+  when every part is);
 - frames, in two separate counts. **Intentional sampling**: frames the configured policies
   skip (the harness's `--fps` sampling of the source, the Monitor's processing fps cap if set);
   expected, never disqualifying. **Unintended loss**: frames lost because decoding, a queue or
@@ -106,8 +168,9 @@ removed it; with OpenCV 5 installed, no condition is person-expressible and the 
 - per arm: judge looks, failed looks by failure type (`timeout`, `malformed`, `refused`,
   `unavailable`, ...) and their rate, looks the spend cap refused (reported apart, never in the
   rate), `unknown` answers and their rate, and baseline judge calls skipped for an empty clip;
-- per arm: dropped looks, split for Percept into `budget` (the request budget refused it) and
-  `deadline` (it waited past its deadline for a request slot or for evidence),
+- per arm: dropped looks, split for Percept into `budget` (the request budget refused it),
+  `deadline` (it waited past its deadline for a request slot or for evidence) and `verification`
+  (attempts were kept for a waiting verification until its deadline passed),
   `trigger_never_fired` and `verify_rejected` misses, unverified and uncertain decisions, and the
   seconds of footage actually watched;
 - every miss attributed to a stage: `trigger_never_fired`, `budget_dropped`, `judge_failed`,

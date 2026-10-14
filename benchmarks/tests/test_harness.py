@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import unittest
 
 try:
@@ -13,6 +14,7 @@ import numpy as np
 import pytest
 
 from percept import JudgeItem, JudgeRequest, Condition
+from percept.judges.base import RetryableError
 from benchmarks import arms, datasets, judging, metrics, run
 from benchmarks.arms import ArmResult, Look, Pred
 from benchmarks.cases import CondSpec, Occurrence, Segment, VideoCase
@@ -203,6 +205,159 @@ def test_cost_cap_stops_the_percept_arm(clips, tmp_path):
     assert result.seconds < clips[0].duration
 
 
+def _ask(guard, n, failing):
+    """``n`` one-look requests through ``guard``, each failing when ``failing(i)``."""
+    for i in range(n):
+        req = JudgeRequest(f"r{i}", "cam", 0, (JudgeItem(Condition("c", "c")),), (np.zeros((8, 8, 3), np.uint8),),
+                           (0.0, 1.0))
+        guard.inner.fail = failing(i)
+        asyncio.run(guard.judge(req))
+
+
+class _Flaky(judging.FakeJudge):
+    """Answers yes, or fails as unavailable while ``fail`` is set."""
+
+    def __init__(self):
+        super().__init__(lambda r: RetryableError("down") if self.fail else {"c": ("yes", 0.9, "seen")},
+                         price=judging.PriceModel(0.10, 0.40, 258), retries=0)
+        self.fail = False
+
+
+def test_a_run_stops_only_once_its_arm_cannot_be_valid():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(1000)
+    _ask(guard, 100, lambda i: i % 2 == 0)                  # 50 of at most 1000: could still end at 5.0%
+    assert not guard.tripped.is_set()                       # (spread out: no outage window fills)
+    _ask(guard, 1, lambda i: True)                          # 51: at least 5.1% however it ends
+    assert guard.tripped.is_set() and guard.status == "aborted_failed_looks"
+    assert guard.stopped_for == "51 looks failed, more than 5% of the 1000 this arm can make"
+    why = run.not_publishable(*_meva_run_aborted(guard.stopped_for))
+    assert why == [f"the run was stopped early: {guard.stopped_for}"]
+
+
+def test_an_early_burst_in_a_long_arm_does_not_stop_it():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(2000)
+    _ask(guard, 100, lambda i: i < 40)                      # 40% of the first 100, but 40 of 2000 is 2%
+    assert not guard.tripped.is_set()
+
+
+def test_an_arm_without_a_bound_is_never_stopped_for_its_failure_rate():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)
+    _ask(guard, 200, lambda i: i % 5 < 2)                   # 40% failed, but never 45 of any 50
+    assert not guard.tripped.is_set() and guard.stopped_for is None
+
+
+def test_a_new_arm_keeps_why_the_run_stopped():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(20)
+    _ask(guard, 2, lambda i: True)
+    reason = guard.stopped_for
+    guard.new_arm(1000)
+    assert guard.tripped.is_set() and guard.stopped_for == reason and (guard.looks, guard.failed) == (0, 0)
+
+
+def test_the_look_bound_of_each_arm(clips):
+    args = run.parser().parse_args(["--dataset", "synthetic", "--percept-budget", "24"])
+    case, n = clips[0], len(clips[0].conditions)
+    minutes = math.ceil(case.duration / 60 + 2)
+    assert run.look_bound("percept-matched", [case], args, None) == minutes * 24 * n
+    assert run.look_bound("percept", [case], args, None) == minutes * 6 * n
+    assert run.look_bound("chunk5", [case], args, None) == (math.floor(case.duration / 5) + 2) * n
+    assert run.look_bound("detector_debounce", [case], args, None) is None
+
+
+def test_a_dead_judge_stops_the_percept_arm_early(clips, tmp_path):
+    flaky = _Flaky()
+    flaky.fail = True
+    guard = judging.CostGuard(flaky, None)
+    guard.new_arm(20)                                       # a bound small enough for a 12 s clip
+    result = asyncio.run(arms.run_percept(clips[0], guard, judging.Timelines(), tmp_path / "t.jsonl", speed=4.0,
+                                          max_requests_per_min=600))
+    assert guard.tripped.is_set() and guard.failed > 1 and guard.stopped_for.endswith("of the 20 this arm can make")
+    assert result.aborted
+    assert result.seconds < clips[0].duration
+
+
+def test_a_sustained_provider_outage_aborts_the_run_as_such():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)                                     # no validity bound: only the outage rule
+    _ask(guard, 50, lambda i: i >= 6)                       # 44 of the last 50 failed: not yet
+    assert not guard.tripped.is_set() and guard.status is None
+    _ask(guard, 1, lambda i: True)                          # the window now holds 45 failures
+    assert guard.tripped.is_set() and guard.status == "aborted_provider_outage"
+    assert guard.stopped_for == "provider outage: 45 of the last 50 looks failed"
+    _ask(guard, 5, lambda i: False)                         # a recovery does not undo it
+    assert guard.status == "aborted_provider_outage"
+
+
+def test_a_burst_of_failures_in_a_healthy_run_is_no_outage_and_each_arm_starts_fresh():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)
+    _ask(guard, 500, lambda i: 200 <= i < 240)              # 40 failures in a row, then healthy
+    assert not guard.tripped.is_set()
+    _ask(guard, 44, lambda i: True)                         # 44 failed...
+    guard.new_arm(None)                                     # ...but a new arm starts its own window
+    _ask(guard, 6, lambda i: True)
+    assert not guard.tripped.is_set() and len(guard.recent) == 6
+
+
+def test_an_aborted_run_keeps_its_status_through_a_real_merge(tmp_path):
+    base = ["--dataset", "synthetic", "--limit", "1", "--seed", "3"]
+    for name, arm in (("p1", "chunk5"), ("p2", "detector_debounce"), ("p3", "chunk10")):
+        assert run.main(base + ["--arms", arm, "--out", str(tmp_path / name)]) == 0
+
+    def edit(name, **changes):
+        path = tmp_path / name / "manifest.json"
+        m = json.loads(path.read_text())
+        m.update(changes)
+        for k in [k for k, v in changes.items() if v is None]:
+            m.pop(k)
+        path.write_text(json.dumps(m))
+
+    edit("p1", aborted=True, stopped_for="provider outage: 50 of the last 50 looks failed",
+         status="aborted_provider_outage")
+    edit("p3", aborted=True, status=None)                   # a run recorded before status existed
+    run.merge([tmp_path / "p2", tmp_path / "p1"], tmp_path / "m")
+    m = json.loads((tmp_path / "m" / "manifest.json").read_text())
+    assert m["status"] == "aborted_provider_outage" and m["aborted"] and m["stopped_for"].startswith("provider")
+    run.merge([tmp_path / "p2", tmp_path / "p3"], tmp_path / "legacy")
+    legacy = json.loads((tmp_path / "legacy" / "manifest.json").read_text())
+    assert legacy["aborted"] and legacy["status"] == "aborted_spend_cap"      # never "complete"
+    why = run.not_publishable(*_meva_run_aborted("provider outage: 50 of the last 50 looks failed"))
+    assert why == ["the run was stopped early: provider outage: 50 of the last 50 looks failed"]
+
+
+def test_how_a_run_ended_is_named_once_and_by_its_first_cause():
+    capped = judging.CostGuard(_Flaky(), 0.0)               # the cap refuses everything...
+    capped.new_arm(10)
+    _ask(capped, 60, lambda i: True)                        # ...so no look counts toward either rule
+    assert capped.status == "aborted_spend_cap" and len(capped.recent) == 0
+    first = judging.CostGuard(_Flaky(), None)
+    first.new_arm(100)                                      # validity trips at 6 failures (> 5 of 100)
+    _ask(first, 60, lambda i: True)                         # the outage window fills later: status stays
+    assert first.status == "aborted_failed_looks"
+
+
+def test_one_failed_request_counts_one_look_per_condition():
+    guard = judging.CostGuard(_Flaky(), None)
+    guard.new_arm(None)
+    for i in range(25):                                     # 25 two-condition requests, all failed: 50 looks
+        req = JudgeRequest(f"r{i}", "cam", 0, (JudgeItem(Condition("a", "a")), JudgeItem(Condition("b", "b"))),
+                           (np.zeros((8, 8, 3), np.uint8),), (0.0, 1.0))
+        guard.inner.fail = True
+        asyncio.run(guard.judge(req))
+    assert guard.status == "aborted_provider_outage" and guard.looks == 50
+
+
+def test_looks_the_cap_refused_are_not_judge_failures():
+    guard = judging.CostGuard(_Flaky(), 0.0)                # every request refused by the cap
+    guard.new_arm(10)
+    _ask(guard, 60, lambda i: False)
+    assert guard.tripped.is_set() and guard.stopped_for is None and guard.looks == 0
+
+
 def test_a_cap_needs_a_price(clips):
     oracle = judging.OracleJudge(clips, judging.Timelines(), price=None)
     with pytest.raises(ValueError):
@@ -351,10 +506,16 @@ def test_dry_run_end_to_end(tmp_path):
 def _meva_run(**arm):
     manifest = {"judge": {"spec": "gemini:m"}, "dataset": "meva", "speed": 1.0, "aborted": False,
                 "pace_baselines": True}
-    s = dict(skipped=[], footprint={"max_push_lag_s": 0.1}, intentional_sampling={}, unintended_loss={},
+    s = dict(skipped=[], footprint={"max_push_lag_s": 0.1, "slept_s": 0.0}, intentional_sampling={}, unintended_loss={},
              unintended_loss_total=0)
     s.update(arm)
     return manifest, {"percept": s}
+
+
+def _meva_run_aborted(stopped_for):
+    manifest, table = _meva_run()
+    manifest.update(aborted=True, stopped_for=stopped_for)
+    return manifest, table
 
 
 def test_intentional_sampling_is_publishable_unintended_loss_is_not():
@@ -364,6 +525,37 @@ def test_intentional_sampling_is_publishable_unintended_loss_is_not():
                                          unintended_loss_total=3))
     assert len(why) == 1 and "unintended_loss" in why[0]
     assert run.not_publishable(*_meva_run(footprint={"max_push_lag_s": 2.5}))       # the lag limit still holds
+
+
+def test_a_run_the_machine_slept_through_is_not_publishable():
+    def why(slept):
+        return run.not_publishable(*_meva_run(footprint={"max_push_lag_s": 0.1, "slept_s": slept}))
+    assert why(0.0) == []
+    assert len(why(772.0)) == 1 and "slept" in why(772.0)[0]
+    assert why(None) == ["sleep was not measured (unsupported platform, or a run recorded before it was)"]
+    old = _meva_run(footprint={"max_push_lag_s": 0.1})      # a run recorded before sleep was measured
+    assert run.not_publishable(*old) == ["sleep was not measured (unsupported platform, or a run recorded before it was)"]
+
+
+def test_footprint_measures_sleep_where_the_platform_can():
+    with arms.Footprint() as fp:
+        pass
+    assert fp.slept_s == (0.0 if arms._asleep_s() is not None else None)
+
+
+@pytest.mark.parametrize("readings, slept", [((10.0, 15.25), 5.25), ((10.0, 10.0), 0.0), ((10.0, 9.0), 0.0),
+                                             ((None, 15.0), None), ((10.0, None), None)])
+def test_footprint_sleep_is_the_growth_of_time_asleep(monkeypatch, readings, slept):
+    it = iter(readings)
+    monkeypatch.setattr(arms, "_asleep_s", lambda: next(it))
+    with arms.Footprint() as fp:
+        pass
+    assert fp.slept_s == slept
+
+
+def test_the_oracle_keeps_no_request():
+    oracle = judging.OracleJudge([], judging.Timelines())
+    assert oracle._fake.sent is None
 
 
 def test_loss_accounting_adds_up_per_arm():
@@ -444,15 +636,18 @@ def test_percept_drops_are_split_by_reason_and_a_null_trigger_time_falls_back(tm
              "t_trigger": None},
             {"v": 1, "t_wall": 120.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "budget",
              "t_trigger": 115.0},
+            {"v": 1, "t_wall": 125.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "verification",
+             "t_trigger": 124.0},
             {"v": 1, "t_wall": 130.0, "stream_id": "x", "kind": "drop", "condition_id": "a", "reason": "ended",
              "t_trigger": 129.0}]
     trace.write_text("".join(json.dumps(r) + "\n" for r in recs))
     r = watched("percept", "x", 60)
     arms._read_trace(r, trace, lambda w: w - 100.0)
-    assert r.budget_drops == [("a", 7.0 - arms.CLIP_S, 7.0, "deadline"), ("a", 15.0 - arms.CLIP_S, 15.0, "budget")]
+    assert r.budget_drops == [("a", 7.0 - arms.CLIP_S, 7.0, "deadline"), ("a", 15.0 - arms.CLIP_S, 15.0, "budget"),
+                              ("a", 24.0 - arms.CLIP_S, 24.0, "verification")]
     case = VideoCase("x", "t", (Segment("u.mp4", 0, 60),), (CondSpec("a", "a"),), (Occurrence("a", 6, 8),))
     s = metrics.score([r], {"x": case}, tol=1.0)
-    assert s["drops_budget"] == 1 and s["drops_deadline"] == 1
+    assert s["drops_budget"] == 1 and s["drops_deadline"] == 1 and s["drops_verification"] == 1
     assert s["misses_by_stage"]["budget_dropped"] == 1
 
 
@@ -616,3 +811,40 @@ def test_spend_is_logged_per_request(clips, tmp_path):
     asyncio.run(arms.run_chunk(clips[0], guard, timelines, 5.0))
     rows = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(rows) == guard.requests and abs(sum(r["cost_usd"] for r in rows) - guard.spent) < 1e-9
+
+
+def test_the_benchmark_scores_through_the_sdk_with_equal_numbers():
+    from percept.plans import ClipRun, evaluate, load_labels
+    from percept.plans import score as sdk
+    conds = (CondSpec("a", "a begins"), CondSpec("b", "b begins"))
+    case = VideoCase("x", "t", (Segment("x.mp4", 0, 1800),), conds,
+                     (Occurrence("a", 100, 105), Occurrence("a", 500, 505), Occurrence("a", 900, 902)))
+    r = watched("arm", "x", 1800, cost_usd=0.3, cooldown_s=2.0)
+    r.preds = [pred(101, decided=103), pred(102, decided=104), pred(900, cid="b"), pred(899, 901, frames=(899, 901))]
+    r.looks = [Look("a", 499, 501, "no", None), Look("a", 99, 101, "yes", None, "detect", 0.9),
+               Look("a", 899, 901, "yes", None, "detect", 0.9), Look("a", 899, 901, "yes", None, "verify", 0.9)]
+    r.budget_drops = [("a", 600, 610, "budget")]
+    bench = metrics.score([r], {"x": case}, tol=1.0, seed=3)
+    labels = load_labels({"conditions": [{"label": "a", "text": "a begins"}, {"label": "b", "text": "b begins"}],
+                          "clips": [{"file": "x.mp4", "occurrences": [
+                              {"label": o.label, "start": o.start, "end": o.end} for o in case.occurrences]}]})
+    run_ = ClipRun("x.mp4", 1800, cost_usd=0.3, cooldown_s=2.0,
+                   predictions=[sdk.Prediction(q.condition_id, q.t0, q.t1, q.t_decided, q.confidence, q.frames)
+                                for q in r.preds],
+                   looks=[sdk.Look(lk.condition_id, lk.t0, lk.t1, lk.answer, lk.failed, lk.purpose, lk.confidence,
+                                   lk.frames) for lk in r.looks],
+                   drops=[sdk.Drop(*d) for d in r.budget_drops])
+    s = evaluate(labels, [run_], tol=1.0, seed=3)
+    assert (s.occurrences, s.tp, s.fp, s.fn, s.duplicates) == (bench["occurrences"], bench["matched"],
+                                                                bench["false_events"], bench["missed"],
+                                                                bench["duplicates"])
+    assert s.tp == 2 and s.fp == 1 and s.duplicates == 1
+    for k in ("recall", "onset_recall", "recall_ceiling", "precision", "false_per_hour", "latency_p50_s",
+              "latency_p95_s", "cost_per_true_event"):
+        assert getattr(s, k) == bench[k], k
+    assert dict(s.misses_by_stage) == bench["misses_by_stage"] and dict(s.funnel) == bench["funnel"]
+    assert s.funnel_matched_outside == bench["funnel_matched_outside"]
+    assert list(s.funnel_not_applicable) == bench["funnel_not_applicable"]
+    assert {k: s.ci95[k] for k in metrics.CI_METRICS} == bench["ci95"]
+    m, ms = metrics.match(r.preds, list(case.occurrences), 1.0), sdk.match(r.preds, list(case.occurrences), 1.0)
+    assert m["matched"] == dict(ms.matched) and m["false"] == list(ms.false)

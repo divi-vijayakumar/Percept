@@ -1,6 +1,6 @@
 # Contributing to Percept
 
-Percept is in Developer Preview (0.9.0) and under active development. Issues and discussion are
+Percept 1.0 is a Developer Preview under active development. Issues and discussion are
 welcome; please open an issue before a large pull request.
 
 Contact: support@velvee.ai
@@ -8,7 +8,7 @@ Contact: support@velvee.ai
 ## Setup
 
 ```bash
-git clone <repository-url> percept && cd percept
+git clone https://github.com/divi-vijayakumar/Percept.git percept && cd percept
 python -m venv .venv && . .venv/bin/activate
 pip install -e "packages/percept-vision[dev]"
 make check      # guardrails + tests, offline, no API keys

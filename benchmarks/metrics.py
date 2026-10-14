@@ -63,152 +63,33 @@ real time). They are reported separately; only unintended loss disqualifies a ru
 
 from __future__ import annotations
 
-import math
-import random
 from collections import Counter
 
-PRECOG_S = 0.5
-MIN_CONFIDENCE = 0.6        # a positive judgment, as Percept and the baselines apply it
+from percept.plans import score as _sdk
+from percept.plans.score import (  # noqa: F401 - re-exported: one implementation, in the SDK
+    BOOTSTRAP_N, FUNNEL, MIN_CONFIDENCE, PRECOG_S, STAGES, _ratio, attribute, frames_of, percentile, reachable,
+    shows, survived)
+
 MAX_FAILED_LOOK_RATE = 0.05  # more failed looks than this in any arm: the run is not publishable
-BOOTSTRAP_N = 1000
-FUNNEL = ("annotated", "candidate", "admitted", "evaluated", "positive", "verified", "delivered")
-STAGES = ("trigger_never_fired", "budget_dropped", "judge_failed", "judge_said_no", "cooldown_absorbed",
-          "verify_rejected", "decide_suppressed")
 CI_METRICS = ("recall", "onset_recall", "precision", "false_per_hour", "cost_per_true_event", "latency_p50_s")
 
 
-def _overlaps(a0: float, a1: float, b0: float, b1: float) -> bool:
-    return a0 <= b1 and b0 <= a1
-
-
-def frames_of(x) -> tuple:
-    """The case times of the frames a decision or look showed the judge."""
-    return tuple(x.frames) if x.frames else (x.t0, x.t1)
-
-
-def shows(x, w0: float, w1: float) -> bool:
-    """At least one judged frame lies in ``[w0, w1]``."""
-    return any(w0 <= t <= w1 for t in frames_of(x))
-
-
-def _yes(lk) -> bool:
-    return not lk.failed and lk.answer == "yes" and lk.confidence >= MIN_CONFIDENCE
-
-
 def match(preds: list, occs: list, tol: float) -> dict:
-    """``preds`` and ``occs`` for one condition on one case."""
-    matched: dict[int, object] = {}         # occurrence index -> the decision that matched it
-    dups, false = [], []
-    for p in sorted(preds, key=lambda p: (p.t_decided, p.t1)):
-        last = max(frames_of(p))
-        hits = [i for i, o in enumerate(occs) if shows(p, o.start - tol, o.end + tol) and last >= o.start - PRECOG_S]
-        free = [i for i in hits if i not in matched]
-        if free:
-            matched[min(free, key=lambda i: occs[i].start)] = p
-        elif hits:
-            dups.append(p)
-        else:
-            false.append(p)
-    onset = {i for i, p in matched.items() if shows(p, occs[i].start - tol, occs[i].start + tol)}
-    return {"matched": matched, "onset": onset, "dups": dups, "false": false,
-            "missed": [o for i, o in enumerate(occs) if i not in matched]}
-
-
-def _dropped_near(drops: list, w0: float, w1: float) -> bool:
-    return any(_overlaps(d[1], d[2], w0, w1) for d in drops)
-
-
-def attribute(occ, looks: list, drops: list, tol: float, *, reports: tuple = (), cooldown: float = 0.0) -> str:
-    """The stage a missed occurrence was lost at; ``reports`` are the matched decisions' times."""
-    w0, w1 = occ.start - tol, occ.end + tol
-    seen = [lk for lk in looks if shows(lk, w0, w1)]
-    answered = [lk for lk in seen if not lk.failed]
-    yes = [lk for lk in answered if _yes(lk)]
-    if yes:
-        first = min(max(frames_of(lk)) for lk in yes)
-        if any(0 <= first - t < cooldown for t in reports):
-            return "cooldown_absorbed"
-        if any(lk.purpose == "verify" and lk.answer == "no" for lk in answered):
-            return "verify_rejected"
-        return "decide_suppressed"
-    if answered:
-        return "judge_said_no"
-    if any(lk.failed and lk.failed != "budget" for lk in seen):
-        return "judge_failed"
-    if seen or _dropped_near(drops, w0, w1):
-        return "budget_dropped"
-    return "trigger_never_fired"
-
-
-def survived(occ, looks: list, drops: list, fires: list, tol: float, *, judged: bool, verifies: bool) -> int:
-    """How many funnel stages after ``annotated`` the occurrence passed, up to ``verified``
-    (0-5); a stage the arm doesn't have passes through."""
-    w0, w1 = occ.start - tol, occ.end + tol
-    seen = [lk for lk in looks if shows(lk, w0, w1)]
-    fired = any(w0 <= t <= w1 for _, t in fires)
-    admitted = [lk for lk in seen if lk.failed != "budget"]     # a refused look never reached the judge
-    answered = [lk for lk in seen if not lk.failed]
-    positive = [lk for lk in answered if lk.purpose == "detect" and _yes(lk)]
-    stages = (bool(seen) or fired or _dropped_near(drops, w0, w1),
-              bool(admitted) if judged else True,
-              bool(answered) if judged else True,
-              bool(positive) if judged else fired,
-              any(lk.purpose == "verify" and lk.answer == "yes" for lk in answered) if verifies else True)
-    n = 0
-    for ok in stages:
-        if not ok:
-            break
-        n += 1
-    return n
-
-
-def reachable(occs: list, cooldown: float, tol: float) -> int:
-    """How many occurrences a perfect judge could report, one report per cooldown."""
-    n, ready = 0, -math.inf
-    for o in sorted(occs, key=lambda o: o.start):
-        at = max(o.start, ready)
-        if at <= o.end + tol:
-            n, ready = n + 1, at + cooldown
-    return n
-
-
-def percentile(values: list, q: float) -> float | None:
-    if not values:
-        return None
-    s = sorted(values)
-    k = (len(s) - 1) * q
-    lo, hi = math.floor(k), math.ceil(k)
-    return s[lo] + (s[hi] - s[lo]) * (k - lo)
-
-
-def _ratio(a: float, b: float) -> float | None:
-    return a / b if b else None
+    """``preds`` and ``occs`` for one condition on one case (:func:`percept.plans.score.match`)."""
+    m = _sdk.match(preds, occs, tol)
+    return {"matched": dict(m.matched), "onset": set(m.onset), "dups": list(m.dups), "false": list(m.false),
+            "missed": list(m.missed)}
 
 
 def from_tallies(tallies: list) -> dict:
     """The bootstrapped metrics from a list of per-case tallies (a case may repeat)."""
-    t = Counter()
-    lat: list = []
-    for c in tallies:
-        t.update({k: v for k, v in c.items() if k != "latencies"})
-        lat += c["latencies"]
-    hours = t["seconds"] / 3600.0
-    return {"recall": _ratio(t["tp"], t["occ"]), "onset_recall": _ratio(t["onset"], t["occ"]),
-            "precision": _ratio(t["tp"], t["preds"]), "false_per_hour": _ratio(t["false"], hours),
-            "cost_per_true_event": _ratio(t["cost"], t["tp"]), "latency_p50_s": percentile(lat, 0.5)}
+    m = _sdk.from_tallies(tallies)
+    return {k: m[k] for k in CI_METRICS}
 
 
 def bootstrap(tallies: list, seed: int = 0, n: int = BOOTSTRAP_N) -> dict:
     """95% case-level bootstrap intervals, ``{metric: [low, high]}`` (None when undefined)."""
-    rng = random.Random(seed)
-    draws: dict = {k: [] for k in CI_METRICS}
-    if tallies:
-        for _ in range(n):
-            m = from_tallies([tallies[rng.randrange(len(tallies))] for _ in tallies])
-            for k in CI_METRICS:
-                if m[k] is not None:
-                    draws[k].append(m[k])
-    return {k: [percentile(v, 0.025), percentile(v, 0.975)] if v else None for k, v in draws.items()}
+    return _sdk.bootstrap(tallies, seed, n, metrics=CI_METRICS)
 
 
 def looks_by_failure(results: list) -> dict:
@@ -271,37 +152,27 @@ def score(results: list, cases: dict, tol: float, *, only: set | None = None, se
             conditions += 1
             occs = [o for o in case.occurrences_of(cond.label) if o.start < r.seconds]
             preds = [p for p in r.preds if p.condition_id == cond.id]
-            m = match(preds, occs, tol)
-            lat = [p.t_decided - occs[i].start for i, p in m["matched"].items()]
-            tally.update(occ=len(occs), tp=len(m["matched"]), onset=len(m["onset"]), preds=len(preds),
-                         false=len(m["false"]))
-            tally_lat += lat
-            occ_n += len(occs)
-            pred_n += len(preds)
-            tp += len(m["matched"])
-            onset_n += len(m["onset"])
-            dup_n += len(m["dups"])
-            false_n += len(m["false"])
-            ceiling += reachable(occs, r.cooldown_s, tol)
-            false_absent += 0 if occs else len(m["false"])
-            latencies += lat
             looks = [lk for lk in r.looks if lk.condition_id == cond.id]
             drops = [d for d in r.budget_drops if d[0] == cond.id]
-            reports = tuple(max(frames_of(p)) for p in m["matched"].values())
-            stages.update(attribute(o, looks, drops, tol, reports=reports, cooldown=r.cooldown_s)
-                          for o in m["missed"])
             fires = [f for f in r.fires if f[0] == cond.id]
-            hit = set(m["matched"])
-            for i, o in enumerate(occs):
-                n = survived(o, looks, drops, fires, tol, judged=judged,
-                             verifies=verifies and cond.kind == "event")     # Percept verifies events only
-                for k in range(n + 1):
-                    funnel[k] += 1
-                if i in hit:
-                    if n == len(FUNNEL) - 2:
-                        funnel[-1] += 1
-                    else:
-                        outside += 1        # matched although an earlier stage shows no pass
+            cs = _sdk.score_condition(occs, preds, looks, drops, fires, tol, cooldown=r.cooldown_s, judged=judged,
+                                      verifies=verifies and cond.kind == "event")   # Percept verifies events only
+            m = cs.match
+            tally.update(occ=len(occs), tp=len(m.matched), onset=len(m.onset), preds=len(preds),
+                         false=len(m.false))
+            tally_lat += cs.latencies
+            occ_n += len(occs)
+            pred_n += len(preds)
+            tp += len(m.matched)
+            onset_n += len(m.onset)
+            dup_n += len(m.dups)
+            false_n += len(m.false)
+            ceiling += cs.ceiling
+            false_absent += 0 if occs else len(m.false)
+            latencies += cs.latencies
+            stages.update(cs.stages)
+            funnel = [a + b for a, b in zip(funnel, cs.funnel)]
+            outside += cs.outside
         tallies.append(dict(tally, latencies=tally_lat))
     hours = seconds / 3600.0
     return {
@@ -327,6 +198,7 @@ def score(results: list, cases: dict, tol: float, *, only: set | None = None, se
         "preds_without_yes_frames": sum(r.preds_without_yes_frames for r in results),
         "budget_drops": sum(r.budget_dropped for r in results),
         "drops_budget": drop_reasons.get("budget", 0), "drops_deadline": drop_reasons.get("deadline", 0),
+        "drops_verification": drop_reasons.get("verification", 0),
         **looks_by_failure(results),
         "trigger_never_fired": stages.get("trigger_never_fired", 0),
         "verify_rejected": stages.get("verify_rejected", 0),

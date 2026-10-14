@@ -3,7 +3,7 @@
 Values are frozen dataclasses. Behaviour is limited to validation and pure conversion
 (``Decision.to_dict`` / ``from_dict``). Extension points are ``Protocol`` classes: a
 ``Source`` brings frames, a ``Trigger`` decides when to look, a ``Judge`` decides what is
-true, a ``Sink`` receives decisions (interface only; none ship in 0.9.0) and a ``Store`` persists
+true, a ``Sink`` receives decisions (interface only; none ship in 1.0) and a ``Store`` persists
 state.
 
 This module imports nothing else from ``percept`` and does no I/O.
@@ -34,6 +34,7 @@ Fate = Literal[
     "dropped_quality",  # frame vetoed as corrupt or blurry
     "stale",            # result arrived for an older epoch, version or generation
     "dropped_capacity", # refused: every decision slot on the stream holds an open occurrence
+    "dropped_for_verification",  # waited past its deadline while attempts were kept for verification
 ]
 BlindKind = Literal["link_down", "degraded_video", "scene_reset", "budget_exhausted", "judge_down", "paused"]
 HealthKind = Literal[
@@ -58,6 +59,10 @@ DECISION_TYPES: tuple[str, ...] = get_args(DecisionType)
 ANSWERS: tuple[str, ...] = get_args(Answer)
 FAILURES: tuple[str, ...] = get_args(Failure)
 FATES: tuple[str, ...] = get_args(Fate)
+
+DEFAULT_CLIP_S = 4.0        # an event's evidence window when Condition.clip_s is None
+DEFAULT_CLIP_FRAMES = 4     # frames judged from it when Condition.clip_frames is None
+MAX_CLIP_FRAMES = 16
 BLIND_KINDS: tuple[str, ...] = get_args(BlindKind)
 HEALTH_KINDS: tuple[str, ...] = get_args(HealthKind)
 
@@ -146,12 +151,26 @@ class Condition:
     ``kind="state"`` is something that stays true for a while (a door is open) and is
     held, rechecked and cleared on evidence. ``kind="event"`` happens at a moment (a person
     falls); it is verified on the moment's own evidence, reported once, then rearms.
+
+    ``trigger`` decides when the condition is worth judging: one ``Trigger``, ``None`` for the
+    default of the kind, or a tuple of triggers. A tuple means any of them: the condition is
+    due when any member fires. Members that are equal to another condition's trigger share
+    its state, and every look is still drawn from the one budget of the stream.
+
+    ``clip_s`` and ``clip_frames`` (events only) set the evidence window an event is judged
+    on: ``clip_frames`` frames (1 to 16) spread over the ``clip_s`` seconds (> 0) before the
+    trigger, the newest always included. ``None`` keeps the defaults, 4 seconds and 4 frames.
+    Verification on the original interval re-judges exactly the frames the detection used. The
+    window must fit in the stream's pre-roll (8 seconds unless the source has its own
+    ``PreRoll``): a longer one is refused when the condition or the stream is added. When the
+    pre-roll holds less than the window (the stream just started or reconnected), the event is
+    judged on what is held and the look is counted as ``evidence_short`` in ``coverage()``.
     """
 
     id: str
     text: str
     kind: Kind = "state"
-    trigger: Trigger | None = None           # None: the default for the kind
+    trigger: Trigger | tuple[Trigger, ...] | None = None  # None: the default; a tuple: any of them
     judge: str | None = None                 # route name inside a cascade judge
     zones: tuple[Polygon, ...] = ()
     exclude_zones: tuple[Polygon, ...] = ()
@@ -170,12 +189,14 @@ class Condition:
     cooldown_s: float = 0.0
     emit_cleared: bool = False
     version: int = 1
+    clip_s: float | None = None              # events: seconds of evidence before the trigger (None: 4)
+    clip_frames: int | None = None           # events: frames judged from that window (None: 4)
 
     def __post_init__(self) -> None:
         _require(bool(self.id) and self.id.strip() == self.id, "Condition.id must be a non-empty token")
         _require("/" not in self.id, "Condition.id may not contain '/'")
         _require(bool(self.text.strip()), "Condition.text must not be empty")
-        _require(self.trigger is None or isinstance(self.trigger, Trigger), "Condition.trigger must be a Trigger")
+        _check_trigger(self.trigger)
         _require(self.kind in ("state", "event"), f"Condition.kind must be 'state' or 'event', got {self.kind!r}")
         _require(self.verify in ("auto", "original", "fresh", "off"), f"unknown verify mode {self.verify!r}")
         _require(not (self.kind == "event" and self.verify == "fresh"),
@@ -195,12 +216,25 @@ class Condition:
         _require(_finite(self.cooldown_s) and self.cooldown_s >= 0, "cooldown_s must be >= 0")
         _require(self.max_open_s is None or (_finite(self.max_open_s) and self.max_open_s > 0),
                  "max_open_s must be positive or None")
+        _require(self.kind == "event" or (self.clip_s is None and self.clip_frames is None),
+                 "clip_s and clip_frames apply to events: a state is judged on the current frame")
+        _require(self.clip_s is None or (not isinstance(self.clip_s, bool) and _finite(self.clip_s)
+                                         and self.clip_s > 0), "clip_s must be a positive number or None")
+        _require(self.clip_frames is None or (isinstance(self.clip_frames, int) and not isinstance(self.clip_frames, bool)
+                                              and 1 <= self.clip_frames <= MAX_CLIP_FRAMES),
+                 f"clip_frames is an integer in [1, {MAX_CLIP_FRAMES}] or None")
         for polygon in self.zones:
             _check_polygon(polygon, "zones")
         for polygon in self.exclude_zones:
             _check_polygon(polygon, "exclude_zones")
         _require(all(isinstance(s, str) and s.strip() for s in self.not_when),
                  "not_when entries are non-empty strings")
+
+    @property
+    def clip_window(self) -> tuple[float, int]:
+        """(seconds, frames) of an event's evidence window, with ``None`` resolved to the defaults."""
+        return (DEFAULT_CLIP_S if self.clip_s is None else float(self.clip_s),
+                DEFAULT_CLIP_FRAMES if self.clip_frames is None else self.clip_frames)
 
     @property
     def verify_mode(self) -> Literal["original", "fresh", "off"]:
@@ -511,6 +545,20 @@ class BlindInterval:
                  "t_end_wall is None or >= t_start_wall")
 
 
+def _check_trigger(trigger: Any) -> None:
+    if trigger is None:
+        return
+    if isinstance(trigger, list):
+        raise ValueError("Condition.trigger takes a tuple of triggers, not a list")
+    if isinstance(trigger, tuple):
+        _require(len(trigger) > 0, "Condition.trigger: a tuple of triggers must not be empty")
+        for member in trigger:
+            _require(not isinstance(member, (tuple, list)), "Condition.trigger: tuples of triggers don't nest")
+            _require(isinstance(member, Trigger), f"Condition.trigger: {member!r} is not a Trigger")
+        return
+    _require(isinstance(trigger, Trigger), "Condition.trigger must be a Trigger or a tuple of triggers")
+
+
 # --------------------------------------------------------------------------- protocols
 
 
@@ -587,7 +635,7 @@ class Delivery(Protocol):
 class Sink(Protocol):
     """Receives decisions, for example to forward them to a webhook.
 
-    Interface only: no sinks ship in 0.9.0 and the monitor does not call one. Consume decisions
+    Interface only: no sinks ship in 1.0 and the monitor does not call one. Consume decisions
     from ``Monitor.watch`` and forward them yourself.
     """
 

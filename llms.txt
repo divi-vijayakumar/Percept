@@ -1,6 +1,6 @@
 # Percept
 
-> Percept (`pip install "percept-vision[video,gemini]"`, `import percept`) is a Python decision layer for live video from fixed cameras: give it a stream and plain-language conditions, and it delivers one decision (`met`, `uncertain`, `cleared` or `expired`) per real occurrence to your agent. Cheap triggers decide when to look, a vision-language judge (Gemini, Claude or an OpenAI-compatible server; each needs its pip extra) decides what is true, and a pure reducer decides whether the agent hears about it. Decisions are stored before delivery and redelivered until acknowledged. Version 0.9.0 is a Developer Preview; the API may change before 1.0.
+> Percept (`pip install "percept-vision[video,gemini]"`, `import percept`) is a Python decision layer for live video from fixed cameras: give it a stream and plain-language conditions, and it delivers one decision (`met`, `uncertain`, `cleared` or `expired`) per real occurrence to your agent. Cheap triggers decide when to look, a vision-language judge (Gemini, Claude or an OpenAI-compatible server; each needs its pip extra) decides what is true, and a pure reducer decides whether the agent hears about it. Decisions are stored before delivery and redelivered until acknowledged. Version 1.0 is a Developer Preview: the runtime API is the 1.0 contract; watch plans and the evaluation toolkit (`percept.plans`) are experimental.
 
 ## Docs
 
@@ -11,13 +11,17 @@
 - [Conditions](docs/conditions.md): every `Condition` field, its default, triggers, and how fast a state clears
 - [Judges](docs/judges.md): Gemini, Claude, OpenAI-compatible, cascades, FakeJudge, prices and request budgets
 - [Sources](docs/sources.md): `open_source` for cameras and files, `PushSource` for app-owned capture, link health
+- [Watch plans](docs/plans.md): one document for a whole watch; `percept.plans.compile`, `explain`, `feasibility` (experimental)
+- [Evaluation](docs/evaluation.md): labels, frozen splits, the trigger stage alone, comparing configurations, scoring the test split once (experimental)
 
 ## Examples
 
 - [webhook_agent.py](examples/webhook_agent.py): the integration recipe: an event and a state, decisions POSTed to a webhook with retries and acked after a 2xx, a health task; `--offline` needs no key
 - [quickstart.py](examples/quickstart.py): offline demo of a state, an event, coverage and trace replay with FakeJudge
 - [kitchen_watch.py](examples/kitchen_watch.py): a state on a heartbeat trigger with `max_open_s` and manual ack
-- [frigate_semantic.py](examples/frigate_semantic.py): Frigate person events poke Percept to judge what the person is doing
+- [frigate_semantic.py](examples/frigate_semantic.py): Frigate person events poke Percept to judge what the person is doing; the detector task awaits `monitor.ready(stream_id)` before `monitor.poke(...)`, so it does not race `watch()`
+- [watch_plan.py](examples/watch_plan.py): `percept.plans` (experimental; the schema may change): a whole watch as one plain-data plan. `plans.compile(plan, routes)` checks it and returns `monitor_kwargs` for `Monitor(**...)`, the `events` to `poke`, and a `plan_hash`; `explain()` lists every setting with its origin and `feasibility()` checks periodic demand against the request budget
+- [plan_evaluation.py](examples/plan_evaluation.py): `percept.plans.run` (experimental): evaluate plans on your own labelled clips. `attention_only` scores the trigger stage with no judge calls; `run` runs the Monitor per clip behind `CachingJudge` (hard dollar cap, reply cache); `sweep` scores the configurations you declare on dev or validation side by side (no ranking); `register` then `score_split(split="test", registration=...)` scores the test split only for a frozen plan
 
 ## Optional
 

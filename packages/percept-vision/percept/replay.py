@@ -64,10 +64,15 @@ def decode_input(data: Mapping[str, Any]) -> decide.Input:
         raise ValueError(f"malformed decide input: {exc!r}") from exc
 
 
+_OMIT_WHEN_NONE = ("clip_s", "clip_frames")   # left out at their default, so older records stay as they were
+
+
 def encode_condition(cond: Condition) -> dict:
-    """A condition as plain JSON, without its trigger (the reducer never reads it)."""
+    """A condition as plain JSON, without its trigger (the reducer never reads it). ``clip_s``
+    and ``clip_frames`` are written only when set; a record without them decodes to the defaults."""
     return {f.name: _plain(getattr(cond, f.name)) for f in fields(Condition)
-            if f.name not in _SKIP_CONDITION_FIELDS}
+            if f.name not in _SKIP_CONDITION_FIELDS
+            and not (f.name in _OMIT_WHEN_NONE and getattr(cond, f.name) is None)}
 
 
 def decode_condition(data: Mapping[str, Any]) -> Condition:

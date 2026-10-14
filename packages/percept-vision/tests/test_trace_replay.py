@@ -526,7 +526,7 @@ def test_the_public_surface_exports_the_trace_module_not_a_replay_function():
     import percept.replay as core
 
     assert "trace" in percept.__all__ and "replay" not in percept.__all__ and "TraceWriter" not in percept.__all__
-    assert len(percept.__all__) == 27
+    assert len(percept.__all__) == 28
     assert percept.replay is core and callable(core.replay)
     assert percept.trace.TraceWriter is tr.TraceWriter and callable(percept.trace.replay)
 
@@ -567,3 +567,29 @@ def test_a_snooze_until_forever_replays():
 
     raw = json.loads(json.dumps(tr._clean(encode_input(decide.Snooze("door", float("inf"))))))
     assert raw["until"] == "Infinity" and decode_input(raw) == decide.Snooze("door", float("inf"))
+
+
+def test_a_tuple_trigger_leaves_traces_and_replay_unaffected(tmp_path):
+    from percept.replay import encode_condition
+    from test_monitor import At
+
+    door = Condition("door", "the door is open", trigger=(At(1), percept.every(30)), clear_after_no=1)
+    assert "trigger" not in encode_condition(door)
+    assert encode_condition(door) == encode_condition(Condition("door", "the door is open", clear_after_no=1))
+
+    async def main():
+        judge = FakeJudge({"door": Y})
+        async with percept.Monitor(judge, [door], store=MemoryStore(), max_requests_per_min=1000,
+                                   trace=tmp_path / "t.jsonl") as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            for i in range(4):
+                src.push(image(i))
+                await settle(0.03)
+            src.close()
+            return [d.decision for d in await collect(watch)]
+
+    got = run(main())
+    assert [d.type for d in got] == ["met"]
+    result = replay(list(tr.read(tmp_path / "t.jsonl")))
+    assert result.matches is True, result.differences

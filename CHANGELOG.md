@@ -2,6 +2,126 @@
 
 Notable changes to Percept.
 
+## 1.0.0 — Developer Preview
+
+Percept 1.0 is an open-source runtime for continuous vision applications: configure what to
+inspect, how to escalate to vision models, how much inference to spend and when to deliver a
+decision, then evaluate those choices on your own clips. The runtime API is the 1.0 contract;
+watch plans and the evaluation toolkit (`percept.plans`) are experimental. Code written for 0.9.0
+runs unchanged.
+
+### API
+
+- `percept.clips.PreRoll` is supported API, imported from `percept.clips` (not exported from
+  `percept`): pass one as `preroll=` to `open_source` or `PushSource` to give event evidence a
+  longer or denser window than the default 8 s at 2 frames a second.
+
+- `FakeJudge(..., record_requests=False)` keeps no record of the requests it serves (`sent` is
+  None, as on the vendor judges). Recording stays on by default. A request's images are views of
+  the source frames, so each record kept whole frames alive: a long offline run grew without
+  bound. The benchmark's offline oracle no longer records.
+- Evaluation driver `percept.plans.run` (experimental; reached as a module, no new top-level
+  names): `attention_only(compiled, labels, clips, video_root=)` runs the Monitor's attention step
+  over labelled clips with no judge calls and records the looks made due as `Fire`s (the candidate
+  stage); `run(...)` runs a Monitor per clip with the plan's judge behind `CachingJudge` (a hard
+  dollar cap that reserves the worst case and refuses with `budget`, a per-request spend log, and
+  a reply cache keyed on the rendered prompt, images and judge identity; a cached reply replays
+  its original usage and latency, so an identical re-run decides the same and pays nothing:
+  `cost_usd` stays the live-equivalent cost, `paid_usd` is what was paid; a run the cap cut short
+  is scored `capped`) and turns decisions and the trace into a
+  `ClipRun`; `sweep(configs, ...)` scores the configurations you declare on dev or validation in
+  your order, without ranking them; `register(...)` freezes a plan (plan, manifest and labels
+  hashes, provenance) and `score_split(split=test, ...)` refuses the test split without a
+  matching registration; with an optional `ledger` file, a test split is scored once per
+  registration unless `rescore=True`. `examples/plan_evaluation.py` runs the whole flow offline. The
+  benchmark's `CostGuard` is now `CachingJudge` with the cache off; its behaviour is unchanged.
+- Evaluation in `percept.plans` (experimental): `load_labels(doc)` checks ground truth for your
+  own clips (the format of the benchmark's `local:` datasets, plus an optional recording `group`)
+  and raises `LabelError` with the field path; overlapping occurrences of a label merge;
+  `Labels.labels_hash` is the same across checkouts. `split(labels, durations)` freezes clips into
+  dev, validation and test by `sha256(group) mod 100`, so adding clips never moves existing ones,
+  and returns a `SplitManifest` with clips, occurrence counts, hours and a `manifest_hash`.
+  `evaluate(labels, runs)` scores one run (`ClipRun` per clip) and returns `Score`: TP/FP/FN,
+  recall, precision, false alerts per hour and per 100 occurrences, misses attributed to a stage,
+  the funnel, API cost and local compute seconds per correct event, and seeded bootstrap 95%
+  intervals. It reports; it never picks between runs. The benchmark harness now scores through it.
+- `percept.attention.build(conditions, default_change=, default_heartbeat=, paused=)` returns the
+  trigger groups and labels the Monitor uses, and `attention.PRIORITY` the queue priority of each
+  kind of look, so an offline evaluator needs no private import. The Monitor calls it; behaviour
+  is unchanged.
+- `Monitor.ready(stream_id, timeout=None)`: wait until a stream is registered (by `watch()` or a
+  first `push()`), so a detector in another task can `poke()` it without racing the watch.
+  Returns at once for a registered stream; raises `RuntimeError` if the monitor closes first and
+  `asyncio.TimeoutError` on `timeout`. `examples/frigate_semantic.py` uses it.
+- `percept.plans` (experimental; the schema may change before it is stable): a watch plan, one
+  plain-data document (`percept.watch/v1alpha1`) with sources, budget, judges and concerns.
+  `plans.compile(plan, routes)` checks it, raising `PlanError` with the dotted path of the field,
+  and returns `Compiled`: the conditions, `monitor_kwargs` for `Monitor(**...)`, the
+  `external_event` map for `poke`, and a `plan_hash` of every effective setting. `explain()`
+  lists each setting with its origin (plan, SDK default or fixed by the runtime),
+  `feasibility()` checks periodic demand against the request budget, and `provenance()` /
+  `trace_record()` name the SDK version, judges and prompt hash, without secrets. Example:
+  `examples/watch_plan.py`.
+- Combined triggers: `Condition.trigger` also takes a tuple of triggers, meaning any of them (the
+  condition is due when any member fires), for example `(on_change(), every(60))`. Equal
+  triggers still share one state across conditions, and every look draws on the stream's one
+  request budget. In a watch plan, several `on_change`/`every` entries in `attention.any` now
+  compile to a combined trigger (members in a canonical order, so the entries' order does not
+  change `plan_hash`); `feasibility()` counts each `every` member.
+- `Monitor.coverage()` adds `triggers`: per condition and per trigger label (`on_change(0.2)`,
+  `every(5)`, a custom trigger's class name, or `poke`, `settled`, `recheck`, `verify`), the
+  looks that were `due`, `admitted`, `coalesced`, `dropped_budget` and
+  `dropped_for_verification`. `stats()` adds the same totals per label under each stream's
+  `triggers`. The existing `fates` are unchanged.
+- Per-condition evidence windows: `Condition.clip_s` and `Condition.clip_frames` (events only)
+  set how many seconds before the trigger an event is judged on and how many frames (1 to 16)
+  are spread over them, the newest always included. `None` keeps 4 seconds and 4 frames.
+  Verification on the original interval re-judges exactly the frames the detection used. A
+  window longer than the stream's pre-roll (8 seconds unless the source has its own `PreRoll`)
+  is refused with `ValueError` when the condition or the stream is added. When the pre-roll
+  holds less than the window (the stream just started or reconnected: under 90% of `clip_s`, or
+  fewer frames than `clip_frames`), the event is judged on what is held and counted in
+  `coverage()["evidence_short"]` per condition and in `stats()`, apart from `fates`; the trace's
+  `request` record gains `evidence_s`, `clip_s`, `frames`, `clip_frames` and `evidence_short`.
+  Trace `conditions` records carry the two fields only when set; older traces replay unchanged.
+  In a watch plan, `judgment.evidence.pre_seconds` (at most 8) and `judgment.evidence.frames`
+  compile to them (a state with either is a `PlanError`); plans without them keep their
+  `plan_hash`.
+
+### Changed
+
+- Verification comes before new detection. While a verification waits (queued, or between its
+  retries), a detection may not take the request attempts the verification needs; a detection
+  held that way past its deadline gets the new fate `dropped_for_verification` (trace drop reason
+  `verification`) instead of `dropped_budget`. Nothing is held when no verification waits.
+- Per-attempt judge timeouts: with a retry left, an attempt may use at most 60% of the time
+  remaining in the request's deadline (`ATTEMPT_SHARE` in `percept.judges.policy`), so a hung
+  attempt is abandoned in time for the retry to run. An attempt that never replied is charged at
+  its worst-case cost when the judge has a price.
+
+### Benchmarks
+
+- A run the machine slept through is not publishable: each arm records the seconds the machine
+  slept (`slept_s`), and on macOS the runner keeps the machine awake with `caffeinate`.
+- The harness stops an arm once its failed looks already exceed the publishable failure rate for
+  the most looks it can make (status `aborted_failed_looks`), and stops the run on a sustained
+  provider outage (status `aborted_provider_outage`). The manifest's `status` names how the run
+  ended (`complete`, `aborted_spend_cap` or one of these); an aborted run is never complete.
+- Detector-and-tracker baseline arms `detector_track_rule` (a zone-entry rule on person tracks)
+  and `detector_track_decide` (the same tracks through Percept's decision rules), for entry
+  conditions only.
+- `percept-plan-<name>` arms run one compiled watch plan per source from `--percept-plans`.
+- The offline oracle judge runs with `FakeJudge(record_requests=False)`.
+
+### Fixed
+
+- A verification cancelled by its deadline before its request task first ran (a scheduling race,
+  seen under heavy load) never returned its request slot or budget reservation, and its stream
+  never finished: the watch hung, and the leaked slot could hold back other streams. Every request
+  is now settled exactly once however its task ends (finished, failed, cancelled mid-call or before
+  it ran), charging unknown usage at its full reservation as before. A verification whose deadline
+  has already passed is no longer started. Decisions are unchanged.
+
 ## 0.9.0 — Developer Preview (2026-10-11)
 
 Percept 0.9.0, the Developer Preview, is a rewrite around one job: a decision layer that turns a

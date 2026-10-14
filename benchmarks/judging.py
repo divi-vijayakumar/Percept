@@ -18,14 +18,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
-import time
+from collections import deque
 from typing import Optional
 
 import numpy as np
 
 from percept import JudgeRequest, JudgeResult, PriceModel
-from percept.judges import FakeJudge, base, gemini
+from percept.judges import FakeJudge, gemini
+from percept.plans.run import CachingJudge
+
+from benchmarks.metrics import MAX_FAILED_LOOK_RATE
 
 ONSET_BEFORE_S, ONSET_AFTER_S = 0.5, 2.0    # images showing [onset - 0.5, onset + 2] show the beginning
 
@@ -84,7 +86,8 @@ class OracleJudge:
         self.timelines, self.seed, self.latency_s = timelines, seed, latency_s
         self.fn_rate, self.fp_rate, self.unknown_rate = fn_rate, fp_rate, unknown_rate
         self.realtime = False           # sleep the latency for real (the Percept arm runs in real time)
-        self._fake = FakeJudge(self._answer, name="oracle", price=price, latency_s=latency_s)
+        self._fake = FakeJudge(self._answer, name="oracle", price=price, latency_s=latency_s,
+                               record_requests=False)    # a record would keep every frame it showed alive
         self.name, self.can_batch, self.price = "oracle", True, price
         self.max_attempts = self._fake.max_attempts
 
@@ -126,46 +129,57 @@ class CostCapReached(Exception):
     pass
 
 
-class CostGuard:
-    """A judge wrapper holding a run-wide dollar cap (see the module docstring)."""
+OUTAGE_WINDOW = 50       # the provider is down when OUTAGE_FAILED of the last OUTAGE_WINDOW looks failed
+OUTAGE_FAILED = 45
+
+
+class CostGuard(CachingJudge):
+    """A judge wrapper holding a run-wide dollar cap (see the module docstring): Percept's
+    ``CachingJudge`` with its reply cache off, so every request is sent.
+
+    It also stops the run (``tripped``, as the cap does) once the current arm cannot be valid
+    whatever happens next: its failed looks exceed ``MAX_FAILED_LOOK_RATE`` of the most looks the
+    arm can make (``new_arm(max_looks)``). An arm's failed-look rate at the end is at least its
+    failed looks over that bound, so it is already over the limit; a provider outage then costs
+    minutes, not the rest of the run. An arm without a bound is never stopped this way. Looks the
+    cap refused are not judge failures and are not counted. ``stopped_for`` says why it stopped
+    (None for the cap).
+
+    Separately, an operational safeguard rather than a validity rule: once ``OUTAGE_FAILED`` of the
+    current arm's last ``OUTAGE_WINDOW`` looks failed, the provider is taken to be down and the run
+    stops as ``aborted_provider_outage``. Such a run is never complete, even if the provider would
+    have recovered. ``status`` names how the run ended (None while it has not stopped)."""
 
     def __init__(self, inner, cap_usd: Optional[float], spend_log=None) -> None:
-        if cap_usd is not None and getattr(inner, "price", None) is None:
-            raise ValueError("a spend cap needs a judge with a PriceModel (pass --price)")
-        self.inner, self.cap = inner, cap_usd
-        self.name, self.can_batch, self.price = inner.name, inner.can_batch, inner.price
-        self.max_attempts = base.max_attempts(inner)
-        self.spent = self.held = 0.0
-        self.requests = self.refused = 0
-        self.tripped = asyncio.Event()
-        self.spend_log = spend_log      # a path: one line per request, so spend survives a killed run
+        super().__init__(inner, cap_usd=cap_usd, spend_log=spend_log, cache=None)
+        self.stopped_for: Optional[str] = None
+        self.status: Optional[str] = None
+        self.new_arm(None)
 
-    def reservation(self, request: JudgeRequest) -> float:
-        if self.price is None:
-            return 0.0
-        calls = 1 if self.can_batch else len(request.items)
-        return base.worst_case_cost(request, self.price, retries=self.max_attempts - 1) * calls
+    def new_arm(self, max_looks: Optional[int]) -> None:
+        self.looks = self.failed = 0
+        self.max_looks = max_looks
+        self.recent: deque = deque(maxlen=OUTAGE_WINDOW)
 
     async def judge(self, request: JudgeRequest) -> JudgeResult:
-        reserve = self.reservation(request)
-        if self.cap is not None and self.spent + self.held + reserve > self.cap:
-            self.refused += 1
+        result = await super().judge(request)
+        for ob in result.observations:
+            if ob.failure != "budget":
+                self.looks += 1
+                self.failed += ob.failed
+                self.recent.append(bool(ob.failed))
+        if self.tripped.is_set():
+            self.status = self.status or "aborted_spend_cap"
+        elif len(self.recent) == OUTAGE_WINDOW and sum(self.recent) >= OUTAGE_FAILED:
+            self.stopped_for = f"provider outage: {sum(self.recent)} of the last {OUTAGE_WINDOW} looks failed"
+            self.status = "aborted_provider_outage"
             self.tripped.set()
-            return JudgeResult(base.failed_observations(request, "budget", self.name, "harness spend cap reached"), ())
-        self.held += reserve
-        result = None
-        try:
-            result = await self.inner.judge(request)
-            return result
-        finally:
-            self.held -= reserve
-            self.requests += 1
-            cost = reserve if result is None else sum(u.usage.cost_usd for u in result.usage)
-            self.spent += cost
-            if self.spend_log is not None:
-                with open(self.spend_log, "a") as f:
-                    f.write(json.dumps({"t": round(time.time(), 3), "request_id": request.request_id,
-                                        "cost_usd": cost, "settled": result is not None}) + "\n")
+        elif self.max_looks is not None and self.failed > MAX_FAILED_LOOK_RATE * self.max_looks:
+            self.stopped_for = (f"{self.failed} looks failed, more than {MAX_FAILED_LOOK_RATE:.0%} of the "
+                                f"{self.max_looks} this arm can make")
+            self.status = "aborted_failed_looks"
+            self.tripped.set()
+        return result
 
 
 def build(spec: str, *, cases, timelines: Timelines, price: Optional[PriceModel], oracle: dict) -> object:

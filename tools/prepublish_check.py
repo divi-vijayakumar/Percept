@@ -60,7 +60,7 @@ ALLOW: dict[str, tuple[str, ...]] = {
     # tests that prove credentials are scrubbed from URIs, health details, traces and judge errors
     # (the scan's own test builds its fake secrets at run time and needs no entry)
     "secret": tuple(f"packages/percept-vision/tests/{name}.py" for name in
-                    ("test_monitor", "test_sources", "test_trace_replay", "test_vendor_judges")),
+                    ("test_monitor", "test_plans", "test_sources", "test_trace_replay", "test_vendor_judges")),
     # the template for the local term list
     "term": (".prepublish-terms.example",),
 }

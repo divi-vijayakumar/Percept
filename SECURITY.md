@@ -7,7 +7,7 @@ Please report security issues **privately** to **support@velvee.ai**. We aim to 
 
 ## Supported versions
 
-Percept is in Developer Preview (0.9.0). Fixes target `main`.
+Percept 1.0 is a Developer Preview. Fixes target `main` and the latest release.
 
 ## Principles
 

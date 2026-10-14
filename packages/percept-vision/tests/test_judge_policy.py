@@ -163,6 +163,165 @@ def test_real_hang_is_cut_at_the_deadline():
     assert time.monotonic() - start < 1.0
 
 
+def test_a_hung_attempt_is_abandoned_in_time_for_the_retry():
+    # An attempt that never replies used to hold the whole deadline, leaving no time to retry. With a
+    # retry left, an attempt gets ATTEMPT_SHARE of the time remaining, so the retry still runs.
+    calls = []
+
+    async def first_hangs(prompt, images, max_output_tokens, request):
+        calls.append(time.monotonic())
+        if len(calls) == 1:
+            await asyncio.sleep(60)
+        return RawReply(OK, 100, 10)
+
+    start = time.monotonic()
+    result = asyncio.run(policy.call(first_hangs, make_request(deadline_s=0.5), judge_name="j"))
+    assert [o.answer for o in result.observations] == ["yes", "no"] and kinds(result) == [None, None]
+    assert result.usage[0].usage.attempts == 2 and len(calls) == 2
+    assert calls[1] - start < 0.5 * policy.ATTEMPT_SHARE + 0.1      # the retry started inside its share
+    assert time.monotonic() - start < 0.5
+
+
+def test_without_a_retry_an_attempt_may_use_the_whole_deadline():
+    async def slow(prompt, images, max_output_tokens, request):
+        await asyncio.sleep(0.3)        # past ATTEMPT_SHARE of the deadline, inside the deadline
+        return RawReply(OK)
+
+    result = asyncio.run(policy.call(slow, make_request(deadline_s=0.4), judge_name="j", retries=0))
+    assert kinds(result) == [None, None] and result.usage[0].usage.attempts == 1
+
+
+def test_a_cancelled_request_cancels_its_attempt():
+    cancelled = []
+
+    async def hang(prompt, images, max_output_tokens, request):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    async def main():
+        task = asyncio.create_task(policy.call(hang, make_request(deadline_s=30.0), judge_name="j"))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    asyncio.run(main())
+    assert cancelled == [True]
+
+
+def test_an_attempt_with_no_reply_is_charged_at_its_worst_case():
+    # It was sent and may be billed though no tokens came back: the dollar window must not
+    # release that money as if it had cost nothing.
+    from percept.judges.base import worst_case_tokens
+    one = cost_of(PRICE, *worst_case_tokens(make_request(), PRICE))
+    calls = []
+
+    async def first_hangs(prompt, images, max_output_tokens, request):
+        calls.append(1)
+        if len(calls) == 1:
+            await asyncio.sleep(60)
+        return RawReply(OK, 100, 10)
+
+    hung_then_ok = asyncio.run(policy.call(first_hangs, make_request(deadline_s=0.5), judge_name="j", price=PRICE))
+    assert hung_then_ok.usage[0].usage.cost_usd == pytest.approx(cost_of(PRICE, 100, 10) + one)
+
+    async def hang(*_):
+        await asyncio.sleep(60)
+
+    timed_out = asyncio.run(policy.call(hang, make_request(deadline_s=0.2), judge_name="j", price=PRICE))
+    assert timed_out.usage[0].usage.attempts == 2
+    assert timed_out.usage[0].usage.cost_usd == pytest.approx(2 * one)       # never above the reservation
+    from percept.judges.base import worst_case_cost
+    assert timed_out.usage[0].usage.cost_usd <= worst_case_cost(make_request(), PRICE, retries=1) + 1e-12
+
+
+@pytest.mark.parametrize("retries", [0, 1, 2])
+def test_hung_attempts_never_exceed_the_reserved_attempts_or_become_answers(retries):
+    async def hang(*_):
+        await asyncio.sleep(60)
+
+    result = asyncio.run(policy.call(hang, make_request(deadline_s=0.2), judge_name="j", retries=retries))
+    assert result.usage[0].usage.attempts == retries + 1          # what the monitor reserved
+    assert kinds(result) == ["timeout"] * 2
+    assert all(o.answer == "unknown" and o.failed for o in result.observations)   # a failure is never a "no"
+
+
+def test_a_timeout_during_a_retry_backoff_charges_only_the_attempts_sent():
+    from percept.judges.base import worst_case_tokens
+    one = cost_of(PRICE, *worst_case_tokens(make_request(), PRICE))
+
+    async def busy(*_):
+        raise RetryableError("busy", retry_after_s=0.15)
+
+    async def main():
+        return await policy.call(busy, make_request(deadline_s=0.1), judge_name="j", price=PRICE, retries=3)
+
+    result = asyncio.run(main())        # the backoff would pass the deadline: no attempt is cut
+    assert kinds(result) == ["unavailable"] * 2 and result.usage[0].usage.cost_usd < one
+
+
+def test_a_deadline_cut_during_a_backoff_sleep_charges_no_unsent_attempt():
+    from percept.judges.base import worst_case_tokens
+    one = cost_of(PRICE, *worst_case_tokens(make_request(), PRICE))
+
+    async def busy(*_):
+        raise RetryableError("busy", retry_after_s=0.0)
+
+    async def slow_sleep(_delay):
+        await asyncio.sleep(60)        # a backoff that overshoots the deadline
+
+    result = asyncio.run(policy.call(busy, make_request(deadline_s=0.1), judge_name="j", price=PRICE,
+                                     retries=1, sleep=slow_sleep))
+    assert kinds(result) == ["timeout"] * 2 and result.usage[0].usage.cost_usd < one
+
+
+def test_an_abandoned_attempt_that_fails_later_is_silent(recwarn):
+    async def main():
+        calls = []
+
+        async def first_hangs_then_raises(prompt, images, max_output_tokens, request):
+            calls.append(1)
+            if len(calls) == 1:
+                try:
+                    await asyncio.sleep(60)
+                finally:
+                    raise RuntimeError("late failure of the abandoned attempt")
+            return RawReply(OK, 100, 10)
+
+        result = await policy.call(first_hangs_then_raises, make_request(deadline_s=0.5), judge_name="j")
+        await asyncio.sleep(0.05)       # let the cancelled task settle
+        return result
+
+    loop_errors = []
+    loop = asyncio.new_event_loop()
+    loop.set_exception_handler(lambda _loop, ctx: loop_errors.append(ctx))
+    try:
+        result = loop.run_until_complete(main())
+    finally:
+        loop.close()
+    assert kinds(result) == [None, None] and loop_errors == []
+
+
+def test_unbatched_parts_share_the_deadline_when_the_first_part_hangs():
+    calls = []
+
+    async def first_hangs(prompt, images, max_output_tokens, request):
+        calls.append(request.request_id)
+        if len(calls) == 1:
+            await asyncio.sleep(60)
+        return RawReply(json.dumps({"results": [{"id": request.items[0].condition.id, "answer": "yes",
+                                                  "confidence": 0.9, "reason": "r"}]}), 10, 5)
+
+    start = time.monotonic()
+    result = asyncio.run(policy.call(first_hangs, make_request(deadline_s=0.6), judge_name="j", batch=False))
+    assert kinds(result) == [None, None] and time.monotonic() - start < 0.6
+    assert result.usage[0].usage.attempts == 2 and result.usage[1].usage.attempts == 1
+
+
 def test_deadline_override():
     assert kinds(run(Provider((3.0, RawReply(OK))), deadline_s=2.0)) == ["timeout"] * 2
 

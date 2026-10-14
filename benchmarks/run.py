@@ -9,7 +9,8 @@
 ``report.md`` from it without calling any judge.
 
 Every arm sees the same frames (checked by digest) and the same condition text. A run that
-reaches ``--max-cost-usd`` stops cleanly, writes what it has, marks itself aborted and exits 3.
+reaches ``--max-cost-usd``, or has an arm whose failed looks already make it invalid, stops cleanly,
+writes what it has, marks itself aborted (saying why) and exits 3.
 A case that fails is recorded as skipped with its reason; it never loses the run. Results
 directories are ignored by git: footage, labels and results are never committed.
 """
@@ -22,6 +23,8 @@ import dataclasses
 import hashlib
 import inspect
 import json
+import math
+import os
 import platform
 import shutil
 import subprocess
@@ -38,7 +41,53 @@ from percept.judges import base
 from benchmarks import arms as A
 from benchmarks import datasets, judging, metrics
 
-ARMS = ("percept", "percept-matched", "chunk5", "chunk10", "chunk30", "detector_debounce", "detector_then_vlm")
+ARMS = ("percept", "percept-matched", "chunk5", "chunk10", "chunk30", "detector_debounce", "detector_then_vlm",
+        "detector_track_rule", "detector_track_decide")
+DEFAULT_ARMS = ARMS[:7]     # the tracker arms need benchmarks/requirements-detector.txt: run them by name
+TRACK_ARMS = ("detector_track_rule", "detector_track_decide")
+PLAN_ARM = "percept-plan-"  # percept-plan-<name>: per-case plans from --percept-plans <dir>/<name>/<source id>.json
+
+
+def plan_file_for(case, directory, arm: str):
+    """The plan in ``directory`` whose single source id appears in the case id (a camera id)."""
+    matches = []
+    for path in sorted(Path(directory).glob("*.json")):
+        plan = json.loads(path.read_text())
+        if plan["sources"][0]["id"] in case.case_id:
+            matches.append(plan)
+    if len(matches) != 1:
+        raise ValueError(f"{arm}: {len(matches)} plans match case {case.case_id!r} (need exactly one)")
+    return matches[0]
+
+
+def compile_plan(plan: dict, judge):
+    from percept import plans
+    return plans.compile(plan, {r: judge for r in {c["judgment"]["route"] for c in plan["concerns"]}})
+
+
+def plan_for(case, arm: str, args, judge):
+    """The compiled plan of a ``percept-plan-<name>`` arm for ``case``: the file in
+    ``<percept_plans>/<name>/`` whose single source id appears in the case id (a camera id)."""
+    return compile_plan(plan_file_for(case, Path(args.percept_plans) / arm[len(PLAN_ARM):], arm), judge)
+
+
+def detector_zones(case, arm: str, args, judge) -> dict:
+    """``{condition id: zones}`` for a tracker arm: the zones the case's plan in
+    ``--detector-plans`` gives each condition (the same plan files a ``percept-plan-<name>`` arm
+    uses, compiled the same way). Without plans each condition covers the frame, which only the
+    synthetic dataset allows; a supported condition the plan gives no zone is an error, never the
+    whole frame by default."""
+    from benchmarks import tracking
+    if not getattr(args, "detector_plans", None):
+        if case.dataset != "synthetic":
+            raise ValueError(f"{arm} needs --detector-plans on real footage (zones per condition)")
+        return {}
+    compiled = compile_plan(plan_file_for(case, args.detector_plans, arm), tracking.rule_judge(set()))
+    zones = {c.id: tuple(c.zones) for c in compiled.conditions}
+    missing = sorted(cid for cid in tracking.supported(case) if not zones.get(cid))
+    if missing:
+        raise ValueError(f"{arm}: the plan for {case.case_id} gives no zones for {missing}")
+    return zones
 MAX_LAG_S = A.MAX_LAG_S     # a Percept feed further behind real time than this is not publishable
 PRODUCT_REARM_S = Condition("x", "x", kind="event").rearm_s
 PRODUCT_BUDGET = inspect.signature(Monitor.__init__).parameters["max_requests_per_min"].default
@@ -66,6 +115,8 @@ def arm_label(arm: str, args) -> str:
     """How an arm is named in tables: a Percept arm says what it changed from the product defaults."""
     if not arm.startswith("percept"):
         return arm
+    if arm.startswith(PLAN_ARM):
+        return f"{arm} (per-source plans in {args.percept_plans}/{arm[len(PLAN_ARM):]})"
     changed = [] if arm == "percept" else [f"max_requests_per_min {args.percept_budget}"]
     if args.percept_rearm is not None and args.percept_rearm != PRODUCT_REARM_S:
         changed.append(f"rearm standardised to {args.percept_rearm:g} s")
@@ -82,6 +133,15 @@ def worker_threads(args) -> int:
 
 def monitor_config(arm: str, args, judge) -> dict:
     """Everything that configures a Percept arm's ``Monitor`` and conditions."""
+    if arm.startswith(PLAN_ARM):     # a plan arm is configured by its plans: record each one's hash
+        from percept import plans
+        out = {}
+        for path in sorted((Path(args.percept_plans) / arm[len(PLAN_ARM):]).glob("*.json")):
+            plan = json.loads(path.read_text())
+            c = plans.compile(plan, {r: judge for r in {k["judgment"]["route"] for k in plan["concerns"]}})
+            out[path.name] = {"plan_hash": c.plan_hash, "max_requests_per_min": c.monitor_kwargs["max_requests_per_min"]}
+        return {"label": arm_label(arm, args), "plans": out, "store": "MemoryStore", "watch_fps": None,
+                "attempts_reserved_per_request": base.max_attempts(judge)}
     defaults = {k: v.default for k, v in inspect.signature(Monitor.__init__).parameters.items()
                 if v.default is not inspect.Parameter.empty and k not in ("store", "trace")}
     if arm == "percept-matched":
@@ -109,11 +169,28 @@ def monitor_config(arm: str, args, judge) -> dict:
                              "decode": "one thread per case", "worker_threads": worker_threads(args)})
 
 
+def tracker_config(arm: str, args) -> dict:
+    """Everything that configures a ``detector_track_*`` arm."""
+    from benchmarks import tracking as T
+    out = {"detector": "torchvision ssdlite320_mobilenet_v3_large, COCO_V1 weights, person class",
+           "score": T.SCORE, "low_score": T.LOW_SCORE, "tracker": "two-stage association after the ByteTrack paper (benchmarks/tracker.py)",
+           "track_buffer_s": T.TRACK_BUFFER_S, "rule": {"border": T.BORDER, "inward": T.INWARD},
+           "zones": args.detector_plans or "whole frame", "device": args.detector_device, "fps": args.fps}
+    if arm == "detector_track_decide":
+        out.update(judge="rule judge (yes 0.9 for a poked condition and subject, else no 0.9; free)",
+                   max_requests_per_min=T.RULE_BUDGET, rearm_s=args.cooldown, trigger="none: pokes only",
+                   verify_mode=Condition("x", "x", kind="event").verify_mode, speed=args.speed)
+    else:
+        out.update(cooldown_s=args.cooldown, pace=args.speed)       # always real time, as the Percept arms
+    return out
+
+
 async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot: dict) -> list:
     """Every case of one arm, ``--parallel`` at a time (Percept in real time, baselines as fast as
     decoding and the judge allow). A case that raises becomes a result with ``error`` set. Each
     Percept case has its own ``Monitor``, so its request slots are never shared with another case."""
-    sem, traces, realtime = asyncio.Semaphore(args.parallel), out / "traces" / arm, arm.startswith("percept")
+    sem, traces = asyncio.Semaphore(args.parallel), out / "traces" / arm
+    realtime = arm.startswith("percept") or arm == "detector_track_decide"     # paced by the clock, traced
     if isinstance(judge.inner, judging.OracleJudge):
         judge.inner.realtime = realtime
     if realtime:
@@ -122,12 +199,30 @@ async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot
     if missing:     # the media went away (e.g. a drive unmounted): stop loudly, keep finished arms
         raise SystemExit(f"{arm}: {len(missing)} media files are missing, first {missing[0]}")
 
-    pace = args.speed if getattr(args, "pace_baselines", False) else None
+    pace = args.speed if getattr(args, "pace_baselines", False) or arm in TRACK_ARMS else None
+    if arm in TRACK_ARMS:
+        from benchmarks import tracking
+        tracking.require()      # a clear SystemExit naming requirements-detector.txt, before any case runs
 
     async def one(case):
         async with sem:
             if judge.tripped.is_set():
                 return A.ArmResult(arm, case.case_id, aborted=True)
+            if arm in TRACK_ARMS:
+                from benchmarks import tracking
+                zones = detector_zones(case, arm, args, judge)
+                if arm == "detector_track_rule":
+                    return await tracking.run_track_rule(case, timelines, zones=zones, cooldown_s=args.cooldown,
+                                                         fps=args.fps, pace=pace, device=args.detector_device)
+                return await tracking.run_track_decide(case, judge, timelines, traces / f"{case.case_id}.jsonl",
+                                                       zones=zones, rearm_s=args.cooldown, speed=args.speed,
+                                                       fps=args.fps, device=args.detector_device, stats=foot)
+            if realtime and arm.startswith(PLAN_ARM):
+                compiled = plan_for(case, arm, args, judge)
+                return await A.run_percept(case, judge, timelines, traces / f"{case.case_id}.jsonl",
+                                           speed=args.speed, fps=args.fps,
+                                           max_requests_per_min=compiled.monitor_kwargs["max_requests_per_min"],
+                                           arm=arm, stats=foot, conditions=list(compiled.conditions))
             if realtime:
                 budget = args.percept_budget if arm == "percept-matched" else None
                 return await A.run_percept(case, judge, timelines, traces / f"{case.case_id}.jsonl",
@@ -143,8 +238,18 @@ async def run_arm(arm: str, cases: list, judge, timelines, out: Path, args, foot
     finally:
         if isinstance(judge.inner, judging.OracleJudge):
             judge.inner.realtime = False
-    return [r if isinstance(r, A.ArmResult) else
-            A.ArmResult(arm, c.case_id, error=f"{type(r).__name__}: {r}"[:300]) for c, r in zip(cases, done)]
+    res = [r if isinstance(r, A.ArmResult) else
+           A.ArmResult(arm, c.case_id, error=f"{type(r).__name__}: {r}"[:300]) for c, r in zip(cases, done)]
+    computed = [r for r in res if r.compute]
+    if computed:        # tracker arms: detection and tracking CPU, summed over cases (decoding excluded).
+        # Thread CPU of the calling threads: torch's own worker threads are not in it, so the arm's
+        # process CPU (the footprint's cpu_s) is the figure of record; GPU time is not measured.
+        from benchmarks import tracking
+        cpu, minutes = sum(r.compute["cpu_s"] for r in computed), sum(r.seconds for r in computed) / 60
+        foot.update(detector_cpu_s=round(cpu, 2), detector_device=computed[0].compute["device"],
+                    detector_cpu_s_per_clip_minute=round(cpu / minutes, 3) if minutes else None,
+                    detector_weights=tracking.weights_record())
+    return res
 
 
 # --------------------------------------------------------------------------- raw results
@@ -262,13 +367,19 @@ def not_publishable(m: dict, table: dict) -> list[str]:
     if m["speed"] != 1.0:
         why.append(f"Percept ran at {m['speed']}x real time")
     if m["aborted"]:
-        why.append("the spend cap stopped the run")
+        why.append(f"the run was stopped early: {m['stopped_for']}" if m.get("stopped_for")
+                   else "the spend cap stopped the run")
     if any(s["skipped"] for s in table.values()):
         why.append("some cases were skipped")
     lost = {arm: s["unintended_loss_total"] for arm, s in table.items() if s["unintended_loss_total"]}
     if lost:        # intentional sampling (the fps policies) never disqualifies; unintended loss does
         why.append("frames were lost to decoding, queues or lag (unintended_loss: "
                    + ", ".join(f"{a} {n}" for a, n in lost.items()) + ")")
+    slept = {arm: s["footprint"]["slept_s"] for arm, s in table.items() if s["footprint"].get("slept_s")}
+    if slept:       # the machine slept: the stream stopped, whatever the frame counts say
+        why.append("the machine slept during the run (" + ", ".join(f"{a} {v:g} s" for a, v in slept.items()) + ")")
+    if any(s["footprint"].get("slept_s") is None for s in table.values()):    # missing: written before it was measured
+        why.append("sleep was not measured (unsupported platform, or a run recorded before it was)")
     lag = max((s["footprint"].get("max_push_lag_s", 0.0) for s in table.values()), default=0.0)
     if lag > MAX_LAG_S:
         why.append(f"the Percept feed fell {lag:.1f} s behind real time")
@@ -352,7 +463,13 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
         lines += [f"> **Diagnostic, not publishable.** Dataset `{m['dataset']}` is not the published benchmark "
                   "(MEVA, fixed cameras). Results here locate where Percept wins and loses; they are not a "
                   "published comparison.", ""]
-    if m["aborted"]:
+    if m.get("status") == "aborted_provider_outage":
+        lines += [f"> **Aborted (provider outage): {m['stopped_for']}** (${m['spent_usd']:.4f} spent). A partial "
+                  "run, never a complete one, whether or not the provider recovered; see Coverage.", ""]
+    elif m["aborted"] and m.get("stopped_for"):
+        lines += [f"> **Aborted: {m['stopped_for']}**, so the arm was already invalid "
+                  f"(${m['spent_usd']:.4f} spent). Cases after it are skipped; see Coverage.", ""]
+    elif m["aborted"]:
         lines += [f"> **Aborted: spend cap reached** (${m['spent_usd']:.4f} of ${m['max_cost_usd']}). "
                   "Cases after the cap are skipped and excluded from every figure; see Coverage.", ""]
     if m["speed"] != 1.0:
@@ -369,6 +486,11 @@ def report(manifest: dict, table: dict, digests: dict) -> str:
               f"percept {m['percept']['version']}. Actual spend ${m['spent_usd']:.4f}, from the usage the judge "
               f"reported ({m['requests']} requests).", ""]
     for _arm, c in m["monitor_config"].items():
+        if "plans" in c:        # a plan arm: its plans configure it
+            lines.append(f"- {c['label']}: " + "; ".join(
+                f"{name} (plan `{v['plan_hash'][:12]}`, {v['max_requests_per_min']} attempts a minute per stream)"
+                for name, v in c["plans"].items()) + ".")
+            continue
         changed = c["changed_from_product_defaults"]
         conc = c.get("concurrency", {})
         lines.append(f"- {c['label']}: {c['max_requests_per_min']} attempts a minute per stream, "
@@ -525,6 +647,47 @@ def finish(out: Path, manifest: dict, results: dict, cases: dict, args, footprin
     return table
 
 
+def look_bound(arm: str, cases, args, judge) -> Optional[int]:
+    """The most looks ``arm`` can make on ``cases`` (one look = one condition in one judge request),
+    or None when it has no fixed bound. A Percept stream starts at most ``max_requests_per_min``
+    requests in any minute (each holds at least one attempt for the window), plus two minutes for
+    verifications still open when its footage ends (for a judge that reports its attempts, as the
+    built-in ones do); a chunk arm asks once per period, plus a last short chunk."""
+    total = 0
+    for case in cases:
+        n = len(case.conditions)
+        if arm.startswith(PLAN_ARM):
+            try:
+                compiled = plan_for(case, arm, args, judge)
+            except ValueError:      # no single plan for this case: it is skipped later; no bound
+                return None
+            limit, n = compiled.monitor_kwargs["max_requests_per_min"], len(compiled.conditions)
+        elif arm.startswith("percept"):
+            budget = args.percept_budget if arm == "percept-matched" else None
+            limit = budget if budget is not None else inspect.signature(Monitor).parameters["max_requests_per_min"].default
+        elif arm.startswith("chunk"):
+            total += (math.floor(case.duration / float(arm[5:])) + 2) * n
+            continue
+        else:
+            return None
+        total += math.ceil(case.duration / 60 + 2) * limit * n
+    return total
+
+
+def stay_awake() -> bool:
+    """Keep the machine from sleeping while this process lives (macOS: ``caffeinate`` tied to our
+    pid, so it holds however the run was launched; a closed lid can still sleep a laptop). False
+    where unavailable; a sleep is then caught afterwards by the run's ``slept_s``."""
+    if sys.platform != "darwin" or not shutil.which("caffeinate"):
+        return False
+    try:
+        subprocess.Popen(["caffeinate", "-ims", "-w", str(os.getpid())], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    return True
+
+
 async def main_async(args) -> int:
     if not args.dataset:
         raise SystemExit("--dataset is required (or a --config that sets it)")
@@ -536,22 +699,26 @@ async def main_async(args) -> int:
     if not cases:
         raise SystemExit(f"no cases for {args.dataset}: is the data where the adapter looks?")
     by_id = {c.case_id: c for c in cases}
+    awake = stay_awake()
     timelines = judging.Timelines()
     oracle = dict(fn_rate=args.oracle_fn, fp_rate=args.oracle_fp, latency_s=args.oracle_latency, seed=args.seed)
     inner = judging.build(args.judge, cases=cases, timelines=timelines,
                           price=judging.parse_price(args.price) if args.price else None, oracle=oracle)
     judge = judging.CostGuard(inner, args.max_cost_usd, spend_log=out / "spend.jsonl")
     arm_names = [a for a in args.arms.split(",") if a]
-    bad = [a for a in arm_names if a not in ARMS and not (a.startswith("chunk") and a[5:].replace(".", "").isdigit())]
+    bad = [a for a in arm_names if a not in ARMS and not (a.startswith("chunk") and a[5:].replace(".", "").isdigit())
+           and not (a.startswith(PLAN_ARM) and a[len(PLAN_ARM):] and args.percept_plans)]
     if bad:
         raise SystemExit(f"unknown arms {bad}; choose from {ARMS}")
     asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(worker_threads(args)))
     results, footprints = {}, {}
     for arm in arm_names:
         foot: dict = {}
+        judge.new_arm(look_bound(arm, cases, args, judge))
         with A.Footprint() as fp:
             res = await run_arm(arm, cases, judge, timelines, out, args, foot)
-        results[arm], footprints[arm] = res, dict(cpu_s=round(fp.cpu_s, 2), peak_rss_mb=fp.peak_rss_mb, **foot)
+        results[arm], footprints[arm] = res, dict(cpu_s=round(fp.cpu_s, 2), peak_rss_mb=fp.peak_rss_mb,
+                                                  slept_s=fp.slept_s, **foot)
         write_raw(out, arm, res, footprints[arm])
         s = metrics.score(res, by_id, args.tolerance, seed=args.seed)
         print(f"{arm}: recall {_fmt(s['recall'], True)} precision {_fmt(s['precision'], True)} "
@@ -570,6 +737,7 @@ async def main_async(args) -> int:
                                      "price": dataclasses.asdict(judge.price) if judge.price else None,
                                      "oracle": oracle if args.judge == "fake" else None},
         "monitor_config": {a: monitor_config(a, args, judge) for a in arm_names if a.startswith("percept")},
+        "tracker_config": {a: tracker_config(a, args) for a in arm_names if a in TRACK_ARMS},
         "harness": {"clip_frames": A.CLIP_FRAMES, "clip_s": A.CLIP_S, "min_confidence": A.MIN_CONFIDENCE,
                     "baseline_history_spacing_s": A.HISTORY_SPACING_S,
                     "onset_before_s": judging.ONSET_BEFORE_S, "onset_after_s": judging.ONSET_AFTER_S,
@@ -578,12 +746,14 @@ async def main_async(args) -> int:
                     "worker_threads": worker_threads(args)},
         "seeds": {"seed": args.seed}, "config": args.config, "tolerance_s": args.tolerance, "cooldown_s": args.cooldown,
         "fps": args.fps, "speed": args.speed, "parallel": args.parallel, "max_cost_usd": args.max_cost_usd,
-        "pace_baselines": bool(getattr(args, "pace_baselines", False)),
+        "pace_baselines": bool(getattr(args, "pace_baselines", False)), "sleep_prevented": awake,
         "spent_usd": judge.spent, "requests": judge.requests, "refused_by_cap": judge.refused,
-        "aborted": judge.tripped.is_set(), "args": vars(args),
+        "aborted": judge.tripped.is_set(), "stopped_for": judge.stopped_for,
+        "status": (judge.status or "aborted_spend_cap") if judge.tripped.is_set() else "complete", "args": vars(args),
     }
     finish(out, manifest, results, by_id, args, footprints)
-    print(f"wrote {out}/report.md" + (" (ABORTED: spend cap reached)" if manifest["aborted"] else ""))
+    print(f"wrote {out}/report.md" + (f" (ABORTED: {manifest['stopped_for'] or 'spend cap reached'})"
+                                      if manifest["aborted"] else ""))
     return 3 if manifest["aborted"] else 0
 
 
@@ -651,11 +821,15 @@ def merge(parts: list, out: Path, root: str | None = None) -> int:
         monitor_config={k: v for m in ms for k, v in m.get("monitor_config", {}).items()},
         spent_usd=sum(m["spent_usd"] for m in ms), requests=sum(m["requests"] for m in ms),
         refused_by_cap=sum(m["refused_by_cap"] for m in ms), aborted=any(m["aborted"] for m in ms),
+        stopped_for=next((m["stopped_for"] for m in ms if m.get("stopped_for")), None),
+        status=next((st for st in (m.get("status") or ("aborted_spend_cap" if m["aborted"] else "complete")
+                                   for m in ms) if st != "complete"), "complete"),     # a part without one: older run
         max_cost_usd=cap,
         args=dict(first["args"], arms=",".join(arms), max_cost_usd=cap,
                   out=str(out), run_id=out.name),
         merged_from=[{"run_id": m["run_id"], "arms": m["arms"], "created_utc": m["created_utc"],
-                      "max_cost_usd": m["max_cost_usd"], "spent_usd": m["spent_usd"], "aborted": m["aborted"]}
+                      "max_cost_usd": m["max_cost_usd"], "spent_usd": m["spent_usd"], "aborted": m["aborted"],
+                      "stopped_for": m.get("stopped_for")}
                      for m in ms])
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1, default=str))
     return rescore(out, root)
@@ -673,7 +847,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--root", help="dataset root (default: the adapter's staging path)")
     p.add_argument("--limit", type=int, help="at most this many cases")
     p.add_argument("--negatives", type=int, default=2, help="absent labels watched per case")
-    p.add_argument("--arms", default=",".join(ARMS))
+    p.add_argument("--arms", default=",".join(DEFAULT_ARMS))
     p.add_argument("--judge", default="fake", help="fake | gemini:<model>")
     p.add_argument("--price", help="in,out,tokens_per_image: USD per million tokens, and tokens per image")
     p.add_argument("--max-cost-usd", type=float, help="hard cap for the whole run (reserved before each request)")
@@ -681,6 +855,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id")
     p.add_argument("--tolerance", type=float, default=2.0, help="matching tolerance, seconds")
     p.add_argument("--cooldown", type=float, default=A.COOLDOWN_S, help="baseline cooldown, seconds")
+    p.add_argument("--percept-plans", help="a directory of plans: percept-plan-<name> arms use <dir>/<name>/*.json, "
+                   "one plan per source; the plan whose source id is in the case id is used")
+    p.add_argument("--detector-plans", help="a directory of per-source plans (e.g. <dir>/<name>): the "
+                   "detector_track_* arms take each condition's zones from the plan whose source id is in the "
+                   "case id; required on real footage (without it only the synthetic dataset runs, each "
+                   "condition then covering the frame)")
+    p.add_argument("--detector-device", default="cpu", choices=("cpu", "mps", "cuda", "auto"),
+                   help="where the detector_track_* arms run the person detector (auto: cuda, then mps, then cpu)")
     p.add_argument("--percept-budget", type=int, default=13,
                    help="max_requests_per_min (attempts) of the percept-matched arm; 13 admits at most 12 "
                         "requests a minute when each succeeds first time (chunk5's rate)")

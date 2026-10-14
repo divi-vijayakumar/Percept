@@ -9,14 +9,14 @@ Instructions for contributors and coding agents. Read this before changing code.
 ## What Percept is
 
 A decision layer for live video: a stream plus plain-language conditions in, one decision per real
-occurrence out. This is the 0.9.0 Developer Preview; the API may change before 1.0. The design is
+occurrence out. This is the 1.0 Developer Preview. The design is
 Trigger → Judge → Decide: cheap triggers decide when to look, a judge decides what is true, and a
 pure reducer decides whether the agent hears about it.
 
 ## Architecture rules (CI enforces the first three)
 
-- **Functional core, imperative shell.** `percept.contracts`, `decide`, `triggers`, `zones`, `clips`,
-  `judges.base` and `replay` are pure: no I/O, no threads, no asyncio, no vendor SDKs, time passed in
+- **Functional core, imperative shell.** `percept.contracts`, `decide`, `attention`, `triggers`, `zones`, `clips`,
+  `judges.base`, `replay` and `plans` (with `plans.labels` and `plans.score`) are pure: no I/O, no threads, no asyncio, no vendor SDKs, time passed in
   as an argument. `contracts` imports no other percept module. Only shell modules (`monitor`,
   `sources`, `delivery`, `trace`, `judges/<vendor>`) touch the outside world.
 - **At most 30 public names** in `percept.__all__`.

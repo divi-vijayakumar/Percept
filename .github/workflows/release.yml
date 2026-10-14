@@ -27,7 +27,7 @@ jobs:
         run: |
           version=$(python -c "import tomllib; print(tomllib.load(open('packages/percept-vision/pyproject.toml','rb'))['project']['version'])")
           test "v$version" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME != version $version"; exit 1; }
-      - run: pip install -e "packages/percept-vision[dev]" build
+      - run: pip install -e "packages/percept-vision[dev,video]" build   # validate runs the plan-evaluation example, which reads video
       - name: validate (guardrails, tests, offline quickstart, clean-install wheel)
         run: make validate
       - name: build the wheel and sdist from a clean copy of the tracked tree

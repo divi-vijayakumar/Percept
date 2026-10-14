@@ -1,10 +1,13 @@
 # percept-vision
 
-**Percept watches a live video stream for plain-language conditions and tells your agent, once per
-occurrence, when one becomes true.** This is its Python SDK.
+**Percept is an open-source runtime for continuous vision applications.** Configure what to
+inspect, how to escalate to vision models, how much inference to spend, and when to deliver an
+actionable decision; then evaluate those choices with reproducible precision, recall, latency and
+cost measurements. This is its Python SDK.
 
-**Status: 0.9.0 Developer Preview.** The API may change before 1.0. Releases 0.7.0 and earlier
-are a research preview with a different API.
+**Status: Percept 1.0, Developer Preview.** The runtime API is the 1.0 contract: it changes
+incompatibly only in a new major version. Watch plans and the evaluation toolkit (`percept.plans`)
+are experimental. Releases 0.7.0 and earlier are a research preview with a different API.
 
 It is for developers building agents that must react to what fixed cameras see. It is not for
 PTZ, body-worn, vehicle, drone or phone video, or screen content.
@@ -150,8 +153,9 @@ camera = percept.PushSource("test-cam")    # camera.push(frame), then camera.clo
   rechecks (`recheck_every_s`), a door closed in a quiet scene is `cleared` 1 to 2 minutes later.
 - The store is `SqliteStore("percept.db")` in the working directory: crash-safe, one process per
   file. `MemoryStore()` is opt-in.
-- Each judge request has an 8 s deadline; a failure changes no decision and is reported on
-  `health()`.
+- Each judge request has an 8 s deadline; with a retry left, an attempt may use at most 60% of
+  the time remaining, so a hung attempt is abandoned in time for the retry. A failure changes no
+  decision and is reported on `health()`.
 
 A complete, runnable version (a webhook with retries, a health task and an offline mode) is
 `examples/webhook_agent.py` in the source repository; the integration guide is on the
@@ -166,8 +170,8 @@ A complete, runnable version (a webhook with retries, a health task and an offli
 - Small, distant or brief activity in busy surveillance scenes is often missed, because the change
   trigger does not fire on it. Pair such conditions with a heartbeat (`every`), a tighter zone or a
   lower `on_change` threshold, and check `coverage()`.
-- Each judge request has an 8 s deadline; sparse requests to a slow provider can time out and are
-  reported as failures.
+- Each judge request has an 8 s deadline (with a retry left, an attempt may use at most 60% of the
+  time remaining); sparse requests to a slow provider can time out and are reported as failures.
 - No performance numbers are published for this release.
 
 ## Links
