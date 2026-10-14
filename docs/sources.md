@@ -58,7 +58,10 @@ Two different rates apply, set in two places:
 
 The pre-roll (the last 8 s, sampled at 2 frames a second, from which event clips and
 verifications are cut) is fed at the capture rate, so the processing cap never thins the
-evidence of an event.
+evidence of an event. An event window (`Condition.clip_s`, `clip_frames`) the pre-roll can't
+hold, longer than its seconds or with more frames than its rate can give, is refused with
+`ValueError` when the condition or the stream is added; a source with its own `PreRoll` sets
+both.
 
 ## Push sources and `set_link`
 

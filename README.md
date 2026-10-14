@@ -227,8 +227,9 @@ camera = percept.PushSource("test-cam")    # camera.push(frame), then camera.clo
   rechecks (`recheck_every_s`), a door closed in a quiet scene is `cleared` 1 to 2 minutes later.
 - The store is `SqliteStore("percept.db")` in the working directory: crash-safe, one process per
   file. `MemoryStore()` is opt-in.
-- Each judge request has an 8 s deadline; a failure changes no decision and is reported on
-  `health()`.
+- Each judge request has an 8 s deadline; with a retry left, an attempt may use at most 60% of
+  the time remaining, so a hung attempt is abandoned in time for the retry. A failure changes no
+  decision and is reported on `health()`.
 
 The complete, runnable recipe is [examples/webhook_agent.py](examples/webhook_agent.py): decisions
 POSTed to a webhook with retries and acknowledged after a 2xx, plus a health task.
@@ -274,16 +275,14 @@ decision without the video or the judge. More in [docs/concepts.md](docs/concept
   judge's and is advisory.
 - **A judge failure is never an answer.** A timeout, outage, refusal or malformed reply changes no
   decision; it is reported on `health()` and `coverage()`.
-- **Known limitation: small, distant or brief activity in busy surveillance scenes is often
-  missed**, because the change trigger does not fire on it and the judge is never asked. Pair
-  such conditions with a heartbeat (`every`), a tighter zone, or a lower `on_change` threshold,
-  and check `coverage()`. See [docs/concepts.md](docs/concepts.md#known-limitation-small-distant-or-brief-activity).
-- **Slow providers can time out.** Each judge request has an 8 s deadline; sparse requests to a
-  slow provider can exceed it and are reported as failures.
-- **Hard footage stays hard.** On busy surveillance scenes, people who appear only a few dozen
-  pixels tall in the frames the judge receives are rarely detected by any configuration we have
-  measured, and every configuration was far from reliable there. Evaluate on your own footage
-  before relying on a condition.
+- **Known limitation: small, distant or brief activity is often missed**, in busy surveillance
+  scenes above all, because the change trigger does not fire on it and the judge is never asked.
+  Pair such conditions with a heartbeat (`every`), a tighter zone, or a lower `on_change`
+  threshold, and check `coverage()`. See [docs/concepts.md](docs/concepts.md#known-limitation-small-distant-or-brief-activity).
+  Evaluate on your own footage before relying on a condition.
+- **Slow providers can time out.** Each judge request has an 8 s deadline (with a retry left, an
+  attempt may use at most 60% of the time remaining); sparse requests to a slow provider can
+  exceed it and are reported as failures.
 - **No accuracy, latency or cost figures are claimed for this release.** Semantic accuracy depends
   on the judge, the condition wording and the footage, and Percept can't guarantee it. Measure it
   with the evaluation toolkit.

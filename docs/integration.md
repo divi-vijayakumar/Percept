@@ -114,16 +114,16 @@ async def test_door():
 
 | Default | Value | Consequence |
 |---|---|---|
-| `Monitor(max_requests_per_min=...)` | `6` attempts per stream in any 60 s | A built-in judge reserves 2 attempts a request (one try, one retry), so about 5 requests a minute when none retries, 3 when every one does. Due conditions with the same evidence share one request. A detection that waits too long for the budget (3 s for an event, 10 s for a state) is dropped (`dropped_budget`, health `budget_exhausted`); heartbeats and rechecks wait for the next free slot. |
+| `Monitor(max_requests_per_min=...)` | `6` attempts per stream in any 60 s | A built-in judge reserves 2 attempts a request (one try, one retry), so about 5 requests a minute when none retries, 3 when every one does. Due conditions with the same evidence share one request. A detection that waits too long for the budget (3 s for an event, 10 s for a state) is dropped (`dropped_budget`, health `budget_exhausted`); heartbeats and rechecks wait for the next free slot. Verification comes before new detection: while a verification waits, a detection that would take its attempts is held, and dropped as `dropped_for_verification` past its deadline. Nothing is held when no verification waits. |
 | state trigger | `on_change()` plus `every(300)` | A state is looked at when its zone changes, and at least every 5 minutes. |
-| event trigger | `on_change()` | An event is looked at only when its zone changes (or when you `poke()`). |
+| event trigger | `on_change()` | An event is looked at only when its zone changes (or when you `poke()`; a task that pokes from your own detector can first `await monitor.ready(stream_id, timeout=None)`, which returns once `watch()` has registered the stream, raises `asyncio.TimeoutError` on `timeout` and `RuntimeError` if the monitor closes first). |
 | `Condition.recheck_every_s` | `60.0` (states) | While a state is held it is looked at again at least this often. |
 | `Condition.clear_after_no` | `3` (states) | A held state clears only after 3 confident "no" answers in a row. Weak, unknown and failed answers neither count nor reset. With the default looks (one when the closing changes the zone, then a recheck every 60 s), a door closed in a quiet scene is `cleared` 1 to 2 minutes after it closed, later if a look fails or is unsure. Lower `clear_after_no` or `recheck_every_s` (more requests) to clear sooner. |
 | `Monitor(store=...)` | `SqliteStore("percept.db")` in the working directory | Crash-safe; one process per file (a second one raises `StoreLocked`). `MemoryStore()` is opt-in and warns. |
 | `watch(ack=...)` | `"auto"` | Acknowledges a decision when the loop asks for the next one. Use `"manual"` when the hand-off can fail. |
 | `watch(max_unacked=...)` | `100` | Unacknowledged decisions before delivery pauses on the stream. |
 | `watch(fps=...)` | `5` | Frames per second checked by triggers; capture is not slowed. |
-| judge deadline | 8 s a request | A slower reply fails as `timeout` and changes no decision. |
+| judge deadline | 8 s a request | A slower reply fails as `timeout` and changes no decision. While a retry is left, an attempt may use at most 60% of the time remaining, so a hung attempt is abandoned in time for the retry. |
 
 None of these values is calibrated. Check `monitor.coverage(stream_id)` and the
 [trace](delivery.md#trace-and-replay) on your own footage, and tune the
