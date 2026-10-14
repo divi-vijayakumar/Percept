@@ -455,6 +455,6 @@ def sweep(configs: Mapping[str, Compiled], labels: Labels, manifest: SplitManife
     for name, compiled in configs.items():
         runs = run(compiled, labels, manifest.clips[split], video_root=video_root, judge_cap_usd=left,
                    cache=cache, **options)
-        left = max(0.0, left - sum(r.cost_usd for r in runs))
+        left = max(0.0, left - sum(r.paid_usd for r in runs))     # cached replies cost nothing again
         out[name] = evaluate(labels, runs)
     return out

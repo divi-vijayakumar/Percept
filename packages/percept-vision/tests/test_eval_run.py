@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -236,6 +237,22 @@ def test_sweep_returns_one_score_per_declared_config_in_order(clip):
     assert all(s.clips == len(manifest.clips["validation"]) for s in scores.values())
     with pytest.raises(ValueError):
         ev.sweep(configs, labels, manifest, split="test", video_root=root, judge_cap_usd=1.0)
+
+
+def test_a_sweep_charges_its_cap_only_for_what_was_paid(monkeypatch):
+    caps = []
+
+    def fake_run(compiled, labels, clips, *, judge_cap_usd, **kw):
+        caps.append(round(judge_cap_usd, 6))
+        paid = 0.0 if compiled == "cached" else 0.4          # a fully cached config pays nothing
+        return [SimpleNamespace(cost_usd=0.4, paid_usd=paid)]
+
+    monkeypatch.setattr(ev, "run", fake_run)
+    monkeypatch.setattr(ev, "evaluate", lambda labels, runs: runs)
+    manifest = SimpleNamespace(clips={"validation": ["a.avi"]})
+    ev.sweep({"first": "new", "again": "cached", "third": "new"}, None, manifest, split="validation",
+             video_root=".", judge_cap_usd=1.0)
+    assert caps == [1.0, 0.6, 0.6]                          # the cached config left the cap untouched
 
 
 def test_caching_judge_sends_nothing_for_an_identical_request():
