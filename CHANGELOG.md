@@ -84,6 +84,31 @@ runs unchanged.
   compile to them (a state with either is a `PlanError`); plans without them keep their
   `plan_hash`.
 
+### Changed
+
+- Verification comes before new detection. While a verification waits (queued, or between its
+  retries), a detection may not take the request attempts the verification needs; a detection
+  held that way past its deadline gets the new fate `dropped_for_verification` (trace drop reason
+  `verification`) instead of `dropped_budget`. Nothing is held when no verification waits.
+- Per-attempt judge timeouts: with a retry left, an attempt may use at most 60% of the time
+  remaining in the request's deadline (`ATTEMPT_SHARE` in `percept.judges.policy`), so a hung
+  attempt is abandoned in time for the retry to run. An attempt that never replied is charged at
+  its worst-case cost when the judge has a price.
+
+### Benchmarks
+
+- A run the machine slept through is not publishable: each arm records the seconds the machine
+  slept (`slept_s`), and on macOS the runner keeps the machine awake with `caffeinate`.
+- The harness stops an arm once its failed looks already exceed the publishable failure rate for
+  the most looks it can make (status `aborted_failed_looks`), and stops the run on a sustained
+  provider outage (status `aborted_provider_outage`). The manifest's `status` names how the run
+  ended (`complete`, `aborted_spend_cap` or one of these); an aborted run is never complete.
+- Detector-and-tracker baseline arms `detector_track_rule` (a zone-entry rule on person tracks)
+  and `detector_track_decide` (the same tracks through Percept's decision rules), for entry
+  conditions only.
+- `percept-plan-<name>` arms run one compiled watch plan per source from `--percept-plans`.
+- The offline oracle judge runs with `FakeJudge(record_requests=False)`.
+
 ### Fixed
 
 - A verification cancelled by its deadline before its request task first ran (a scheduling race,
