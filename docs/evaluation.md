@@ -8,6 +8,9 @@ precision, false alerts, onset-to-decision latency, cost, and where each missed 
 lost. It reports; it never ranks or chooses between configurations. A runnable, offline walk
 through the whole flow is [examples/plan_evaluation.py](../examples/plan_evaluation.py).
 
+Running plans on clips reads video files with OpenCV, the `video` extra:
+`pip install "percept-vision[video]"`. Labels, splits and scoring need only the base install.
+
 ## 1. Labels
 
 ```python

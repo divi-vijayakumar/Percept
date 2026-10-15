@@ -7,14 +7,19 @@ configurations you declare, side by side on validation -> register the one you c
 test split once. Choosing between configurations is yours; the toolkit only reports.
 
 The clips are drawn here (a red square appears for a few seconds) and the judge is ``FakeJudge``,
-so nothing leaves the machine. Run it with ``python examples/plan_evaluation.py``.
+so nothing leaves the machine. It reads and writes video files with OpenCV, the ``video`` extra:
+``pip install "percept-vision[video]"``, then ``python examples/plan_evaluation.py``.
 """
 
 import tempfile
 from pathlib import Path
 
-import cv2
 import numpy as np
+
+try:
+    import cv2
+except ImportError:
+    raise SystemExit('This example needs OpenCV, the video extra: pip install "percept-vision[video]"')
 
 from percept import PriceModel, plans
 from percept.judges import FakeJudge
