@@ -128,7 +128,8 @@ The toolkit freezes a dev / validation / test split by recording group, runs the
 alone with no model calls, compares the configurations you declare, and scores the test split
 once against a registered plan. It reports; choosing between configurations is yours.
 
-Runnable offline: [examples/plan_evaluation.py](examples/plan_evaluation.py). Details:
+Runnable offline, with the `video` extra (`pip install "percept-vision[video]"`):
+[examples/plan_evaluation.py](examples/plan_evaluation.py). Details:
 [docs/evaluation.md](docs/evaluation.md). The benchmark harness in [benchmarks/](benchmarks/README.md)
 runs Percept against the pipelines a developer would otherwise write, on public footage.
 
