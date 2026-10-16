@@ -567,7 +567,7 @@ def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_the_candidate
     verify = _absorbing_candidate(s)
     r = s.verify_reply(verify, "no", at=13.0)
     assert r.decisions == () and s.phase("fall") == "idle" and "verify_rejected" in trace_events(r)
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, 11.5, 9.0)]
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, "r-2", (11.0, 11.5), 0)]
     met = _second_entry_is_its_own_met(s, verify.occurrence_id)
     assert met.decision_id.endswith("/1")
 
@@ -578,7 +578,7 @@ def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_the_candidate
     r = s.verify_reply(verify, "unknown", 0.0, at=13.0)
     [uncertain] = r.decisions
     assert uncertain.type == "uncertain" and uncertain.cause == "unverified" and uncertain.t_observed == 9.0
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, 11.5, 9.0)]
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, "r-2", (11.0, 11.5), 0)]
     met = _second_entry_is_its_own_met(s, verify.occurrence_id)
     assert met.occurrence_id != uncertain.occurrence_id
 
@@ -588,7 +588,7 @@ def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_verification_
     verify = _absorbing_candidate(s)
     r = s.fire("fall", "verify", at=40.0)
     assert types(r) == ["uncertain"] and r.decisions[0].cause == "timeout"
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, 11.5, 9.0)]
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, "r-2", (11.0, 11.5), 0)]
 
 
 def test_the_look_after_a_closed_candidate_needs_evidence_newer_than_the_candidate(impl):
@@ -666,13 +666,33 @@ def test_a_restart_during_the_verification_asks_for_no_look(impl):
 def test_the_remembered_entry_is_in_the_snapshot_only_while_a_candidate_holds_it(impl):
     s = Stream(impl, fall())
     [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
-    assert "absorbed_until" not in json.loads(s.snapshot())["keys"][0]       # a 1.0.0 reader still loads it
+    assert "absorbed_interval" not in json.loads(s.snapshot())["keys"][0]    # a 1.0.0 reader still loads it
     s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))
-    assert json.loads(s.snapshot())["keys"][0]["absorbed_until"] == 11.5
+    assert json.loads(s.snapshot())["keys"][0]["absorbed_interval"] == [11.0, 11.5]
     s.restore(s.snapshot())                                                   # survives a round trip
     r = s.verify_reply(verify, "no", at=13.0)
     assert len(effects(r, impl.RequestRelook)) == 1
-    assert "absorbed_until" not in json.loads(s.snapshot())["keys"][0]
+    assert "absorbed_interval" not in json.loads(s.snapshot())["keys"][0]
+
+
+def test_the_first_absorbed_yes_is_the_one_kept_and_carries_its_request_interval_and_epoch(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    s.observe("fall", "yes", at=11.0, evidence=(10.0, 10.5))              # r-2: the first yes about newer evidence
+    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))              # r-3: not kept: one absorbed request
+    [relook] = effects(s.verify_reply(verify, "no", at=13.0), impl.RequestRelook)
+    assert (relook.request_id, relook.interval, relook.stream_epoch) == ("r-2", (10.0, 10.5), 0)
+
+
+def test_the_relook_names_the_epoch_of_the_absorbed_detect_after_a_reconnect(impl):
+    # The verification of the original interval survives a reconnect; the recovery then names the old epoch,
+    # so the runtime can see that those frames belong to another epoch and judge nothing.
+    s = Stream(impl, fall())
+    verify = _absorbing_candidate(s)
+    s.feed(impl.EpochStarted(1, restart=False), at=14.0)
+    assert s.phase("fall") == "verifying"
+    [relook] = effects(s.verify_reply(verify, "no", at=15.0), impl.RequestRelook)
+    assert relook.stream_epoch == 0 and relook.interval == (11.0, 11.5)
 
 
 def test_a_state_condition_does_not_look_again(impl):

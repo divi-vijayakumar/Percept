@@ -182,14 +182,15 @@ class RequestRecheck:
 
 @dataclass(frozen=True)
 class RequestRelook:
-    """Judge an event condition again on a fresh frame: its verifying candidate closed without a
-    met after absorbing a detect yes about newer evidence (once per closed candidate)."""
+    """Judge the absorbed detection again on exactly its own evidence: its verifying candidate closed
+    without a met after absorbing a detect yes about newer evidence (once per closed candidate)."""
 
     condition_id: str
     subject: str
     occurrence_id: str
-    observed_at: float
-    after: float
+    request_id: str
+    interval: tuple[float, float]
+    stream_epoch: int
 
 
 @dataclass(frozen=True)
@@ -245,7 +246,9 @@ class Key:
     interval_epoch: Optional[int] = None
     yes_confidence: float = 0.0                 # confidence of the latest counted yes
     verify_deadline: Optional[float] = None
-    absorbed_until: Optional[float] = None      # verifying, event: evidence time of the newest absorbed yes
+    absorbed_request_id: Optional[str] = None   # verifying, event: the first absorbed yes about newer evidence
+    absorbed_interval: Optional[tuple[float, float]] = None
+    absorbed_epoch: Optional[int] = None
     no_count: int = 0                           # holding: consecutive confident no's
     held_since: Optional[float] = None
     expires_at: Optional[float] = None          # holding with max_open_s, until it passes
@@ -329,8 +332,11 @@ def to_dict(state: StreamDecideState) -> dict:
         data = asdict(key)
         data["interval"] = None if key.interval is None else list(key.interval)
         data["request_ids"] = list(key.request_ids)
-        if key.absorbed_until is None:
-            del data["absorbed_until"]
+        if key.absorbed_interval is None:
+            for name in ("absorbed_request_id", "absorbed_interval", "absorbed_epoch"):
+                del data[name]
+        else:
+            data["absorbed_interval"] = list(key.absorbed_interval)
         return data
 
     return {
@@ -364,6 +370,8 @@ def _from_dict(data: Mapping) -> StreamDecideState:
         if raw.get("phase") not in STATE_PHASES + EVENT_PHASES:
             raise ValueError(f"unknown phase {raw.get('phase')!r}")
         raw["interval"] = None if raw["interval"] is None else tuple(raw["interval"])
+        if raw.get("absorbed_interval") is not None:
+            raw["absorbed_interval"] = tuple(raw["absorbed_interval"])
         raw["request_ids"] = tuple(raw["request_ids"])
         raw["cost"] = Usage(**raw["cost"])
         key = Key(**raw)
@@ -564,8 +572,9 @@ def _on_event_answer(s, key, cond, inp, answer, now, out) -> None:
         # Only the verification of the original interval decides; later detections don't. A yes about
         # evidence newer than the candidate's is remembered: if the candidate closes without a met,
         # that entry gets one look of its own.
-        if answer == "yes" and o.evidence_t[1] > key.interval[1]:
-            key.absorbed_until = max(o.evidence_t[1], key.absorbed_until or o.evidence_t[1])
+        if answer == "yes" and key.absorbed_interval is None and o.evidence_t[1] > key.interval[1]:
+            key.absorbed_request_id, key.absorbed_interval = o.request_id, tuple(o.evidence_t)
+            key.absorbed_epoch = o.stream_epoch
         out.trace(now, "awaiting_verification", cond.id, o.subject, fate="judged", occurrence_id=occ)
     elif phase == "reported":
         event = "repeat_absorbed" if answer == "yes" else "ignored_while_reported"
@@ -668,7 +677,7 @@ def _accept(s, key, cond, confidence, reason, now, out) -> None:
     """The occurrence is real: hold the state or report the event, and emit met."""
     if key.verify_deadline is not None:
         key.verify_deadline = None
-        key.absorbed_until = None
+        key.absorbed_request_id = key.absorbed_interval = key.absorbed_epoch = None
         out.effects.append(CancelTimer(key.condition_id, key.subject, "verify"))
     if cond.kind == "state":
         key.phase = "holding"
@@ -712,10 +721,10 @@ def _unverified(s, key, cond, cause, now, out, *, verify_answered: bool) -> None
 def _relook(key: Key, out: _Out) -> None:
     """The candidate closes without a met after absorbing a yes about newer evidence: one look, and the
     floor rises to the end of the candidate's own evidence so that look cannot reopen it."""
-    if key.absorbed_until is not None:
+    if key.absorbed_interval is not None:
         out.effects.append(RequestRelook(key.condition_id, key.subject, key.occurrence_id,
-                                         key.absorbed_until, key.interval[1]))
-        key.absorbed_until = None
+                                         key.absorbed_request_id, key.absorbed_interval, key.absorbed_epoch))
+        key.absorbed_request_id = key.absorbed_interval = key.absorbed_epoch = None
         _raise_floor(key, key.interval[1])
 
 
@@ -1030,7 +1039,7 @@ def _on_epoch(s, inp: EpochStarted, now, conditions, out) -> None:
                 stream_epoch=s.stream_epoch, deadline=key.verify_deadline))
         elif inp.restart and key.phase in ("candidate", "verifying"):
             # the original evidence (and any request in flight) died with the process
-            key.absorbed_until = None      # its frames died with the process: no look is asked for
+            key.absorbed_request_id = key.absorbed_interval = key.absorbed_epoch = None   # frames died with the process
             _unverified(s, key, cond, "restart", now, out, verify_answered=False)
         if key.phase == "holding":
             out.effects.append(RequestRecheck(cid, subject, key.occurrence_id, key.gen, cond.version))

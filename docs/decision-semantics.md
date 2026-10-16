@@ -251,26 +251,26 @@ The key returns to idle with no new generation and no evidence floor.
 ### Absorbed entries
 
 While an event candidate verifies, a confident detect "yes" is absorbed (`awaiting_verification`).
-If it is about evidence newer than the candidate's own interval, the key remembers it. When the
-candidate then closes without `met` (verify "no", verify "unknown", or the deadline), the reducer
-emits one `RequestRelook` effect, so that second entry gets a decision of its own, and raises the
-evidence floor to the end of the candidate's interval so the look cannot reopen the closed entry.
-The effect carries `observed_at` (the evidence end of the absorbed yes) and `after` (the closed
-candidate's evidence end). At most one look is asked for per closed candidate; the runtime queues it
-as an ordinary event detect (trigger label `relook`) under the stream's budget, anchored at
-`observed_at` like a poke's `observed_at`, so its clip covers the absorbed entry however long the
-verification took, and starting after `after`, so it does not show the rejected candidate again.
-Recovery is guaranteed only while the verification completes within the pre-roll (8 s by default):
-if `observed_at` has left the pre-roll, at the time the effect is handled or while the look waits,
-no look is made (the newest frames cannot show the entry), and the trace record `relook` has
-`anchored: false`. Likewise if the look is dropped (budget, deadline, shutdown), fails, or is stale
-(its evidence ends at the floor, as on a stalled stream). In every such case the runtime records a
-`relook_dropped` blind interval over `after`..`observed_at` with the reason in `detail`; it never
-emits a decision for that.
+If it is about evidence newer than the candidate's own interval, the key keeps the first such yes:
+its request id, its exact evidence interval (start and end) and its stream epoch. When the candidate
+then closes without `met` (verify "no", verify "unknown", or the deadline), the reducer emits one
+`RequestRelook` carrying those three, so that second entry gets a decision of its own, and raises the
+evidence floor to the end of the candidate's interval so a late answer cannot reopen the closed entry.
 
-A verified candidate, a close by an application control, state conditions, and a restart ask for no
-look. On a restart the absorbed look's frames died with the process, so the candidate ends
-`uncertain` (cause `restart`) and the new epoch's triggers carry on.
+The runtime judges **exactly the absorbed detection's evidence**: the frames its request judged
+(kept for one absorbed request per key, released when the candidate closes or its recovery resolves),
+else the pre-roll's frames of exactly that interval. It never judges other frames. The recovery is an
+ordinary event detect for the budget, its 3 s deadline and single flight (trigger label `relook`), but
+it waits in a slot of its own: an ordinary look for the same condition and subject neither absorbs it
+nor replaces its evidence. At most one recovery is asked for per closed candidate.
+
+When the recovery cannot review the entry, the runtime records a `relook_dropped` blind interval over
+the absorbed interval, with the reason in `detail`, and emits no decision: `evidence_unavailable`
+(the frames and the exact interval are gone, or the epoch differs after a reconnect), `budget`,
+`verification`, `deadline`, `paused`, `superseded`, or `<fate>:<detail>` when the answer was stale,
+failed or weak. A verified candidate, a close by an application control, state conditions, and a
+restart ask for no recovery. On a restart the absorbed frames died with the process, so the candidate
+ends `uncertain` (cause `restart`) and the new epoch's triggers carry on.
 
 ## 13. Emission rules
 

@@ -8,21 +8,23 @@ Notable changes to Percept.
 
 - An event entry absorbed while an earlier candidate was verifying is no longer lost when that
   candidate closes without `met` (verify "no", verify "unknown" ending `uncertain`, or the verify
-  deadline). The runtime makes one fresh look (trigger label `relook`, within the request budget) on
-  evidence newer than the closed candidate, so the second entry gets its own decision. The look is
-  anchored on the absorbed entry (so a verification slower than `clip_s` does not push the clip past
-  it) and starts after the closed candidate. A look that is dropped, fails or is stale is reported as
-  a new `relook_dropped` blind interval (no decision), and the trace has a `relook` record.
+  deadline). The key keeps the absorbed detection (request id, exact evidence interval, stream epoch),
+  and the runtime judges that detection again on exactly its own evidence: the frames its request
+  judged (kept for one absorbed request per key), else the pre-roll's frames of exactly that interval.
+  Never other frames, so recovery does not depend on the person still being in view, nor on the
+  verification finishing within the pre-roll. At most one recovery per closed candidate, an ordinary
+  event detect under the request budget (trigger label `relook`), in a slot of its own that an
+  ordinary look cannot absorb or replace.
+- When the recovery cannot review the entry (frames and exact interval gone, the epoch changed by a
+  reconnect, budget, deadline, a stale or failed answer) it is reported as a `relook_dropped` blind
+  interval over the absorbed interval, with the reason in `detail`, and no decision is emitted. The
+  trace has a `relook` record.
 - `BlindKind` gains `relook_dropped`: consumers that match blind-interval kinds exhaustively must
   handle it.
-- Recovery is guaranteed only while the verification completes within the pre-roll (8 s by default).
-  Beyond that, no look is made and the unreviewed span is reported as a `relook_dropped` blind
-  interval (detail "absorbed entry left the pre-roll"), not lost silently.
-  The check is made on the clip actually cut: a look whose clip does not overlap the absorbed entry
-  (the pre-roll was trimmed while it waited) is never judged, and is reported the same way.
-- Snapshots: a key carries an `absorbed_until` field only while a verifying candidate holds an absorbed
-  entry. `SNAPSHOT_FORMAT` stays 1. A 1.0.0 reader loads every such snapshot except one taken in that
-  moment, which it rejects as malformed: do not downgrade from 1.0.1 to 1.0.0 with persisted state.
+- Snapshots: a key carries `absorbed_request_id`, `absorbed_interval` and `absorbed_epoch` only while a
+  verifying candidate holds an absorbed detection. `SNAPSHOT_FORMAT` stays 1. A 1.0.0 reader loads every
+  such snapshot except one taken in that moment, which it rejects as malformed: do not downgrade from
+  1.0.1 to 1.0.0 with persisted state.
 
 ## 1.0.0 — Developer Preview
 

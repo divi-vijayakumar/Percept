@@ -222,19 +222,23 @@ class RequestRecheck:
 
 @dataclass(frozen=True)
 class RequestRelook:
-    """Judge an event condition again on a fresh frame (``purpose="detect"``).
+    """Judge the absorbed detection again (``purpose="detect"``), on exactly its own evidence.
 
     Emitted once when a verifying candidate closes without ``met`` after it absorbed a detect yes
-    about newer evidence, so that entry gets a decision of its own. The look is an ordinary detect:
-    it spends the stream's budget, and its answer is stale unless its evidence is newer than the
-    closed candidate's (the evidence floor is raised with this effect).
+    about newer evidence, so that entry gets a decision of its own. ``request_id``, ``interval``
+    (start and end) and ``stream_epoch`` identify the absorbed detection; the runtime judges those
+    frames (or the pre-roll's frames of exactly that interval) and nothing else, and reports the
+    interval unreviewed when it cannot. The look is an ordinary detect: it spends the stream's
+    budget, and its answer is stale unless its evidence is newer than the closed candidate's (the
+    evidence floor is raised with this effect).
     """
 
     condition_id: str
     subject: str
     occurrence_id: str                          # the candidate that closed
-    observed_at: float                          # evidence end of the newest absorbed yes: the look's anchor
-    after: float                                # evidence end of the closed candidate: the look starts after it
+    request_id: str                             # the absorbed detect's request
+    interval: tuple[float, float]               # its evidence interval, start and end
+    stream_epoch: int                           # its stream epoch
 
 
 @dataclass(frozen=True)
@@ -301,7 +305,9 @@ class Key:
     interval_epoch: Optional[int] = None        # epoch of the window's first yes
     yes_confidence: float = 0.0                 # confidence of the latest counted yes
     verify_deadline: Optional[float] = None
-    absorbed_until: Optional[float] = None      # verifying, event: evidence end of the newest yes absorbed
+    absorbed_request_id: Optional[str] = None   # verifying, event: the first yes absorbed about newer evidence:
+    absorbed_interval: Optional[tuple[float, float]] = None   # its request, evidence interval
+    absorbed_epoch: Optional[int] = None        # and stream epoch
     no_count: int = 0                           # holding: confident no's since the last yes
     held_since: Optional[float] = None
     expires_at: Optional[float] = None          # holding with max_open_s, until it passes
@@ -319,6 +325,7 @@ class Key:
     last_touched: float = 0.0
 
 
+_NO_ABSORBED = dict(absorbed_request_id=None, absorbed_interval=None, absorbed_epoch=None)
 BOOKKEEPING_FIELDS: tuple[str, ...] = ("cost", "request_ids", "last_touched")
 
 
@@ -384,6 +391,7 @@ def decision_view(state: StreamDecideState) -> dict:
 
 
 SNAPSHOT_FORMAT = 1
+_ABSORBED_FIELDS = ("absorbed_request_id", "absorbed_interval", "absorbed_epoch")
 _KEY_FIELDS: tuple[str, ...] = tuple(Key.__dataclass_fields__)
 _PHASES: frozenset[str] = frozenset(STATE_PHASES + EVENT_PHASES)
 
@@ -397,8 +405,11 @@ def to_dict(state: StreamDecideState) -> dict:
         data["interval"] = None if key.interval is None else list(key.interval)
         data["request_ids"] = list(key.request_ids)
         data["cost"] = {name: getattr(key.cost, name) for name in Usage.__dataclass_fields__}
-        if key.absorbed_until is None:      # written only while it matters, so most snapshots stay readable by 1.0.0
-            del data["absorbed_until"]
+        if key.absorbed_interval is None:   # written only while it matters, so most snapshots stay readable by 1.0.0
+            for name in _ABSORBED_FIELDS:
+                del data[name]
+        else:
+            data["absorbed_interval"] = list(key.absorbed_interval)
         return data
 
     return {
@@ -437,6 +448,8 @@ def _from_dict(data: Mapping) -> StreamDecideState:
         if raw.get("phase") not in _PHASES:
             raise ValueError(f"unknown phase {raw.get('phase')!r}")
         raw["interval"] = None if raw["interval"] is None else tuple(raw["interval"])
+        if raw.get("absorbed_interval") is not None:
+            raw["absorbed_interval"] = tuple(raw["absorbed_interval"])
         raw["request_ids"] = tuple(raw["request_ids"])
         raw["cost"] = Usage(**raw["cost"])
         key = Key(**raw)
@@ -702,7 +715,7 @@ def _accept(st: _Step, key: Key, cond: Condition, confidence: float, reason: str
     """
     now = st.now
     if key.verify_deadline is not None:
-        key = replace(key, verify_deadline=None, absorbed_until=None)
+        key = replace(key, verify_deadline=None, **_NO_ABSORBED)
         st.emit(CancelTimer(key.condition_id, key.subject, "verify"))
     if cond.kind == "state":
         key = replace(key, phase=HOLDING, held_since=now, no_count=0, next_recheck=now + cond.recheck_every_s)
@@ -740,10 +753,11 @@ def _relook(st: _Step, key: Key) -> Key:
     """A verifying candidate closes without ``met`` after absorbing a yes about newer evidence
     [Absorbed entries]: ask for one fresh look, and raise the evidence floor to the end of the
     candidate's own evidence so that look cannot reopen the entry that was just closed."""
-    if key.absorbed_until is None:
+    if key.absorbed_interval is None:
         return key
-    st.emit(RequestRelook(key.condition_id, key.subject, key.occurrence_id, key.absorbed_until, key.interval[1]))
-    return _raise_floor(replace(key, absorbed_until=None), key.interval[1])
+    st.emit(RequestRelook(key.condition_id, key.subject, key.occurrence_id, key.absorbed_request_id,
+                          key.absorbed_interval, key.absorbed_epoch))
+    return _raise_floor(replace(key, **_NO_ABSORBED), key.interval[1])
 
 
 # --------------------------------------------------------------------------- capacity
@@ -918,9 +932,10 @@ def _candidate_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answe
 def _verifying_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answer: AnswerClass) -> None:
     """Verifying, both kinds: only the verification decides; detections are absorbed. An event's
     confident yes about evidence newer than the candidate's is remembered [Absorbed entries]."""
-    if answer == "yes" and cond.kind == "event" and inp.observation.evidence_t[1] > key.interval[1]:
-        end = inp.observation.evidence_t[1]
-        st.put(replace(key, absorbed_until=end if key.absorbed_until is None else max(key.absorbed_until, end)))
+    o = inp.observation
+    if answer == "yes" and cond.kind == "event" and key.absorbed_interval is None and o.evidence_t[1] > key.interval[1]:
+        st.put(replace(key, absorbed_request_id=o.request_id, absorbed_interval=tuple(o.evidence_t),
+                       absorbed_epoch=o.stream_epoch))
     st.trace("awaiting_verification", cond.id, inp.observation.subject, fate="judged",
              occurrence_id=key.occurrence_id)
 
@@ -1165,7 +1180,7 @@ def _resume(st: _Step, key: Key, cond: Condition, *, restart: bool) -> Key:
             deadline=key.verify_deadline))
     elif restart and key.phase in (CANDIDATE, VERIFYING):
         # The absorbed look's frames died with the process: no look is asked for [Absorbed entries].
-        key = _unverified(st, replace(key, absorbed_until=None), cond, "restart", verify_answered=False)
+        key = _unverified(st, replace(key, **_NO_ABSORBED), cond, "restart", verify_answered=False)
     if key.phase == HOLDING:
         st.emit(RequestRecheck(cond.id, key.subject, key.occurrence_id, key.gen, cond.version))
         key = replace(key, next_recheck=st.now + cond.recheck_every_s)
