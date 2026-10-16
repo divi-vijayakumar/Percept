@@ -114,6 +114,7 @@ of their evidence window than asked, because the stream had just started or reco
 | `budget_exhausted` | looks were due but the request or cost budget refused them |
 | `judge_down` | 3 judge requests in a row failed completely |
 | `paused` | the application paused a condition |
+| `evidence_unavailable` | an entry absorbed while a candidate verified could not be verified: its saved frames and exact interval are gone, or it belongs to an earlier stream epoch; the interval is that entry's evidence. The gap itself is not a decision: when the saved frames are gone the successor candidate still ends `uncertain` at its own deadline, and when the epoch changed no successor is opened |
 
 The same events appear on the health channel (`Monitor.health()`); see
 [delivery.md](delivery.md#health-stats-and-coverage).

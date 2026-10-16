@@ -248,6 +248,45 @@ Only a candidate supported by at least one confident "yes" is reported:
 
 The key returns to idle with no new generation and no evidence floor.
 
+### Absorbed entries
+
+While an event candidate verifies, a confident detect "yes" is absorbed (`awaiting_verification`). If it
+is about evidence newer than the candidate's own interval, the key keeps the first such yes whole: its
+request id, its exact evidence interval, its stream epoch, and its usage. That detect is not charged to
+the candidate; it goes with the entry it found.
+
+When the candidate then closes without `met` (verify "no", verify "unknown", or the verify deadline), that
+yes opens **at most one successor occurrence**, as if it had arrived while the key was idle: a new
+`occurrence_id` and generation, the yes counted into the confirm window (with `confirm` 1 it goes straight
+to verification), and **no second detect**. The successor is verified like any candidate: mode `original`,
+on exactly the absorbed interval (`RequestVerify.absorbed` is true), with a full deadline of its own, under
+the same request and cost limits. The runtime verifies the frames the absorbed request judged, else the
+pre-roll's frames of exactly that interval, and never other frames. The absorbed detect is charged to the
+successor's decision once. Its fate was traced when it was absorbed, so coverage counts it once.
+
+- If the first candidate verifies (`met`), the absorbed yes is discarded: no successor, no duplicate alert;
+  the absorbed detect is charged to that `met`.
+- If the saved frames and the exact interval are gone, the runtime reports the interval as an
+  `evidence_unavailable` blind interval and judges nothing; the successor then ends at its deadline.
+- If the absorbed detect belongs to an earlier stream epoch (a reconnect happened while the first candidate
+  verified), no successor is opened: the reducer emits `EvidenceGap`, and the runtime reports the same
+  `evidence_unavailable` interval.
+- A close by an application control, a restart, and state conditions promote nothing. On a restart the
+  absorbed frames died with the process, so the candidate ends `uncertain` (cause `restart`) and carries
+  the absorbed detect's usage.
+- Overlap with the closed candidate is allowed. The absorbed yes only has to be about evidence that ends
+  after the closed candidate's interval; its clip may overlap that interval. So the same person seen
+  in a slightly later clip can open a successor, and the verifier is asked again about someone it just
+  rejected, or one person can produce two `uncertain` decisions. Requiring non-overlap would avoid that
+  but would also drop genuine back-to-back entries (clips are about 4 s, entries can be under 1 s apart),
+  and a lost entry is the defect this section fixes, so the trade-off is accepted. Tests pin the behaviour.
+- No loop: each promotion consumes the one absorbed observation; the successor can only promote a new
+  detect absorbed during its own verification.
+- A `confirm` greater than 1 makes the successor a candidate that waits for further yeses, as any
+  candidate does.
+- Snapshots carry the kept observation (key fields `absorbed`, `absorbed_usage`) only while a candidate
+  holds one, so a persisted verifying candidate promotes after a restore of the same process.
+
 ## 13. Emission rules
 
 A decision is emitted only when no rule suppresses it. A suppressed decision is traced

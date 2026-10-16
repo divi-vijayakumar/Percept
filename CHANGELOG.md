@@ -2,6 +2,37 @@
 
 Notable changes to Percept.
 
+## 1.1.0 (unreleased)
+
+Minor release: the entry below adds a value to the 1.0 contract's `BlindKind` and two additions to the
+`percept.decide` effects, and changes no existing signature. The version bump itself belongs to the
+release step.
+
+### Fixed
+
+- An event entry absorbed while an earlier candidate was verifying is no longer lost when that candidate
+  closes without `met` (verify "no", verify "unknown" ending `uncertain`, or the verify deadline). The
+  key keeps the absorbed detection whole (request id, exact evidence interval, stream epoch, usage), and
+  when the first candidate closes it opens at most one successor candidate from it. No second detect is
+  made: the successor is verified on exactly the absorbed evidence (the frames its request judged, else
+  the pre-roll's frames of exactly that interval, never other frames), with a deadline of its own and
+  under the same request and cost limits. If the first candidate verifies, the absorbed yes is discarded:
+  no duplicate alert. A close by a control, a restart and state conditions promote nothing. The absorbed
+  detect is charged once, to the entry it found.
+- If the saved evidence is unavailable (frames and exact interval gone) or belongs to an earlier stream
+  epoch, nothing is judged and the entry's interval is reported as an `evidence_unavailable` blind interval.
+  The gap is not a decision: with the frames gone the successor candidate still ends `uncertain` at its own
+  deadline; with an epoch change no successor is opened.
+- The absorbed yes may overlap the closed candidate's interval (it only has to end after it), so the same
+  person in a slightly later clip can be verified again, or produce a second `uncertain`. This is accepted
+  so that close back-to-back entries are not lost; see `docs/decision-semantics.md`.
+- API additions (minor version): `BlindKind` gains `evidence_unavailable` (consumers that match
+  blind-interval kinds exhaustively must handle it); `decide.RequestVerify` gains `absorbed` (default
+  False); `decide.EvidenceGap` is a new effect.
+- Snapshots: a key carries `absorbed` and `absorbed_usage` only while a verifying candidate holds an
+  absorbed detection. `SNAPSHOT_FORMAT` stays 1. A 1.0.0 reader loads every such snapshot except one taken
+  in that moment, which it rejects as malformed: do not downgrade from 1.1.0 to 1.0.0 with persisted state.
+
 ## 1.0.0 — Developer Preview
 
 Percept 1.0 is an open-source runtime for continuous vision applications: configure what to

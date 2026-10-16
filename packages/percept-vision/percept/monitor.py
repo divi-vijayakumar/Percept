@@ -316,6 +316,9 @@ class _Stream:
         self.tcounts: deque[tuple[int, Counter]] = deque(maxlen=COVERAGE_BUCKETS)  # (cid, label, count)
         self.totals: Counter = Counter()
         self.totals_by_trigger: Counter = Counter()     # (trigger label, count) -> n
+        # (cid, subject) -> (request id, frames) of the one detect a verifying candidate absorbed: kept until the
+        # candidate closes (its successor verifies exactly these frames) or the key moves on.
+        self.absorbed: dict[tuple[str, str], tuple[str, tuple]] = {}
         self.judge_failures = 0
         self.budget_blocked = False
         self.budget_reason: Optional[str] = None     # the budget_exhausted reason last reported
@@ -572,6 +575,15 @@ class _Stream:
                     purpose="verify" if w.verify is not None else "detect", priority=_PRIORITY_NAMES[w.priority],
                     t_trigger=w.t_trigger, waited_s=max(0.0, now - w.created))
 
+    def gap(self, cid: str, subject: str, interval: tuple[float, float], why: str) -> None:
+        """An absorbed detection's evidence cannot be verified: report its interval as an ``evidence_unavailable``
+        blind interval, with the reason as the detail. Nothing is judged and no decision is emitted."""
+        self.m._rec("blind", self.id, blind_kind="evidence_unavailable", state="close", detail=why, condition_id=cid)
+        if len(self.blind) == self.blind.maxlen:
+            self.blind_dropped += 1
+        self.blind.append(BlindInterval("evidence_unavailable", self.id, interval[0], max(interval[0], interval[1]),
+                                        why, cid))
+
     def starve(self, w: _Work) -> None:
         if not w.starved:
             w.starved = True
@@ -696,6 +708,8 @@ class _Stream:
                 if why == "gone":
                     w.gone = True
                     self.health("verify_deferred", "the original evidence left the pre-roll", w.condition_id)
+                    if w.verify.absorbed:      # never judge other frames: say the entry went unreviewed
+                        self.gap(w.condition_id, w.subject, w.verify.interval, "original evidence left the pre-roll")
                     continue
                 if why == "budget":
                     refused = True
@@ -954,6 +968,12 @@ class _Stream:
             m._rec("decide_input", self.id, input=encode_input(inp), now=now, versions=versions)
         r = decide.step(self.state, inp, now, m._conds)
         self.state = r.state
+        if isinstance(inp, decide.Observed) and inp.observation.purpose == "detect":
+            ob = inp.observation      # keep the one detect a verifying candidate absorbed, frames included
+            k = self.state.keys.get((ob.condition_id, ob.subject))
+            if k is not None and k.absorbed is not None and k.absorbed.request_id == ob.request_id:
+                self.absorbed[(ob.condition_id, ob.subject)] = (
+                    ob.request_id, self.req_frames.get(ob.request_id.split("/")[0], ()))
         loop = asyncio.get_running_loop()
         for e in r.effects:
             t = type(e)
@@ -976,7 +996,11 @@ class _Stream:
                 w = _Work(VERIFY, e.condition_id, e.subject, self.m._mono(), verify=e, trigger="verify")
                 self.tcount(e.condition_id, "verify", "due")
                 if e.mode == "original":    # pinned now: frames are ephemeral
-                    w.frames = self.original(e)
+                    kept = self.absorbed.pop((e.condition_id, e.subject), (None, ()))[1] if e.absorbed else ()
+                    exact = bool(kept) and (kept[0].t_wall, kept[-1].t_wall) == tuple(e.interval)
+                    w.frames = kept if exact else self.original(e)     # the absorbed request's own frames first
+                    if e.absorbed and w.frames and (w.frames[0].t_wall, w.frames[-1].t_wall) != tuple(e.interval):
+                        w.frames = ()           # not exactly the absorbed evidence: report the gap, judge nothing
                 self.verifies[(e.condition_id, e.subject)] = w
             elif t is decide.CancelVerify:
                 w = self.verifies.get((e.condition_id, e.subject))
@@ -992,6 +1016,12 @@ class _Stream:
                 m._report(e.health)
             elif t is decide.StoreCounterExample:
                 self.spawn(self.store_counter(e))
+            elif t is decide.EvidenceGap:
+                self.gap(e.condition_id, e.subject, e.interval, f"evidence from another {e.cause}")
+        for key, (rid, _) in list(self.absorbed.items()):      # released once the candidate closes or moves on
+            k = self.state.keys.get(key)
+            if k is None or k.absorbed is None or k.absorbed.request_id != rid:
+                del self.absorbed[key]
         for d in r.decisions:
             fields = decision_record(d)
             del fields["stream_id"]         # the record's own stream_id
