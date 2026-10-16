@@ -155,6 +155,7 @@ class RequestVerify:
     interval: Optional[tuple[float, float]]
     stream_epoch: int
     deadline: float
+    absorbed: bool = False      # verifies a successor promoted from an absorbed detection
 
 
 @dataclass(frozen=True)
@@ -181,16 +182,14 @@ class RequestRecheck:
 
 
 @dataclass(frozen=True)
-class RequestRelook:
-    """Judge the absorbed detection again on exactly its own evidence: its verifying candidate closed
-    without a met after absorbing a detect yes about newer evidence (once per closed candidate)."""
+class EvidenceGap:
+    """An absorbed detection could not be promoted to a successor: its evidence crosses a stream epoch.
+    The runtime reports the interval as an ``evidence_unavailable`` gap; nothing is judged."""
 
     condition_id: str
     subject: str
-    occurrence_id: str
-    request_id: str
     interval: tuple[float, float]
-    stream_epoch: int
+    cause: Literal["epoch"]
 
 
 @dataclass(frozen=True)
@@ -220,7 +219,7 @@ class Trace:
     detail: str = ""
 
 
-Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, CancelVerify, RequestRecheck, RequestRelook,
+Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, CancelVerify, RequestRecheck, EvidenceGap,
                EmitHealth, StoreCounterExample, Trace]
 
 
@@ -246,9 +245,8 @@ class Key:
     interval_epoch: Optional[int] = None
     yes_confidence: float = 0.0                 # confidence of the latest counted yes
     verify_deadline: Optional[float] = None
-    absorbed_request_id: Optional[str] = None   # verifying, event: the first absorbed yes about newer evidence
-    absorbed_interval: Optional[tuple[float, float]] = None
-    absorbed_epoch: Optional[int] = None
+    absorbed: Optional[Observation] = None      # verifying, event: the first detect yes about newer evidence
+    absorbed_usage: Usage = field(default_factory=Usage)
     no_count: int = 0                           # holding: consecutive confident no's
     held_since: Optional[float] = None
     expires_at: Optional[float] = None          # holding with max_open_s, until it passes
@@ -332,11 +330,10 @@ def to_dict(state: StreamDecideState) -> dict:
         data = asdict(key)
         data["interval"] = None if key.interval is None else list(key.interval)
         data["request_ids"] = list(key.request_ids)
-        if key.absorbed_interval is None:
-            for name in ("absorbed_request_id", "absorbed_interval", "absorbed_epoch"):
-                del data[name]
+        if key.absorbed is None:
+            del data["absorbed"], data["absorbed_usage"]
         else:
-            data["absorbed_interval"] = list(key.absorbed_interval)
+            data["absorbed"]["evidence_t"] = list(key.absorbed.evidence_t)
         return data
 
     return {
@@ -370,8 +367,9 @@ def _from_dict(data: Mapping) -> StreamDecideState:
         if raw.get("phase") not in STATE_PHASES + EVENT_PHASES:
             raise ValueError(f"unknown phase {raw.get('phase')!r}")
         raw["interval"] = None if raw["interval"] is None else tuple(raw["interval"])
-        if raw.get("absorbed_interval") is not None:
-            raw["absorbed_interval"] = tuple(raw["absorbed_interval"])
+        if raw.get("absorbed") is not None:
+            raw["absorbed"] = Observation(**{**raw["absorbed"], "evidence_t": tuple(raw["absorbed"]["evidence_t"])})
+            raw["absorbed_usage"] = Usage(**raw["absorbed_usage"])
         raw["request_ids"] = tuple(raw["request_ids"])
         raw["cost"] = Usage(**raw["cost"])
         key = Key(**raw)
@@ -488,10 +486,9 @@ def _on_observed(s: StreamDecideState, inp: Observed, now: float, conditions: Ma
         out.trace(now, "stale_result", cid, subject, fate="stale", detail=reason)
         return
 
-    if key is not None and key.phase != "idle":
-        _charge(key, inp)  # every non-stale observation of an open occurrence is part of its cost
-
     answer = _classify(o, cond)
+    if key is not None and key.phase != "idle" and not _absorbable(key, cond, o, answer):
+        _charge(key, inp)  # every non-stale observation of an open occurrence is part of its cost
     occ = None if key is None else key.occurrence_id
     if answer == "failed":
         out.trace(now, "failure", cid, subject, fate="failed", occurrence_id=occ, detail=o.failure or "")
@@ -572,9 +569,8 @@ def _on_event_answer(s, key, cond, inp, answer, now, out) -> None:
         # Only the verification of the original interval decides; later detections don't. A yes about
         # evidence newer than the candidate's is remembered: if the candidate closes without a met,
         # that entry gets one look of its own.
-        if answer == "yes" and key.absorbed_interval is None and o.evidence_t[1] > key.interval[1]:
-            key.absorbed_request_id, key.absorbed_interval = o.request_id, tuple(o.evidence_t)
-            key.absorbed_epoch = o.stream_epoch
+        if _absorbable(key, cond, o, answer):
+            key.absorbed, key.absorbed_usage = o, inp.usage
         out.trace(now, "awaiting_verification", cond.id, o.subject, fate="judged", occurrence_id=occ)
     elif phase == "reported":
         event = "repeat_absorbed" if answer == "yes" else "ignored_while_reported"
@@ -591,9 +587,12 @@ def _on_verify_answer(s, key, cond, inp, answer, now, out) -> None:
         _accept(s, key, cond, o.confidence, o.reason, now, out)
     elif answer == "no":
         out.trace(now, "verify_rejected", cond.id, o.subject, fate="judged", occurrence_id=occ)
-        _relook(key, out)
+        absorbed, usage = key.absorbed, key.absorbed_usage
+        key.absorbed, key.absorbed_usage = None, Usage()
         _raise_floor(key, key.interval[1] if cond.verify_mode == "original" else o.evidence_t[1])
         _to_idle(key, out, now, verify_answered=True)
+        if absorbed is not None:
+            _promote(s, key, cond, absorbed, usage, now, out)
     else:  # the model, looking at the evidence again, can't tell
         out.trace(now, "verify_unknown", cond.id, o.subject, fate="judged_weak", occurrence_id=occ)
         _unverified(s, key, cond, "unverified", now, out, verify_answered=True)
@@ -619,7 +618,7 @@ def _open_with_yes(s, key, cond, inp, now, out) -> None:
     _count_yes(s, key, cond, o, now, out)
 
 
-def _count_yes(s, key, cond, o, now, out) -> None:
+def _count_yes(s, key, cond, o, now, out, *, fate="judged", absorbed=False) -> None:
     """Count a confident yes into the confirm window. The window is on evidence time: every
     counted yes lies within ``confirm_window_s`` of every other. Emits the observation's fate."""
     e = o.evidence_t[1]
@@ -640,7 +639,7 @@ def _count_yes(s, key, cond, o, now, out) -> None:
         out.trace(now, "older_than_window", cond.id, o.subject, fate="judged", occurrence_id=occ)
         return
     key.yes_confidence = o.confidence
-    out.trace(now, event, cond.id, o.subject, fate="judged", occurrence_id=occ,
+    out.trace(now, event, cond.id, o.subject, fate=fate, occurrence_id=occ,
               detail=f"{key.yes_count}/{cond.confirm}")
     if key.yes_count < cond.confirm:
         # An unfinished window gives up once a yes inside it can no longer arrive.
@@ -662,7 +661,7 @@ def _count_yes(s, key, cond, o, now, out) -> None:
         condition_version=cond.version, mode=mode,
         interval=key.interval if mode == "original" else None,
         stream_epoch=key.interval_epoch if mode == "original" else s.stream_epoch,
-        deadline=key.verify_deadline))
+        deadline=key.verify_deadline, absorbed=absorbed))
     out.effects.append(ScheduleTimer(cond.id, o.subject, "verify", key.verify_deadline))
 
 
@@ -677,7 +676,7 @@ def _accept(s, key, cond, confidence, reason, now, out) -> None:
     """The occurrence is real: hold the state or report the event, and emit met."""
     if key.verify_deadline is not None:
         key.verify_deadline = None
-        key.absorbed_request_id = key.absorbed_interval = key.absorbed_epoch = None
+        _settle(key)
         out.effects.append(CancelTimer(key.condition_id, key.subject, "verify"))
     if cond.kind == "state":
         key.phase = "holding"
@@ -702,9 +701,15 @@ def _deliver_deferred_met(s, key, cond, o, now, out) -> None:
         key.met_pending = False
 
 
-def _unverified(s, key, cond, cause, now, out, *, verify_answered: bool) -> None:
+def _unverified(s, key, cond, cause, now, out, *, verify_answered: bool, promote: bool = True) -> None:
     """A candidate closes without a verified answer. Only a candidate that a confident yes
-    supported is reported; it keeps its occurrence id."""
+    supported is reported; it keeps its occurrence id. An absorbed detection is promoted to a successor."""
+    absorbed, usage = key.absorbed, key.absorbed_usage
+    key.absorbed, key.absorbed_usage = None, Usage()
+    if absorbed is not None and not promote:
+        key.cost = key.cost + usage
+        key.request_ids = (key.request_ids + (absorbed.request_id,))[-MAX_REQUEST_IDS:] \
+            if absorbed.request_id not in key.request_ids else key.request_ids
     if key.yes_count >= 1:
         if cond.on_unverified == "uncertain":
             _emit(s, key, cond, "uncertain", cause, _UNVERIFIED_REASONS[cause], key.yes_confidence,
@@ -714,18 +719,46 @@ def _unverified(s, key, cond, cause, now, out, *, verify_answered: bool) -> None
                 kind="unverified", stream_id=s.stream_id, t_wall=now, detail=_UNVERIFIED_REASONS[cause],
                 condition_id=cond.id, subject=key.subject)))
     out.trace(now, "unverified", cond.id, key.subject, occurrence_id=key.occurrence_id, detail=cause)
-    _relook(key, out)
     _to_idle(key, out, now, verify_answered=verify_answered)
+    if absorbed is not None and promote:
+        _promote(s, key, cond, absorbed, usage, now, out)
 
 
-def _relook(key: Key, out: _Out) -> None:
-    """The candidate closes without a met after absorbing a yes about newer evidence: one look, and the
-    floor rises to the end of the candidate's own evidence so that look cannot reopen it."""
-    if key.absorbed_interval is not None:
-        out.effects.append(RequestRelook(key.condition_id, key.subject, key.occurrence_id,
-                                         key.absorbed_request_id, key.absorbed_interval, key.absorbed_epoch))
-        key.absorbed_request_id = key.absorbed_interval = key.absorbed_epoch = None
-        _raise_floor(key, key.interval[1])
+def _promote(s, key, cond, o, usage, now, out) -> None:
+    """The closed candidate held an absorbed detect yes: it opens at most one successor, verified on its own
+    evidence like any candidate, and is charged the absorbed detect once. Evidence from another epoch cannot
+    be verified: a gap is reported instead."""
+    if o.stream_epoch != s.stream_epoch:
+        out.effects.append(EvidenceGap(cond.id, key.subject, tuple(o.evidence_t), "epoch"))
+        out.trace(now, "promotion_refused", cond.id, key.subject, occurrence_id=key.occurrence_id, detail="epoch")
+        return
+    key.last_touched = now
+    key.occurrence_id = f"{s.stream_id}/{cond.id}/{s.incarnation}-{s.next_occurrence}"
+    s.next_occurrence += 1
+    key.gen = _bump(s)
+    key.decisions = 0
+    key.yes_count = 0
+    key.cost = key.cost + usage
+    if o.request_id not in key.request_ids:
+        key.request_ids = (key.request_ids + (o.request_id,))[-MAX_REQUEST_IDS:]
+    out.trace(now, "promoted", cond.id, key.subject, occurrence_id=key.occurrence_id, detail=o.request_id)
+    if cond.confirm > 1:
+        key.phase = "candidate"
+    _count_yes(s, key, cond, o, now, out, fate=None, absorbed=True)
+
+
+def _absorbable(key, cond, o, answer) -> bool:
+    return (key.phase == "verifying" and cond.kind == "event" and o.purpose == "detect" and answer == "yes"
+            and key.absorbed is None and key.interval is not None and o.evidence_t[1] > key.interval[1])
+
+
+def _settle(key: Key) -> None:
+    """A kept absorbed detection is charged to the key after all (it is not promoted) and forgotten."""
+    if key.absorbed is not None:
+        key.cost = key.cost + key.absorbed_usage
+        if key.absorbed.request_id not in key.request_ids:
+            key.request_ids = (key.request_ids + (key.absorbed.request_id,))[-MAX_REQUEST_IDS:]
+        key.absorbed, key.absorbed_usage = None, Usage()
 
 
 _UNVERIFIED_REASONS = {
@@ -1039,8 +1072,7 @@ def _on_epoch(s, inp: EpochStarted, now, conditions, out) -> None:
                 stream_epoch=s.stream_epoch, deadline=key.verify_deadline))
         elif inp.restart and key.phase in ("candidate", "verifying"):
             # the original evidence (and any request in flight) died with the process
-            key.absorbed_request_id = key.absorbed_interval = key.absorbed_epoch = None   # frames died with the process
-            _unverified(s, key, cond, "restart", now, out, verify_answered=False)
+            _unverified(s, key, cond, "restart", now, out, verify_answered=False, promote=False)
         if key.phase == "holding":
             out.effects.append(RequestRecheck(cid, subject, key.occurrence_id, key.gen, cond.version))
             key.next_recheck = now + cond.recheck_every_s

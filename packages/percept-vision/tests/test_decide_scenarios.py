@@ -318,7 +318,7 @@ def test_a_met_carries_the_cost_and_request_ids_of_everything_that_led_to_it(imp
     [verify] = effects(s.observe("fall", "yes", at=10.0), impl.RequestVerify)
     s.observe("fall", "no", at=10.5)                  # absorbed, but it was paid for
     [met] = s.verify_reply(verify, "yes", at=11.0).decisions
-    assert met.request_ids == ("r-1", "r-2", "v-1")
+    assert set(met.request_ids) == {"r-1", "r-2", "v-1"}
     assert met.cost == SHARE + SHARE + SHARE
 
 
@@ -544,169 +544,183 @@ def test_a_window_end_or_unverified_close_sets_no_floor(impl):
 
 
 def _absorbing_candidate(s, *, absorbed=(11.0, 11.5)):
-    """A candidate verifying on evidence (8, 9) that absorbs a later detect yes about newer evidence."""
+    """A candidate verifying on evidence (8, 9) that absorbs a later detect yes (request r-2) about newer evidence."""
     [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), s.impl.RequestVerify)
     r = s.observe("fall", "yes", at=12.0, evidence=absorbed)
-    assert r.decisions == () and "awaiting_verification" in trace_events(r)
-    assert effects(r, s.impl.RequestRelook) == []        # nothing is decided until the candidate closes
+    assert r.decisions == () and "awaiting_verification" in trace_events(r) and fates(r) == ["judged"]
+    assert effects(r, s.impl.RequestVerify) == []        # nothing is decided or requested until the candidate closes
     return verify
 
 
-def _second_entry_is_its_own_met(s, first_id, *, at=20.0):
-    """The look the relook asks for sees the second entry on newer evidence: a new candidate, verified."""
-    [verify] = effects(s.observe("fall", "yes", at=at, evidence=(at - 1.5, at - 0.5)), s.impl.RequestVerify)
-    r = s.verify_reply(verify, "yes", at=at + 1.0)
-    [met] = r.decisions
-    assert met.type == "met" and met.cause is None and met.occurrence_id != first_id
-    assert met.t_observed == at - 0.5
-    return met
+def _successor(result, impl, interval=(11.0, 11.5)):
+    """The one verification of the successor promoted from the absorbed detect, on exactly its evidence."""
+    [verify] = effects(result, impl.RequestVerify)
+    assert verify.absorbed and verify.mode == "original" and verify.interval == interval and verify.stream_epoch == 0
+    assert "promoted" in trace_events(result) and "opened" not in trace_events(result)
+    assert fates(result) in ([], ["judged"], ["judged_weak"])      # the absorbed yes is not counted twice
+    return verify
 
 
-def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_the_candidate_is_rejected(impl):
+def test_an_absorbed_entry_is_promoted_to_a_successor_when_the_candidate_is_rejected(impl):
     s = Stream(impl, fall(rearm_s=30.0))
     verify = _absorbing_candidate(s)
     r = s.verify_reply(verify, "no", at=13.0)
-    assert r.decisions == () and s.phase("fall") == "idle" and "verify_rejected" in trace_events(r)
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, "r-2", (11.0, 11.5), 0)]
-    met = _second_entry_is_its_own_met(s, verify.occurrence_id)
-    assert met.decision_id.endswith("/1")
+    assert r.decisions == () and s.phase("fall") == "verifying" and "verify_rejected" in trace_events(r)
+    assert effects(r, impl.CancelVerify) == []                        # the answered verification needs no cancelling
+    successor = _successor(r, impl)
+    assert successor.occurrence_id != verify.occurrence_id and successor.deadline == 13.0 + 30.0
+    r = s.verify_reply(successor, "yes", at=14.0)
+    [met] = r.decisions
+    assert met.type == "met" and met.cause is None and met.occurrence_id == successor.occurrence_id
+    assert met.t_observed == 11.5 and met.decision_id.endswith("/1")
+    assert met.cost == SHARE + SHARE and met.request_ids == ("r-2", "v-2")    # the absorbed detect, charged once
 
 
-def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_the_candidate_is_uncertain(impl):
+def test_an_absorbed_entry_is_promoted_to_a_successor_when_the_candidate_is_uncertain(impl):
     s = Stream(impl, fall(rearm_s=30.0))
     verify = _absorbing_candidate(s)
     r = s.verify_reply(verify, "unknown", 0.0, at=13.0)
     [uncertain] = r.decisions
     assert uncertain.type == "uncertain" and uncertain.cause == "unverified" and uncertain.t_observed == 9.0
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, "r-2", (11.0, 11.5), 0)]
-    met = _second_entry_is_its_own_met(s, verify.occurrence_id)
-    assert met.occurrence_id != uncertain.occurrence_id
+    assert uncertain.cost == SHARE + SHARE and "r-2" not in uncertain.request_ids    # detect 1 and verify 1 only
+    successor = _successor(r, impl)
+    [met] = s.verify_reply(successor, "yes", at=14.0).decisions
+    assert met.type == "met" and met.occurrence_id != uncertain.occurrence_id and met.t_observed == 11.5
+    assert uncertain.cost + met.cost == SHARE + SHARE + SHARE + SHARE          # four requests, each charged to exactly one decision
 
 
-def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_verification_times_out(impl):
+def test_an_absorbed_entry_is_promoted_to_a_successor_when_verification_times_out(impl):
     s = Stream(impl, fall(candidate_deadline_s=30.0))
     verify = _absorbing_candidate(s)
     r = s.fire("fall", "verify", at=40.0)
     assert types(r) == ["uncertain"] and r.decisions[0].cause == "timeout"
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, "r-2", (11.0, 11.5), 0)]
+    assert effects(r, impl.CancelVerify) == [impl.CancelVerify("fall", "scene", verify.occurrence_id, verify.occurrence_gen)]
+    successor = _successor(r, impl)
+    assert successor.deadline == 70.0                                  # a full deadline of its own
+    assert impl.ScheduleTimer("fall", "scene", "verify", 70.0) in effects(r, impl.ScheduleTimer)
+    s.fire("fall", "verify", at=70.0)                                  # and it ends the same way: no loop
+    assert s.phase("fall") == "idle"
 
 
-def test_the_look_after_a_closed_candidate_needs_evidence_newer_than_the_candidate(impl):
-    s = Stream(impl, fall())
-    verify = _absorbing_candidate(s)
-    s.verify_reply(verify, "unknown", 0.0, at=13.0)
-    again = s.observe("fall", "yes", at=14.0, evidence=(8.5, 9.0))    # the first entry's own frames
-    assert again.decisions == () and stale_details(again) == ["evidence"] and s.phase("fall") == "idle"
-
-
-def test_a_verified_candidate_does_not_look_again_and_the_absorbed_yes_gives_no_second_met(impl):
+def test_a_verified_candidate_discards_the_absorbed_entry_no_duplicate_alert(impl):
     s = Stream(impl, fall(rearm_s=30.0))
     verify = _absorbing_candidate(s)
     r = s.verify_reply(verify, "yes", at=13.0)
-    assert types(r) == ["met"] and effects(r, impl.RequestRelook) == []
+    [met] = r.decisions
+    assert met.type == "met" and effects(r, impl.RequestVerify) == [] and "promoted" not in trace_events(r)
+    assert met.cost == SHARE + SHARE + SHARE and set(met.request_ids) == {"r-1", "r-2", "v-1"}      # charged once, here
     assert s.phase("fall") == "reported"
     later = s.observe("fall", "yes", at=14.0, evidence=(13.0, 13.5))
     assert later.decisions == () and "repeat_absorbed" in trace_events(later)
     rearmed = s.fire("fall", "rearm", at=43.0)
-    assert rearmed.decisions == () and effects(rearmed, impl.RequestRelook) == [] and s.phase("fall") == "idle"
+    assert rearmed.decisions == () and effects(rearmed, impl.RequestVerify) == [] and s.phase("fall") == "idle"
 
 
-def test_no_look_again_when_nothing_was_absorbed(impl):
+def test_nothing_is_promoted_when_nothing_was_absorbed(impl):
     s = Stream(impl, fall())
     [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
     plain_no = s.observe("fall", "no", at=11.0, evidence=(10.0, 10.5))     # a no is not an absorbed entry
     assert "awaiting_verification" in trace_events(plain_no)
-    assert effects(s.verify_reply(verify, "no", at=13.0), impl.RequestRelook) == []
+    r = s.verify_reply(verify, "no", at=13.0)
+    assert effects(r, impl.RequestVerify) == [] and s.phase("fall") == "idle"
 
 
-def test_no_look_again_for_a_yes_about_the_candidates_own_evidence(impl):
+def test_nothing_is_promoted_for_a_yes_about_the_candidates_own_evidence(impl):
     s = Stream(impl, fall())
     [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
     s.observe("fall", "yes", at=11.0, evidence=(8.5, 9.0))                 # nothing newer than the interval
-    assert effects(s.verify_reply(verify, "no", at=13.0), impl.RequestRelook) == []
+    assert effects(s.verify_reply(verify, "no", at=13.0), impl.RequestVerify) == []
 
 
-def test_at_most_one_look_again_per_closed_candidate(impl):
+def test_at_most_one_successor_per_closed_candidate_and_the_first_absorbed_yes_is_the_one(impl):
     s = Stream(impl, fall())
     [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
-    s.observe("fall", "yes", at=11.0, evidence=(10.0, 10.5))
-    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))               # a second absorbed yes
+    s.observe("fall", "yes", at=11.0, evidence=(10.0, 10.5))               # r-2: kept
+    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))               # r-3: charged to the candidate, not kept
     r = s.verify_reply(verify, "no", at=13.0)
-    assert len(effects(r, impl.RequestRelook)) == 1
-    # The look it asked for opens a candidate that absorbs nothing: when that one is rejected, no more looks.
-    [second] = effects(s.observe("fall", "yes", at=20.0, evidence=(18.0, 19.0)), impl.RequestVerify)
-    assert effects(s.verify_reply(second, "no", at=21.0), impl.RequestRelook) == []
-    assert s.phase("fall") == "idle"
+    successor = _successor(r, impl, interval=(10.0, 10.5))
+    assert len(effects(r, impl.RequestVerify)) == 1
 
 
-def test_the_look_is_stale_when_its_evidence_ends_at_the_floor_a_stalled_stream(impl):
-    # No new frame since the closed candidate: the look's evidence ends exactly at the floor, so its
-    # answer is stale ("evidence"), decides nothing, and does not ask for another look.
+def test_no_loop_a_successor_that_absorbed_nothing_closes_without_another_successor(impl):
     s = Stream(impl, fall())
     verify = _absorbing_candidate(s)
-    s.verify_reply(verify, "no", at=13.0)
-    stalled = s.observe("fall", "yes", at=14.0, evidence=(8.0, 9.0))
-    assert stalled.decisions == () and stale_details(stalled) == ["evidence"]
-    assert effects(stalled, impl.RequestRelook) == [] and s.phase("fall") == "idle"
-    newer = s.observe("fall", "yes", at=15.0, evidence=(9.0, 9.1))        # the first frame past the floor
-    assert s.phase("fall") == "verifying" and "opened" in trace_events(newer)
+    successor = _successor(s.verify_reply(verify, "no", at=13.0), impl)
+    r = s.verify_reply(successor, "no", at=14.0)                           # the same observation is not used twice
+    assert effects(r, impl.RequestVerify) == [] and s.phase("fall") == "idle" and r.decisions == ()
 
 
-def test_a_restart_during_the_verification_asks_for_no_look(impl):
-    # The absorbed look's frames died with the process (the pre-roll is ephemeral): the candidate ends
-    # uncertain with cause "restart" and nothing is looked at again; the new epoch's triggers carry on.
-    s = Stream(impl, fall())
-    _absorbing_candidate(s)
-    r = s.feed(impl.EpochStarted(1, restart=True), at=20.0)
-    assert [(d.type, d.cause) for d in r.decisions] == [("uncertain", "restart")]
-    assert effects(r, impl.RequestRelook) == [] and s.phase("fall") == "idle"
-    assert effects(s.observe("fall", "yes", at=21.0, evidence=(20.0, 20.5)), impl.RequestVerify)
-
-
-def test_the_remembered_entry_is_in_the_snapshot_only_while_a_candidate_holds_it(impl):
-    s = Stream(impl, fall())
-    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
-    assert "absorbed_interval" not in json.loads(s.snapshot())["keys"][0]    # a 1.0.0 reader still loads it
-    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))
-    assert json.loads(s.snapshot())["keys"][0]["absorbed_interval"] == [11.0, 11.5]
-    s.restore(s.snapshot())                                                   # survives a round trip
-    r = s.verify_reply(verify, "no", at=13.0)
-    assert len(effects(r, impl.RequestRelook)) == 1
-    assert "absorbed_interval" not in json.loads(s.snapshot())["keys"][0]
-
-
-def test_the_first_absorbed_yes_is_the_one_kept_and_carries_its_request_interval_and_epoch(impl):
-    s = Stream(impl, fall())
-    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
-    s.observe("fall", "yes", at=11.0, evidence=(10.0, 10.5))              # r-2: the first yes about newer evidence
-    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))              # r-3: not kept: one absorbed request
-    [relook] = effects(s.verify_reply(verify, "no", at=13.0), impl.RequestRelook)
-    assert (relook.request_id, relook.interval, relook.stream_epoch) == ("r-2", (10.0, 10.5), 0)
-
-
-def test_the_relook_names_the_epoch_of_the_absorbed_detect_after_a_reconnect(impl):
-    # The verification of the original interval survives a reconnect; the recovery then names the old epoch,
-    # so the runtime can see that those frames belong to another epoch and judge nothing.
+def test_a_successor_that_absorbs_a_new_detect_promotes_that_one_not_the_old_one(impl):
     s = Stream(impl, fall())
     verify = _absorbing_candidate(s)
-    s.feed(impl.EpochStarted(1, restart=False), at=14.0)
-    assert s.phase("fall") == "verifying"
-    [relook] = effects(s.verify_reply(verify, "no", at=15.0), impl.RequestRelook)
-    assert relook.stream_epoch == 0 and relook.interval == (11.0, 11.5)
+    successor = _successor(s.verify_reply(verify, "no", at=13.0), impl)
+    s.observe("fall", "yes", at=15.0, evidence=(14.0, 14.5))               # new evidence, a new absorbed detect
+    r = s.verify_reply(successor, "no", at=16.0)
+    _successor(r, impl, interval=(14.0, 14.5))
 
 
-def test_a_state_condition_does_not_look_again(impl):
+def test_a_state_condition_promotes_nothing(impl):
     s = Stream(impl, door(verify="fresh", candidate_deadline_s=30.0))
     [verify] = effects(s.observe("door", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
     s.observe("door", "yes", at=12.0, evidence=(11.0, 11.5))
-    assert effects(s.verify_reply(verify, "no", at=13.0), impl.RequestRelook) == []
+    r = s.verify_reply(verify, "no", at=13.0)
+    assert effects(r, impl.RequestVerify) == [] and s.phase("door") == "idle"
 
 
-def test_closing_a_verifying_candidate_by_a_control_does_not_look_again(impl):
+def test_closing_a_verifying_candidate_by_a_control_promotes_nothing(impl):
     s = Stream(impl, fall())
     verify = _absorbing_candidate(s)
     r = s.feed(impl.FalseAlarm(verify.occurrence_id), at=13.0)
-    assert effects(r, impl.RequestRelook) == [] and s.phase("fall") == "idle"
+    assert effects(r, impl.RequestVerify) == [] and s.phase("fall") == "idle"
+
+
+def test_a_restart_during_the_verification_promotes_nothing_and_charges_the_absorbed_detect_to_the_uncertain(impl):
+    # The absorbed detection's frames died with the process: the candidate ends uncertain (cause "restart")
+    # and the new epoch's triggers carry on. The absorbed detect is charged to that decision, once.
+    s = Stream(impl, fall())
+    _absorbing_candidate(s)
+    r = s.feed(impl.EpochStarted(1, restart=True), at=20.0)
+    [uncertain] = r.decisions
+    assert (uncertain.type, uncertain.cause) == ("uncertain", "restart") and uncertain.cost == SHARE + SHARE
+    assert "r-2" in uncertain.request_ids
+    assert effects(r, impl.RequestVerify) == [] and s.phase("fall") == "idle"
+    assert effects(s.observe("fall", "yes", at=21.0, evidence=(20.0, 20.5)), impl.RequestVerify)
+
+
+def test_an_absorbed_detect_from_another_epoch_is_reported_as_a_gap_and_nothing_is_verified(impl):
+    s = Stream(impl, fall())
+    verify = _absorbing_candidate(s)
+    s.feed(impl.EpochStarted(1, restart=False), at=14.0)                   # a reconnect: the candidate stays
+    assert s.phase("fall") == "verifying"
+    r = s.verify_reply(verify, "no", at=15.0)
+    assert effects(r, impl.RequestVerify) == [] and r.decisions == () and s.phase("fall") == "idle"
+    assert effects(r, impl.EvidenceGap) == [impl.EvidenceGap("fall", "scene", (11.0, 11.5), "epoch")]
+    assert "promotion_refused" in trace_events(r)
+
+
+def test_the_absorbed_detect_is_in_the_snapshot_only_while_a_candidate_holds_it_and_survives_a_round_trip(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    assert "absorbed" not in json.loads(s.snapshot())["keys"][0]            # a 1.0.0 reader still loads it
+    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))
+    kept = json.loads(s.snapshot())["keys"][0]
+    assert kept["absorbed"]["request_id"] == "r-2" and kept["absorbed"]["evidence_t"] == [11.0, 11.5]
+    assert kept["absorbed"]["stream_epoch"] == 0
+    s.restore(s.snapshot())                                                 # a persisted verifying candidate
+    r = s.verify_reply(verify, "no", at=13.0)
+    _successor(r, impl)                                                     # still promoted after the round trip
+    assert "absorbed" not in json.loads(s.snapshot())["keys"][0]
+
+
+def test_a_successor_of_a_confirm_2_condition_is_a_candidate_until_a_second_yes_arrives(impl):
+    s = Stream(impl, fall(confirm=2))
+    s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0))
+    [verify] = effects(s.observe("fall", "yes", at=10.5, evidence=(9.5, 10.0)), impl.RequestVerify)
+    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))               # absorbed
+    r = s.verify_reply(verify, "no", at=13.0)
+    assert effects(r, impl.RequestVerify) == [] and s.phase("fall") == "candidate" and "promoted" in trace_events(r)
+    [again] = effects(s.observe("fall", "yes", at=14.0, evidence=(13.0, 13.5)), impl.RequestVerify)
+    assert again.interval == (11.0, 13.5)
 
 
 # --------------------------------------------------------------------------- restart and reconnect
