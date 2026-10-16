@@ -667,6 +667,13 @@ class _Stream:
             held = tuple(f for f in ring if f.t_wall >= start and f.seq != latest.seq
                          and (w.t_floor is None or f.t_wall > w.t_floor))   # not the closed candidate's frames
             frames = _spread(held + (latest,), n)    # the newest frame is always judged
+            if w.trigger == "relook" and w.t_trigger is not None and frames[0].t_wall > w.t_trigger:
+                # The pre-roll no longer holds the absorbed entry (it was trimmed after the earlier checks):
+                # a clip that does not overlap it can only say no. Never judged; reported instead.
+                if self.pending.get((w.condition_id, w.subject)) is w:
+                    del self.pending[(w.condition_id, w.subject)]
+                self.relook_lost(w.condition_id, w.subject, RELOOK_AGED_OUT)
+                return None
             oldest = ring[0].t_wall if ring else latest.t_wall
             held_s = clip_s if oldest <= anchor - clip_s else min(clip_s, max(0.0, anchor - oldest))
             w.clip = (held_s, clip_s, len(frames), n)

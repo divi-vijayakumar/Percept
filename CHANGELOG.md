@@ -18,6 +18,8 @@ Notable changes to Percept.
 - Recovery is guaranteed only while the verification completes within the pre-roll (8 s by default).
   Beyond that, no look is made and the unreviewed span is reported as a `relook_dropped` blind
   interval (detail "absorbed entry left the pre-roll"), not lost silently.
+  The check is made on the clip actually cut: a look whose clip does not overlap the absorbed entry
+  (the pre-roll was trimmed while it waited) is never judged, and is reported the same way.
 - Snapshots: a key carries an `absorbed_until` field only while a verifying candidate holds an absorbed
   entry. `SNAPSHOT_FORMAT` stays 1. A 1.0.0 reader loads every such snapshot except one taken in that
   moment, which it rejects as malformed: do not downgrade from 1.0.1 to 1.0.0 with persisted state.
