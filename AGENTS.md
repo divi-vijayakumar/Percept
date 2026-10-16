@@ -32,7 +32,7 @@ pure reducer decides whether the agent hears about it.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -e "packages/percept-vision[dev]"
+pip install -e "packages/percept-vision[dev,video]"   # video: file-source tests and the plan-evaluation example
 make check        # guardrails + tests
 make test         # tests only
 make guardrails   # exports, import boundaries, reachability
