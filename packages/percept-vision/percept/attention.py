@@ -43,7 +43,7 @@ def trigger_key(trigger: Any) -> Any:
 def trigger_label(trigger: Any) -> str:
     """A short, stable name for a trigger in coverage: ``on_change(0.2)``, ``every(5)``, or the
     class name of a custom trigger. Runtime looks use ``poke``, ``settled`` (the look after a
-    scene reset), ``recheck`` and ``verify``."""
+    scene reset), ``recheck``, ``relook`` and ``verify``."""
     if isinstance(trigger, OnChange):
         extra = "" if trigger.exit_threshold == trigger.threshold / 2 else f", exit={trigger.exit_threshold:g}"
         extra += "" if trigger.baseline_s == 5.0 else f", baseline_s={trigger.baseline_s:g}"

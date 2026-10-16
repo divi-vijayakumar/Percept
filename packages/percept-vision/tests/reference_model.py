@@ -181,6 +181,16 @@ class RequestRecheck:
 
 
 @dataclass(frozen=True)
+class RequestRelook:
+    """Judge an event condition again on a fresh frame: its verifying candidate closed without a
+    met after absorbing a detect yes about newer evidence (once per closed candidate)."""
+
+    condition_id: str
+    subject: str
+    occurrence_id: str
+
+
+@dataclass(frozen=True)
 class EmitHealth:
     health: Health
 
@@ -207,8 +217,8 @@ class Trace:
     detail: str = ""
 
 
-Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, CancelVerify, RequestRecheck, EmitHealth,
-               StoreCounterExample, Trace]
+Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, CancelVerify, RequestRecheck, RequestRelook,
+               EmitHealth, StoreCounterExample, Trace]
 
 
 # --------------------------------------------------------------------------- state
@@ -233,6 +243,7 @@ class Key:
     interval_epoch: Optional[int] = None
     yes_confidence: float = 0.0                 # confidence of the latest counted yes
     verify_deadline: Optional[float] = None
+    absorbed_until: Optional[float] = None      # verifying, event: evidence time of the newest absorbed yes
     no_count: int = 0                           # holding: consecutive confident no's
     held_since: Optional[float] = None
     expires_at: Optional[float] = None          # holding with max_open_s, until it passes
@@ -546,7 +557,11 @@ def _on_event_answer(s, key, cond, inp, answer, now, out) -> None:
             # A later "no" is not evidence against an event: the moment may simply have passed.
             out.trace(now, "ignored_while_candidate", cond.id, o.subject, fate="judged", occurrence_id=occ)
     elif phase == "verifying":
-        # Only the verification of the original interval decides; later detections don't.
+        # Only the verification of the original interval decides; later detections don't. A yes about
+        # evidence newer than the candidate's is remembered: if the candidate closes without a met,
+        # that entry gets one look of its own.
+        if answer == "yes" and o.evidence_t[1] > key.interval[1]:
+            key.absorbed_until = max(o.evidence_t[1], key.absorbed_until or o.evidence_t[1])
         out.trace(now, "awaiting_verification", cond.id, o.subject, fate="judged", occurrence_id=occ)
     elif phase == "reported":
         event = "repeat_absorbed" if answer == "yes" else "ignored_while_reported"
@@ -563,6 +578,7 @@ def _on_verify_answer(s, key, cond, inp, answer, now, out) -> None:
         _accept(s, key, cond, o.confidence, o.reason, now, out)
     elif answer == "no":
         out.trace(now, "verify_rejected", cond.id, o.subject, fate="judged", occurrence_id=occ)
+        _relook(key, out)
         _raise_floor(key, key.interval[1] if cond.verify_mode == "original" else o.evidence_t[1])
         _to_idle(key, out, now, verify_answered=True)
     else:  # the model, looking at the evidence again, can't tell
@@ -648,6 +664,7 @@ def _accept(s, key, cond, confidence, reason, now, out) -> None:
     """The occurrence is real: hold the state or report the event, and emit met."""
     if key.verify_deadline is not None:
         key.verify_deadline = None
+        key.absorbed_until = None
         out.effects.append(CancelTimer(key.condition_id, key.subject, "verify"))
     if cond.kind == "state":
         key.phase = "holding"
@@ -684,7 +701,17 @@ def _unverified(s, key, cond, cause, now, out, *, verify_answered: bool) -> None
                 kind="unverified", stream_id=s.stream_id, t_wall=now, detail=_UNVERIFIED_REASONS[cause],
                 condition_id=cond.id, subject=key.subject)))
     out.trace(now, "unverified", cond.id, key.subject, occurrence_id=key.occurrence_id, detail=cause)
+    _relook(key, out)
     _to_idle(key, out, now, verify_answered=verify_answered)
+
+
+def _relook(key: Key, out: _Out) -> None:
+    """The candidate closes without a met after absorbing a yes about newer evidence: one look, and the
+    floor rises to the end of the candidate's own evidence so that look cannot reopen it."""
+    if key.absorbed_until is not None:
+        out.effects.append(RequestRelook(key.condition_id, key.subject, key.occurrence_id))
+        key.absorbed_until = None
+        _raise_floor(key, key.interval[1])
 
 
 _UNVERIFIED_REASONS = {

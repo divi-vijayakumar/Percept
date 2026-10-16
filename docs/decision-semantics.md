@@ -248,6 +248,17 @@ Only a candidate supported by at least one confident "yes" is reported:
 
 The key returns to idle with no new generation and no evidence floor.
 
+### Absorbed entries
+
+While an event candidate verifies, a confident detect "yes" is absorbed (`awaiting_verification`).
+If it is about evidence newer than the candidate's own interval, the key remembers it. When the
+candidate then closes without `met` (verify "no", verify "unknown", or the deadline), the reducer
+emits one `RequestRelook` effect, so that second entry gets a decision of its own, and raises the
+evidence floor to the end of the candidate's interval so the look cannot reopen the closed entry.
+At most one look is asked for per closed candidate; the runtime queues it as an ordinary event
+detect (trigger label `relook`) under the stream's budget. A candidate that verifies `met`, a close
+by an application control, and state conditions ask for no look.
+
 ## 13. Emission rules
 
 A decision is emitted only when no rule suppresses it. A suppressed decision is traced

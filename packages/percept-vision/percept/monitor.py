@@ -988,6 +988,9 @@ class _Stream:
                         self.verify_task.cancel()
             elif t is decide.RequestRecheck:
                 self.enqueue(e.condition_id, e.subject, RECHECK, trigger="recheck")
+            elif t is decide.RequestRelook:
+                # An ordinary event detect: the budget, its 3 s deadline and single flight all apply.
+                self.enqueue(e.condition_id, e.subject, EVENT, trigger="relook")
             elif t is decide.EmitHealth:
                 m._report(e.health)
             elif t is decide.StoreCounterExample:

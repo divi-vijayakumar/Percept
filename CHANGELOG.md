@@ -2,6 +2,15 @@
 
 Notable changes to Percept.
 
+## Unreleased
+
+### Fixed
+
+- An event entry absorbed while an earlier candidate was verifying is no longer lost when that
+  candidate closes without `met` (verify "no", verify "unknown" ending `uncertain`, or the verify
+  deadline). The runtime makes one fresh look (trigger label `relook`, within the request budget) on
+  evidence newer than the closed candidate, so the second entry gets its own decision.
+
 ## 1.0.0 — Developer Preview
 
 Percept 1.0 is an open-source runtime for continuous vision applications: configure what to

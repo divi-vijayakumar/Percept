@@ -221,6 +221,21 @@ class RequestRecheck:
 
 
 @dataclass(frozen=True)
+class RequestRelook:
+    """Judge an event condition again on a fresh frame (``purpose="detect"``).
+
+    Emitted once when a verifying candidate closes without ``met`` after it absorbed a detect yes
+    about newer evidence, so that entry gets a decision of its own. The look is an ordinary detect:
+    it spends the stream's budget, and its answer is stale unless its evidence is newer than the
+    closed candidate's (the evidence floor is raised with this effect).
+    """
+
+    condition_id: str
+    subject: str
+    occurrence_id: str                          # the candidate that closed
+
+
+@dataclass(frozen=True)
 class EmitHealth:
     """Put ``health`` on the health channel. The reducer uses kinds ``unverified`` and ``capacity``."""
 
@@ -249,8 +264,8 @@ class Trace:
     detail: str = ""
 
 
-Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, CancelVerify, RequestRecheck, EmitHealth,
-               StoreCounterExample, Trace]
+Effect = Union[ScheduleTimer, CancelTimer, RequestVerify, CancelVerify, RequestRecheck, RequestRelook,
+               EmitHealth, StoreCounterExample, Trace]
 
 
 # --------------------------------------------------------------------------- state
@@ -284,6 +299,7 @@ class Key:
     interval_epoch: Optional[int] = None        # epoch of the window's first yes
     yes_confidence: float = 0.0                 # confidence of the latest counted yes
     verify_deadline: Optional[float] = None
+    absorbed_until: Optional[float] = None      # verifying, event: evidence end of the newest yes absorbed
     no_count: int = 0                           # holding: confident no's since the last yes
     held_since: Optional[float] = None
     expires_at: Optional[float] = None          # holding with max_open_s, until it passes
@@ -682,7 +698,7 @@ def _accept(st: _Step, key: Key, cond: Condition, confidence: float, reason: str
     """
     now = st.now
     if key.verify_deadline is not None:
-        key = replace(key, verify_deadline=None)
+        key = replace(key, verify_deadline=None, absorbed_until=None)
         st.emit(CancelTimer(key.condition_id, key.subject, "verify"))
     if cond.kind == "state":
         key = replace(key, phase=HOLDING, held_since=now, no_count=0, next_recheck=now + cond.recheck_every_s)
@@ -713,7 +729,17 @@ def _unverified(st: _Step, key: Key, cond: Condition, cause: UnverifiedCause, *,
             st.emit(EmitHealth(Health(kind="unverified", stream_id=st.stream_id, t_wall=st.now, detail=reason,
                                       condition_id=cond.id, subject=key.subject)))
     st.trace("unverified", cond.id, key.subject, occurrence_id=key.occurrence_id, detail=cause)
-    return _close(st, key, verify_answered=verify_answered)
+    return _close(st, _relook(st, key), verify_answered=verify_answered)
+
+
+def _relook(st: _Step, key: Key) -> Key:
+    """A verifying candidate closes without ``met`` after absorbing a yes about newer evidence
+    [Absorbed entries]: ask for one fresh look, and raise the evidence floor to the end of the
+    candidate's own evidence so that look cannot reopen the entry that was just closed."""
+    if key.absorbed_until is None:
+        return key
+    st.emit(RequestRelook(key.condition_id, key.subject, key.occurrence_id))
+    return _raise_floor(replace(key, absorbed_until=None), key.interval[1])
 
 
 # --------------------------------------------------------------------------- capacity
@@ -833,7 +859,7 @@ def _on_verify_answer(st: _Step, key: Key, cond: Condition, o: Observation, answ
     elif answer == "no":
         st.trace("verify_rejected", cond.id, o.subject, fate="judged", occurrence_id=occurrence_id)
         floor = key.interval[1] if cond.verify_mode == "original" else o.evidence_t[1]
-        key = _close(st, _raise_floor(key, floor), verify_answered=True)
+        key = _close(st, _raise_floor(_relook(st, key), floor), verify_answered=True)
     else:  # looking at the evidence again, the verifier can't tell
         st.trace("verify_unknown", cond.id, o.subject, fate="judged_weak", occurrence_id=occurrence_id)
         key = _unverified(st, key, cond, "unverified", verify_answered=True)
@@ -886,7 +912,11 @@ def _candidate_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answe
 
 
 def _verifying_detect(st: _Step, key: Key, cond: Condition, inp: Observed, answer: AnswerClass) -> None:
-    """Verifying, both kinds: only the verification decides; detections are absorbed."""
+    """Verifying, both kinds: only the verification decides; detections are absorbed. An event's
+    confident yes about evidence newer than the candidate's is remembered [Absorbed entries]."""
+    if answer == "yes" and cond.kind == "event" and inp.observation.evidence_t[1] > key.interval[1]:
+        end = inp.observation.evidence_t[1]
+        st.put(replace(key, absorbed_until=end if key.absorbed_until is None else max(key.absorbed_until, end)))
     st.trace("awaiting_verification", cond.id, inp.observation.subject, fate="judged",
              occurrence_id=key.occurrence_id)
 

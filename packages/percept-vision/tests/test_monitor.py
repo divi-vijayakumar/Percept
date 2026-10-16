@@ -2539,3 +2539,90 @@ def test_ready_from_another_thread_raises_like_other_methods():
             assert errors and "event loop" in errors[0]
 
     run(main())
+
+
+# --------------------------------------------------------------------------- an entry absorbed while a candidate verifies
+
+
+RELOOK_FALL = Condition("fall", "a person falls", kind="event", trigger=Never(), candidate_deadline_s=60, rearm_s=30)
+UNKNOWN = ("unknown", 0.0, "cannot tell")
+
+
+async def _absorbing_run(verify_replies, *, max_requests_per_min=1000, wait_for_relook=True):
+    """Entry 1 opens a candidate whose verification is held; entry 2's detect yes is absorbed; the
+    verification is then released with ``verify_replies``. Returns the decisions, the judge, the coverage."""
+    judge = Gated(answers({"detect": [Y], "verify": verify_replies}))
+    judge.gate = asyncio.Event()
+    async with percept.Monitor(judge, [RELOOK_FALL], store=mem(), max_requests_per_min=max_requests_per_min) as m:
+        src = PushSource("cam")
+        watch = m.watch(src, fps=None)
+        await push_frames(src, 4)
+        await m.ready("cam")
+        m.poke("cam", "fall", reason="entry 1")
+        await _until(lambda: judge.started["verify"] == 1)
+        await push_frames(src, 4, start=4)                       # entry 2: newer frames
+        m.poke("cam", "fall", reason="entry 2")
+        await _until(lambda: judge.started["detect"] == 2)
+        await asyncio.sleep(0.2)                                  # the second yes is absorbed
+        judge.gate.set()
+        if wait_for_relook:
+            await _until(lambda: judge.started["detect"] >= 3)
+        await asyncio.sleep(0.5 if wait_for_relook else 3.6)
+        src.close()
+        got = await asyncio.wait_for(collect(watch), 10)
+        return got, judge, m.coverage("cam")
+
+
+async def _until(cond, tries=500):
+    for _ in range(tries):
+        if cond():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition never held")
+
+
+def _kinds(got):
+    return [(d.decision.type, d.decision.cause) for d in got]
+
+
+def test_an_absorbed_entry_is_recovered_as_occurrence_2_when_the_candidate_is_rejected():
+    got, judge, cov = run(_absorbing_run([N, Y]))
+    assert _kinds(got) == [("met", None)]
+    assert [s[3].purpose for s in judge.sent] == ["detect", "detect", "verify", "detect", "verify"]
+    first, relook = got[0].decision, judge.sent[3][3]
+    assert first.t_observed >= judge.sent[1][3].evidence_t[0]     # the second entry's own frames
+    assert relook.evidence_t[1] >= judge.sent[1][3].evidence_t[1]
+    assert cov["triggers"]["fall"]["relook"]["due"] == 1
+
+
+def test_an_absorbed_entry_is_recovered_when_the_candidate_ends_uncertain():
+    got, judge, cov = run(_absorbing_run([UNKNOWN, Y]))
+    assert _kinds(got) == [("uncertain", "unverified"), ("met", None)]
+    assert got[0].decision.occurrence_id != got[1].decision.occurrence_id
+    assert got[0].decision.t_observed < got[1].decision.t_observed
+    assert cov["triggers"]["fall"]["relook"]["due"] == 1
+
+
+def test_a_verified_candidate_is_not_looked_at_again_for_its_absorbed_yes():
+    got, judge, cov = run(_absorbing_run([Y], wait_for_relook=False))
+    assert _kinds(got) == [("met", None)]
+    assert [s[3].purpose for s in judge.sent] == ["detect", "detect", "verify"]
+    assert "relook" not in cov["triggers"].get("fall", {})
+
+
+def test_the_look_after_a_closed_candidate_happens_once_and_never_loops():
+    # Every verification says no: one relook per closed candidate, the relook's candidate absorbs nothing.
+    got, judge, cov = run(_absorbing_run([N]))
+    assert _kinds(got) == []
+    assert [s[3].purpose for s in judge.sent] == ["detect", "detect", "verify", "detect", "verify"]
+    assert cov["triggers"]["fall"]["relook"]["due"] == 1
+
+
+def test_the_look_after_a_closed_candidate_respects_the_request_budget():
+    # Five attempts a minute, two reserved a request: the two detects and a retried verification leave
+    # no room, so the relook (an event detect, 3 s to find budget) is dropped, not judged, not retried.
+    got, judge, cov = run(_absorbing_run([RetryableError("down"), N], max_requests_per_min=5, wait_for_relook=False), timeout=30)
+    assert _kinds(got) == []
+    assert [s[3].purpose for s in judge.sent] == ["detect", "detect", "verify", "verify"]   # no third detect
+    assert cov["triggers"]["fall"]["relook"] == {"due": 1, "admitted": 0, "coalesced": 0,
+                                                 "dropped_budget": 1, "dropped_for_verification": 0}

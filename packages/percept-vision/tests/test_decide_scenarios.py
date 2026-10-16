@@ -540,6 +540,119 @@ def test_a_window_end_or_unverified_close_sets_no_floor(impl):
     assert s.phase("fall") == "verifying"
 
 
+# --------------------------------------------------------------------------- an entry absorbed while a candidate verifies
+
+
+def _absorbing_candidate(s, *, absorbed=(11.0, 11.5)):
+    """A candidate verifying on evidence (8, 9) that absorbs a later detect yes about newer evidence."""
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), s.impl.RequestVerify)
+    r = s.observe("fall", "yes", at=12.0, evidence=absorbed)
+    assert r.decisions == () and "awaiting_verification" in trace_events(r)
+    assert effects(r, s.impl.RequestRelook) == []        # nothing is decided until the candidate closes
+    return verify
+
+
+def _second_entry_is_its_own_met(s, first_id, *, at=20.0):
+    """The look the relook asks for sees the second entry on newer evidence: a new candidate, verified."""
+    [verify] = effects(s.observe("fall", "yes", at=at, evidence=(at - 1.5, at - 0.5)), s.impl.RequestVerify)
+    r = s.verify_reply(verify, "yes", at=at + 1.0)
+    [met] = r.decisions
+    assert met.type == "met" and met.cause is None and met.occurrence_id != first_id
+    assert met.t_observed == at - 0.5
+    return met
+
+
+def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_the_candidate_is_rejected(impl):
+    s = Stream(impl, fall(rearm_s=30.0))
+    verify = _absorbing_candidate(s)
+    r = s.verify_reply(verify, "no", at=13.0)
+    assert r.decisions == () and s.phase("fall") == "idle" and "verify_rejected" in trace_events(r)
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id)]
+    met = _second_entry_is_its_own_met(s, verify.occurrence_id)
+    assert met.decision_id.endswith("/1")
+
+
+def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_the_candidate_is_uncertain(impl):
+    s = Stream(impl, fall(rearm_s=30.0))
+    verify = _absorbing_candidate(s)
+    r = s.verify_reply(verify, "unknown", 0.0, at=13.0)
+    [uncertain] = r.decisions
+    assert uncertain.type == "uncertain" and uncertain.cause == "unverified" and uncertain.t_observed == 9.0
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id)]
+    met = _second_entry_is_its_own_met(s, verify.occurrence_id)
+    assert met.occurrence_id != uncertain.occurrence_id
+
+
+def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_verification_times_out(impl):
+    s = Stream(impl, fall(candidate_deadline_s=30.0))
+    verify = _absorbing_candidate(s)
+    r = s.fire("fall", "verify", at=40.0)
+    assert types(r) == ["uncertain"] and r.decisions[0].cause == "timeout"
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id)]
+
+
+def test_the_look_after_a_closed_candidate_needs_evidence_newer_than_the_candidate(impl):
+    s = Stream(impl, fall())
+    verify = _absorbing_candidate(s)
+    s.verify_reply(verify, "unknown", 0.0, at=13.0)
+    again = s.observe("fall", "yes", at=14.0, evidence=(8.5, 9.0))    # the first entry's own frames
+    assert again.decisions == () and stale_details(again) == ["evidence"] and s.phase("fall") == "idle"
+
+
+def test_a_verified_candidate_does_not_look_again_and_the_absorbed_yes_gives_no_second_met(impl):
+    s = Stream(impl, fall(rearm_s=30.0))
+    verify = _absorbing_candidate(s)
+    r = s.verify_reply(verify, "yes", at=13.0)
+    assert types(r) == ["met"] and effects(r, impl.RequestRelook) == []
+    assert s.phase("fall") == "reported"
+    later = s.observe("fall", "yes", at=14.0, evidence=(13.0, 13.5))
+    assert later.decisions == () and "repeat_absorbed" in trace_events(later)
+    rearmed = s.fire("fall", "rearm", at=43.0)
+    assert rearmed.decisions == () and effects(rearmed, impl.RequestRelook) == [] and s.phase("fall") == "idle"
+
+
+def test_no_look_again_when_nothing_was_absorbed(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    plain_no = s.observe("fall", "no", at=11.0, evidence=(10.0, 10.5))     # a no is not an absorbed entry
+    assert "awaiting_verification" in trace_events(plain_no)
+    assert effects(s.verify_reply(verify, "no", at=13.0), impl.RequestRelook) == []
+
+
+def test_no_look_again_for_a_yes_about_the_candidates_own_evidence(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    s.observe("fall", "yes", at=11.0, evidence=(8.5, 9.0))                 # nothing newer than the interval
+    assert effects(s.verify_reply(verify, "no", at=13.0), impl.RequestRelook) == []
+
+
+def test_at_most_one_look_again_per_closed_candidate(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    s.observe("fall", "yes", at=11.0, evidence=(10.0, 10.5))
+    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))               # a second absorbed yes
+    r = s.verify_reply(verify, "no", at=13.0)
+    assert len(effects(r, impl.RequestRelook)) == 1
+    # The look it asked for opens a candidate that absorbs nothing: when that one is rejected, no more looks.
+    [second] = effects(s.observe("fall", "yes", at=20.0, evidence=(18.0, 19.0)), impl.RequestVerify)
+    assert effects(s.verify_reply(second, "no", at=21.0), impl.RequestRelook) == []
+    assert s.phase("fall") == "idle"
+
+
+def test_a_state_condition_does_not_look_again(impl):
+    s = Stream(impl, door(verify="fresh", candidate_deadline_s=30.0))
+    [verify] = effects(s.observe("door", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    s.observe("door", "yes", at=12.0, evidence=(11.0, 11.5))
+    assert effects(s.verify_reply(verify, "no", at=13.0), impl.RequestRelook) == []
+
+
+def test_closing_a_verifying_candidate_by_a_control_does_not_look_again(impl):
+    s = Stream(impl, fall())
+    verify = _absorbing_candidate(s)
+    r = s.feed(impl.FalseAlarm(verify.occurrence_id), at=13.0)
+    assert effects(r, impl.RequestRelook) == [] and s.phase("fall") == "idle"
+
+
 # --------------------------------------------------------------------------- restart and reconnect
 
 
