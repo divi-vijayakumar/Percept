@@ -567,7 +567,7 @@ def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_the_candidate
     verify = _absorbing_candidate(s)
     r = s.verify_reply(verify, "no", at=13.0)
     assert r.decisions == () and s.phase("fall") == "idle" and "verify_rejected" in trace_events(r)
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id)]
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, 11.5, 9.0)]
     met = _second_entry_is_its_own_met(s, verify.occurrence_id)
     assert met.decision_id.endswith("/1")
 
@@ -578,7 +578,7 @@ def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_the_candidate
     r = s.verify_reply(verify, "unknown", 0.0, at=13.0)
     [uncertain] = r.decisions
     assert uncertain.type == "uncertain" and uncertain.cause == "unverified" and uncertain.t_observed == 9.0
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id)]
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, 11.5, 9.0)]
     met = _second_entry_is_its_own_met(s, verify.occurrence_id)
     assert met.occurrence_id != uncertain.occurrence_id
 
@@ -588,7 +588,7 @@ def test_an_entry_absorbed_while_verifying_is_looked_at_again_when_verification_
     verify = _absorbing_candidate(s)
     r = s.fire("fall", "verify", at=40.0)
     assert types(r) == ["uncertain"] and r.decisions[0].cause == "timeout"
-    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id)]
+    assert effects(r, impl.RequestRelook) == [impl.RequestRelook("fall", "scene", verify.occurrence_id, 11.5, 9.0)]
 
 
 def test_the_look_after_a_closed_candidate_needs_evidence_newer_than_the_candidate(impl):
@@ -637,6 +637,42 @@ def test_at_most_one_look_again_per_closed_candidate(impl):
     [second] = effects(s.observe("fall", "yes", at=20.0, evidence=(18.0, 19.0)), impl.RequestVerify)
     assert effects(s.verify_reply(second, "no", at=21.0), impl.RequestRelook) == []
     assert s.phase("fall") == "idle"
+
+
+def test_the_look_is_stale_when_its_evidence_ends_at_the_floor_a_stalled_stream(impl):
+    # No new frame since the closed candidate: the look's evidence ends exactly at the floor, so its
+    # answer is stale ("evidence"), decides nothing, and does not ask for another look.
+    s = Stream(impl, fall())
+    verify = _absorbing_candidate(s)
+    s.verify_reply(verify, "no", at=13.0)
+    stalled = s.observe("fall", "yes", at=14.0, evidence=(8.0, 9.0))
+    assert stalled.decisions == () and stale_details(stalled) == ["evidence"]
+    assert effects(stalled, impl.RequestRelook) == [] and s.phase("fall") == "idle"
+    newer = s.observe("fall", "yes", at=15.0, evidence=(9.0, 9.1))        # the first frame past the floor
+    assert s.phase("fall") == "verifying" and "opened" in trace_events(newer)
+
+
+def test_a_restart_during_the_verification_asks_for_no_look(impl):
+    # The absorbed look's frames died with the process (the pre-roll is ephemeral): the candidate ends
+    # uncertain with cause "restart" and nothing is looked at again; the new epoch's triggers carry on.
+    s = Stream(impl, fall())
+    _absorbing_candidate(s)
+    r = s.feed(impl.EpochStarted(1, restart=True), at=20.0)
+    assert [(d.type, d.cause) for d in r.decisions] == [("uncertain", "restart")]
+    assert effects(r, impl.RequestRelook) == [] and s.phase("fall") == "idle"
+    assert effects(s.observe("fall", "yes", at=21.0, evidence=(20.0, 20.5)), impl.RequestVerify)
+
+
+def test_the_remembered_entry_is_in_the_snapshot_only_while_a_candidate_holds_it(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    assert "absorbed_until" not in json.loads(s.snapshot())["keys"][0]       # a 1.0.0 reader still loads it
+    s.observe("fall", "yes", at=12.0, evidence=(11.0, 11.5))
+    assert json.loads(s.snapshot())["keys"][0]["absorbed_until"] == 11.5
+    s.restore(s.snapshot())                                                   # survives a round trip
+    r = s.verify_reply(verify, "no", at=13.0)
+    assert len(effects(r, impl.RequestRelook)) == 1
+    assert "absorbed_until" not in json.loads(s.snapshot())["keys"][0]
 
 
 def test_a_state_condition_does_not_look_again(impl):

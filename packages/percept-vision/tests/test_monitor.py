@@ -2626,3 +2626,138 @@ def test_the_look_after_a_closed_candidate_respects_the_request_budget():
     assert [s[3].purpose for s in judge.sent] == ["detect", "detect", "verify", "verify"]   # no third detect
     assert cov["triggers"]["fall"]["relook"] == {"due": 1, "admitted": 0, "coalesced": 0,
                                                  "dropped_budget": 1, "dropped_for_verification": 0}
+    [gap] = [b for b in cov["blind_intervals"] if b.kind == "relook_dropped"]       # visible, not a decision
+    assert gap.condition_id == "fall" and "dropped" in gap.detail and gap.t_start_wall < gap.t_end_wall
+
+
+def test_the_look_after_a_closed_candidate_is_anchored_on_the_absorbed_entry_after_a_slow_verification():
+    # Real-time frames; the verification takes longer than the event clip (clip_s), so a look anchored
+    # on "now" would show only frames after the absorbed entry. The judge says yes only to evidence that
+    # overlaps the absorbed entry, and the clip must not reach back into the rejected first candidate.
+    cond = Condition("fall", "a person falls", kind="event", trigger=Never(), candidate_deadline_s=60,
+                     rearm_s=30, clip_s=1.5, clip_frames=3)
+    seen: dict = {"detect": []}
+
+    def detect(request):
+        seen["detect"].append(request.evidence_t)
+        if len(seen["detect"]) == 2:
+            seen["absorbed"] = request.evidence_t
+        if len(seen["detect"]) <= 2:
+            return {i.condition.id: Y for i in request.items}
+        a0, a1 = seen["absorbed"]
+        start, end = request.evidence_t
+        return {i.condition.id: Y if start <= a1 and end >= a0 else N for i in request.items}
+
+    judge = Gated(answers({"detect": detect, "verify": [N, Y]}))
+    judge.gate = asyncio.Event()
+
+    async def main():
+        async with percept.Monitor(judge, [cond], store=mem(), max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            watch = m.watch(src, fps=None)
+            pump_on = True
+
+            async def pump():
+                i = 0
+                while pump_on:
+                    src.push(image(0))                       # a still scene, wall-clock timestamps every 0.1 s
+                    i += 1
+                    await asyncio.sleep(0.1)
+
+            pumping = asyncio.create_task(pump())
+            await asyncio.sleep(1.0)
+            m.poke("cam", "fall", reason="entry 1")
+            await _until(lambda: judge.started["verify"] == 1)
+            await asyncio.sleep(1.0)
+            m.poke("cam", "fall", reason="entry 2")
+            await _until(lambda: judge.started["detect"] == 2)
+            await asyncio.sleep(3.0)                          # verification held longer than clip_s
+            judge.gate.set()
+            await _until(lambda: judge.started["detect"] >= 3)
+            await asyncio.sleep(1.0)
+            pump_on = False
+            await pumping
+            src.close()
+            return await asyncio.wait_for(collect(watch), 10)
+
+    got = run(main(), timeout=40)
+    assert _kinds(got) == [("met", None)]
+    first, absorbed, relook = seen["detect"][:3]
+    assert relook[0] > first[1]                               # never reaches back into the rejected candidate
+    assert relook[0] <= absorbed[1] and relook[1] >= absorbed[0]
+
+
+def test_a_stale_look_after_a_closed_candidate_is_a_blind_interval_not_a_decision():
+    # The closed candidate's look is judged on evidence that ends at the floor (a stalled stream): the
+    # reducer calls it stale, the runtime reports the unreviewed span, and no decision comes of it.
+    async def main():
+        judge = Gated(answers({"detect": [Y], "verify": [N]}))
+        judge.gate = asyncio.Event()
+        async with percept.Monitor(judge, [RELOOK_FALL], store=mem(), max_requests_per_min=1000) as m:
+            src = PushSource("cam")
+            m.watch(src, fps=None)
+            await push_frames(src, 4)
+            await m.ready("cam")
+            stream = m._streams["cam"]
+            m.poke("cam", "fall", reason="entry 1")
+            await _until(lambda: judge.started["verify"] == 1)
+            await push_frames(src, 4, start=4)
+            m.poke("cam", "fall", reason="entry 2")
+            await _until(lambda: judge.started["detect"] == 2)
+            await asyncio.sleep(0.2)
+            m.pause("fall")                      # so the look the reducer asks for is not sent: we answer it by hand
+            judge.gate.set()
+            await _until(lambda: ("fall", "scene") in stream.relooks)
+            after, observed = stream.relooks[("fall", "scene")]
+            ob = percept.contracts.Observation(
+                answer="yes", confidence=0.9, reason="r", stream_id="cam", evidence_t=(after - 1.0, after), judge="fake",
+                condition_id="fall", subject="scene", request_id="by-hand", stream_epoch=stream.state.stream_epoch,
+                condition_version=RELOOK_FALL.version, occurrence_gen=rt.decide.gen_for(stream.state, "fall", "scene"),
+                purpose="detect")
+            stream.step(rt.decide.Observed(ob, percept.contracts.Usage()))
+            return m.coverage("cam"), stream.relooks, after, observed
+
+    cov, owed, after, observed = run(main())
+    [gap] = [b for b in cov["blind_intervals"] if b.kind == "relook_dropped"]
+    assert (gap.t_start_wall, gap.t_end_wall, gap.condition_id) == (after, observed, "fall") and "stale" in gap.detail
+    assert owed == {} and after < observed
+
+
+def test_a_look_after_a_closed_candidate_whose_anchor_left_the_pre_roll_falls_back_and_says_so(tmp_path):
+    from percept.clips import PreRoll
+    cond = Condition("fall", "a person falls", kind="event", trigger=Never(), candidate_deadline_s=60,
+                     rearm_s=30, clip_s=1.0, clip_frames=2)
+    trace = tmp_path / "u-2-trace.jsonl"
+    judge = Gated(answers({"detect": [Y], "verify": [N, N]}))
+    judge.gate = asyncio.Event()
+
+    async def main():
+        async with percept.Monitor(judge, [cond], store=mem(), trace=trace) as m:
+            src = PushSource("cam", preroll=PreRoll(seconds=2.0, fps=4.0))
+            watch = m.watch(src, fps=None)
+            pump_on = True
+
+            async def pump():
+                i = 0
+                while pump_on:
+                    src.push(image(0))
+                    await asyncio.sleep(0.1)
+
+            pumping = asyncio.create_task(pump())
+            await asyncio.sleep(0.8)
+            m.poke("cam", "fall", reason="entry 1")
+            await _until(lambda: judge.started["verify"] == 1)
+            await asyncio.sleep(0.6)
+            m.poke("cam", "fall", reason="entry 2")
+            await _until(lambda: judge.started["detect"] == 2)
+            await asyncio.sleep(3.0)                         # longer than the 2 s pre-roll
+            judge.gate.set()
+            await _until(lambda: judge.started["detect"] >= 3)
+            pump_on = False
+            await pumping
+            src.close()
+            await asyncio.wait_for(collect(watch), 10)
+
+    run(main(), timeout=40)
+    records = [r for r in percept.trace.read(trace) if r["kind"] == "relook"]
+    assert len(records) == 1 and records[0]["anchored"] is False and records[0]["after"] < records[0]["observed_at"]

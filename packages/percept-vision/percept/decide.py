@@ -233,6 +233,8 @@ class RequestRelook:
     condition_id: str
     subject: str
     occurrence_id: str                          # the candidate that closed
+    observed_at: float                          # evidence end of the newest absorbed yes: the look's anchor
+    after: float                                # evidence end of the closed candidate: the look starts after it
 
 
 @dataclass(frozen=True)
@@ -395,6 +397,8 @@ def to_dict(state: StreamDecideState) -> dict:
         data["interval"] = None if key.interval is None else list(key.interval)
         data["request_ids"] = list(key.request_ids)
         data["cost"] = {name: getattr(key.cost, name) for name in Usage.__dataclass_fields__}
+        if key.absorbed_until is None:      # written only while it matters, so most snapshots stay readable by 1.0.0
+            del data["absorbed_until"]
         return data
 
     return {
@@ -738,7 +742,7 @@ def _relook(st: _Step, key: Key) -> Key:
     candidate's own evidence so that look cannot reopen the entry that was just closed."""
     if key.absorbed_until is None:
         return key
-    st.emit(RequestRelook(key.condition_id, key.subject, key.occurrence_id))
+    st.emit(RequestRelook(key.condition_id, key.subject, key.occurrence_id, key.absorbed_until, key.interval[1]))
     return _raise_floor(replace(key, absorbed_until=None), key.interval[1])
 
 
@@ -1160,7 +1164,8 @@ def _resume(st: _Step, key: Key, cond: Condition, *, restart: bool) -> Key:
             condition_version=cond.version, mode="fresh", interval=None, stream_epoch=st.epoch,
             deadline=key.verify_deadline))
     elif restart and key.phase in (CANDIDATE, VERIFYING):
-        key = _unverified(st, key, cond, "restart", verify_answered=False)
+        # The absorbed look's frames died with the process: no look is asked for [Absorbed entries].
+        key = _unverified(st, replace(key, absorbed_until=None), cond, "restart", verify_answered=False)
     if key.phase == HOLDING:
         st.emit(RequestRecheck(cond.id, key.subject, key.occurrence_id, key.gen, cond.version))
         key = replace(key, next_recheck=st.now + cond.recheck_every_s)

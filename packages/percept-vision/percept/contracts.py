@@ -36,7 +36,8 @@ Fate = Literal[
     "dropped_capacity", # refused: every decision slot on the stream holds an open occurrence
     "dropped_for_verification",  # waited past its deadline while attempts were kept for verification
 ]
-BlindKind = Literal["link_down", "degraded_video", "scene_reset", "budget_exhausted", "judge_down", "paused"]
+BlindKind = Literal["link_down", "degraded_video", "scene_reset", "budget_exhausted", "judge_down", "paused",
+                    "relook_dropped"]
 HealthKind = Literal[
     "judge_unavailable",
     "degraded",

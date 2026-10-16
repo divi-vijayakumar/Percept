@@ -9,7 +9,13 @@ Notable changes to Percept.
 - An event entry absorbed while an earlier candidate was verifying is no longer lost when that
   candidate closes without `met` (verify "no", verify "unknown" ending `uncertain`, or the verify
   deadline). The runtime makes one fresh look (trigger label `relook`, within the request budget) on
-  evidence newer than the closed candidate, so the second entry gets its own decision.
+  evidence newer than the closed candidate, so the second entry gets its own decision. The look is
+  anchored on the absorbed entry (so a verification slower than `clip_s` does not push the clip past
+  it) and starts after the closed candidate. A look that is dropped, fails or is stale is reported as
+  a new `relook_dropped` blind interval (no decision), and the trace has a `relook` record.
+- Snapshots: a key carries an `absorbed_until` field only while a verifying candidate holds an absorbed
+  entry. `SNAPSHOT_FORMAT` stays 1. A 1.0.0 reader loads every such snapshot except one taken in that
+  moment, which it rejects as malformed: do not downgrade from 1.0.1 to 1.0.0 with persisted state.
 
 ## 1.0.0 — Developer Preview
 

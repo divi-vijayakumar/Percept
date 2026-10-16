@@ -188,6 +188,8 @@ class RequestRelook:
     condition_id: str
     subject: str
     occurrence_id: str
+    observed_at: float
+    after: float
 
 
 @dataclass(frozen=True)
@@ -327,6 +329,8 @@ def to_dict(state: StreamDecideState) -> dict:
         data = asdict(key)
         data["interval"] = None if key.interval is None else list(key.interval)
         data["request_ids"] = list(key.request_ids)
+        if key.absorbed_until is None:
+            del data["absorbed_until"]
         return data
 
     return {
@@ -709,7 +713,8 @@ def _relook(key: Key, out: _Out) -> None:
     """The candidate closes without a met after absorbing a yes about newer evidence: one look, and the
     floor rises to the end of the candidate's own evidence so that look cannot reopen it."""
     if key.absorbed_until is not None:
-        out.effects.append(RequestRelook(key.condition_id, key.subject, key.occurrence_id))
+        out.effects.append(RequestRelook(key.condition_id, key.subject, key.occurrence_id,
+                                         key.absorbed_until, key.interval[1]))
         key.absorbed_until = None
         _raise_floor(key, key.interval[1])
 
@@ -1025,6 +1030,7 @@ def _on_epoch(s, inp: EpochStarted, now, conditions, out) -> None:
                 stream_epoch=s.stream_epoch, deadline=key.verify_deadline))
         elif inp.restart and key.phase in ("candidate", "verifying"):
             # the original evidence (and any request in flight) died with the process
+            key.absorbed_until = None      # its frames died with the process: no look is asked for
             _unverified(s, key, cond, "restart", now, out, verify_answered=False)
         if key.phase == "holding":
             out.effects.append(RequestRecheck(cid, subject, key.occurrence_id, key.gen, cond.version))

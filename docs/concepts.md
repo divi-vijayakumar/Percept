@@ -114,6 +114,7 @@ of their evidence window than asked, because the stream had just started or reco
 | `budget_exhausted` | looks were due but the request or cost budget refused them |
 | `judge_down` | 3 judge requests in a row failed completely |
 | `paused` | the application paused a condition |
+| `relook_dropped` | the one look asked for after a verifying candidate closed without `met` (to review an entry it had absorbed) was dropped, failed or was stale; the interval covers the evidence it should have reviewed, and no decision comes of it |
 
 The same events appear on the health channel (`Monitor.health()`); see
 [delivery.md](delivery.md#health-stats-and-coverage).

@@ -255,9 +255,19 @@ If it is about evidence newer than the candidate's own interval, the key remembe
 candidate then closes without `met` (verify "no", verify "unknown", or the deadline), the reducer
 emits one `RequestRelook` effect, so that second entry gets a decision of its own, and raises the
 evidence floor to the end of the candidate's interval so the look cannot reopen the closed entry.
-At most one look is asked for per closed candidate; the runtime queues it as an ordinary event
-detect (trigger label `relook`) under the stream's budget. A candidate that verifies `met`, a close
-by an application control, and state conditions ask for no look.
+The effect carries `observed_at` (the evidence end of the absorbed yes) and `after` (the closed
+candidate's evidence end). At most one look is asked for per closed candidate; the runtime queues it
+as an ordinary event detect (trigger label `relook`) under the stream's budget, anchored at
+`observed_at` like a poke's `observed_at`, so its clip covers the absorbed entry however long the
+verification took, and starting after `after`, so it does not show the rejected candidate again. If
+`observed_at` has left the pre-roll, the look falls back to the newest frame and the trace record
+`relook` has `anchored: false`. If the look is dropped (budget, deadline, shutdown), fails, or is
+stale (its evidence ends at the floor, as on a stalled stream), the runtime records a
+`relook_dropped` blind interval over `after`..`observed_at`; it never emits a decision for that.
+
+A verified candidate, a close by an application control, state conditions, and a restart ask for no
+look. On a restart the absorbed look's frames died with the process, so the candidate ends
+`uncertain` (cause `restart`) and the new epoch's triggers carry on.
 
 ## 13. Emission rules
 

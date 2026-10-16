@@ -269,6 +269,7 @@ class _Work:
     clip: Optional[tuple] = None                # an event clip's (held_s, clip_s, frames, clip_frames)
     frames: tuple = ()                          # an original-interval verification's frames
     trigger: Optional[str] = None               # label of what made it due (see _trigger_label)
+    t_floor: Optional[float] = None             # an event clip starts after this wall time (a look after a closed candidate)
 
 
 class _Stream:
@@ -316,6 +317,7 @@ class _Stream:
         self.tcounts: deque[tuple[int, Counter]] = deque(maxlen=COVERAGE_BUCKETS)  # (cid, label, count)
         self.totals: Counter = Counter()
         self.totals_by_trigger: Counter = Counter()     # (trigger label, count) -> n
+        self.relooks: dict[tuple[str, str], tuple[float, float]] = {}   # (cid, subject) -> evidence span a relook owes
         self.judge_failures = 0
         self.budget_blocked = False
         self.budget_reason: Optional[str] = None     # the budget_exhausted reason last reported
@@ -523,7 +525,7 @@ class _Stream:
 
     def enqueue(self, cid: str, subject: str, prio: int, *, t_trigger: Optional[float] = None,
                 frame: Optional[Frame] = None, images: Optional[tuple] = None,
-                trigger: Optional[str] = None) -> None:
+                trigger: Optional[str] = None, floor: Optional[float] = None) -> None:
         if cid in self.m._paused or cid not in self.m._conds:
             return
         now = self.m._mono()
@@ -532,7 +534,7 @@ class _Stream:
         self.tcount(cid, trigger, "due")
         if w is None:
             self.pending[(cid, subject)] = _Work(prio, cid, subject, now, deadline, t_trigger, frame, images,
-                                                 trigger=trigger)
+                                                 trigger=trigger, t_floor=floor)
         else:  # merged into the look already waiting; it keeps the label of what made it due first
             self.fate(cid, "coalesced")
             self.tcount(cid, trigger, "coalesced")
@@ -542,6 +544,8 @@ class _Stream:
             if t_trigger is not None:
                 w.t_trigger = t_trigger if w.t_trigger is None else min(w.t_trigger, t_trigger)
             w.frame, w.images = frame or w.frame, images or w.images
+            if floor is not None:
+                w.t_floor = floor if w.t_floor is None else max(w.t_floor, floor)
         self.wake.set()
 
     def current(self) -> Optional[Frame]:
@@ -571,6 +575,20 @@ class _Stream:
         self.m._rec("drop", self.id, condition_id=w.condition_id, subject=w.subject, reason=reason,
                     purpose="verify" if w.verify is not None else "detect", priority=_PRIORITY_NAMES[w.priority],
                     t_trigger=w.t_trigger, waited_s=max(0.0, now - w.created))
+        if w.trigger == "relook":
+            self.relook_lost(w.condition_id, w.subject, f"the look was dropped ({reason})")
+
+    def relook_lost(self, cid: str, subject: str, why: str) -> None:
+        """The look asked for after a closed candidate did not review the absorbed entry: say so as a
+        ``relook_dropped`` blind interval over the evidence it should have covered. No decision."""
+        span = self.relooks.pop((cid, subject), None)
+        if span is None:
+            return
+        start, end = span
+        self.m._rec("blind", self.id, blind_kind="relook_dropped", state="close", detail=why, condition_id=cid)
+        if len(self.blind) == self.blind.maxlen:
+            self.blind_dropped += 1
+        self.blind.append(BlindInterval("relook_dropped", self.id, start, max(start, end), why, cid))
 
     def starve(self, w: _Work) -> None:
         if not w.starved:
@@ -641,7 +659,8 @@ class _Stream:
             anchor = latest.t_wall if w.t_trigger is None else min(w.t_trigger, latest.t_wall)
             start = max(anchor - clip_s, latest.t_wall - self.ring.seconds)
             ring = self.frames_of((latest.t_wall - self.ring.seconds, latest.t_wall), self.epoch)
-            held = tuple(f for f in ring if f.t_wall >= start and f.seq != latest.seq)
+            held = tuple(f for f in ring if f.t_wall >= start and f.seq != latest.seq
+                         and (w.t_floor is None or f.t_wall > w.t_floor))   # not the closed candidate's frames
             frames = _spread(held + (latest,), n)    # the newest frame is always judged
             oldest = ring[0].t_wall if ring else latest.t_wall
             held_s = clip_s if oldest <= anchor - clip_s else min(clip_s, max(0.0, anchor - oldest))
@@ -952,8 +971,20 @@ class _Stream:
                 self.traced_versions = versions
                 m._rec("conditions", self.id, conditions=[encode_condition(c) for c in m._conds.values()])
             m._rec("decide_input", self.id, input=encode_input(inp), now=now, versions=versions)
+        owed = None
+        if isinstance(inp, decide.Observed) and inp.observation.purpose == "detect":
+            owed = (inp.observation.condition_id, inp.observation.subject)
+            owed = owed if owed in self.relooks else None
         r = decide.step(self.state, inp, now, m._conds)
         self.state = r.state
+        if owed is not None:      # the answer to the look a closed candidate asked for
+            if any(type(e) is decide.Trace and e.fate == "judged" for e in r.effects):
+                self.relooks.pop(owed, None)
+            else:
+                why = next((f"the look's answer was {e.fate} ({e.detail or e.event})" for e in r.effects
+                            if type(e) is decide.Trace and e.fate in ("stale", "failed", "judged_weak")),
+                           "the look was not judged")
+                self.relook_lost(*owed, why)
         loop = asyncio.get_running_loop()
         for e in r.effects:
             t = type(e)
@@ -989,8 +1020,16 @@ class _Stream:
             elif t is decide.RequestRecheck:
                 self.enqueue(e.condition_id, e.subject, RECHECK, trigger="recheck")
             elif t is decide.RequestRelook:
-                # An ordinary event detect: the budget, its 3 s deadline and single flight all apply.
-                self.enqueue(e.condition_id, e.subject, EVENT, trigger="relook")
+                # An ordinary event detect (the budget, its 3 s deadline and single flight apply), anchored on
+                # the absorbed entry and starting after the closed candidate. When the anchor has left the
+                # pre-roll it falls back to the newest frame, as an unanchored look does; the trace says so.
+                held_from = self.latest.t_wall - self.ring.seconds if self.latest is not None else e.observed_at
+                anchored = e.observed_at >= held_from
+                self.relooks[(e.condition_id, e.subject)] = (e.after, e.observed_at)
+                m._rec("relook", self.id, condition_id=e.condition_id, subject=e.subject,
+                       occurrence_id=e.occurrence_id, observed_at=e.observed_at, after=e.after, anchored=anchored)
+                self.enqueue(e.condition_id, e.subject, EVENT, t_trigger=e.observed_at if anchored else None,
+                             floor=e.after, trigger="relook")
             elif t is decide.EmitHealth:
                 m._report(e.health)
             elif t is decide.StoreCounterExample:
