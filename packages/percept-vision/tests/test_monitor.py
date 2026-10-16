@@ -2569,7 +2569,7 @@ def _gaps(cov):
 
 
 async def _leaving(first_verify, *, hold_s=0.8, pre_roll_s=8.0, deadline_s=60.0, hook=None, settle_s=1.0,
-                   max_requests_per_min=1000, successor_verify=Y):
+                   max_requests_per_min=1000, successor_verify=Y, between_s=0.3):
     """Returns (decisions, judge, coverage, absorbed evidence, stream, health). ``first_verify`` answers the first
     candidate's verification; the successor's is ``successor_verify`` when its evidence is exactly the absorbed
     interval, else a no. ``hook(m, stream, src)`` runs after the absorbed detect, before the verification returns."""
@@ -2616,7 +2616,7 @@ async def _leaving(first_verify, *, hold_s=0.8, pre_roll_s=8.0, deadline_s=60.0,
         await asyncio.sleep(0.6)
         m.poke("cam", "fall", reason="entry 1")
         await _until(lambda: judge.started["verify"] == 1)
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(between_s)
         m.poke("cam", "fall", reason="entry 2")
         await _until(lambda: judge.started["detect"] == 2)
         await asyncio.sleep(0.1)
@@ -2769,3 +2769,13 @@ def test_a_restart_during_the_verification_ends_it_uncertain_and_promotes_nothin
     run(before())
     got, sent = run(after())
     assert got == [("uncertain", "restart")] and not sent           # no successor, nothing verified
+
+
+def test_pinned_overlapping_clips_of_one_person_verify_the_same_frames_again():
+    # Accepted trade-off: entry 2 is seen 0.1 s after entry 1, so its clip overlaps the rejected candidate's; it
+    # still opens a successor and the verifier is asked again about evidence that overlaps the rejected one.
+    got, judge, cov, absorbed, _, _ = run(_leaving(N, between_s=0.1), timeout=40)
+    first_verify = [s for s in judge.sent if s[3].purpose == "verify"][0][3].evidence_t
+    assert absorbed[0] < first_verify[1] < absorbed[1]                      # overlapping, and ending later
+    assert _kinds(got) == [("met", None)]
+    _successor_request(judge, absorbed)

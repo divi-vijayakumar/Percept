@@ -274,6 +274,12 @@ successor's decision once. Its fate was traced when it was absorbed, so coverage
 - A close by an application control, a restart, and state conditions promote nothing. On a restart the
   absorbed frames died with the process, so the candidate ends `uncertain` (cause `restart`) and carries
   the absorbed detect's usage.
+- Overlap with the closed candidate is allowed. The absorbed yes only has to be about evidence that ends
+  after the closed candidate's interval; its clip may overlap that interval. So the same person seen
+  in a slightly later clip can open a successor, and the verifier is asked again about someone it just
+  rejected, or one person can produce two `uncertain` decisions. Requiring non-overlap would avoid that
+  but would also drop genuine back-to-back entries (clips are about 4 s, entries can be under 1 s apart),
+  and a lost entry is the defect this section fixes, so the trade-off is accepted. Tests pin the behaviour.
 - No loop: each promotion consumes the one absorbed observation; the successor can only promote a new
   detect absorbed during its own verification.
 - A `confirm` greater than 1 makes the successor a candidate that waits for further yeses, as any

@@ -659,6 +659,37 @@ def test_a_successor_that_absorbs_a_new_detect_promotes_that_one_not_the_old_one
     _successor(r, impl, interval=(14.0, 14.5))
 
 
+def test_pinned_an_absorbed_yes_overlapping_the_rejected_interval_still_opens_a_successor(impl):
+    # Accepted trade-off (docs/decision-semantics.md, Absorbed entries): the same person seen in a slightly later,
+    # overlapping clip is a new entry, so the verifier is asked again about evidence that overlaps the rejected one.
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    s.observe("fall", "yes", at=12.0, evidence=(8.5, 9.5))                 # starts inside (8, 9), ends after it
+    r = s.verify_reply(verify, "no", at=13.0)
+    successor = _successor(r, impl, interval=(8.5, 9.5))
+    assert successor.interval[0] < verify.interval[1]                      # the overlap
+    [met] = s.verify_reply(successor, "yes", at=14.0).decisions
+    assert met.type == "met" and met.t_observed == 9.5
+
+
+def test_pinned_the_same_person_in_overlapping_clips_can_produce_two_uncertain_decisions(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    s.observe("fall", "yes", at=12.0, evidence=(8.5, 9.5))
+    first = s.verify_reply(verify, "unknown", 0.0, at=13.0)
+    successor = _successor(first, impl, interval=(8.5, 9.5))
+    second = s.verify_reply(successor, "unknown", 0.0, at=14.0)
+    assert types(first) == ["uncertain"] and types(second) == ["uncertain"]
+    assert first.decisions[0].occurrence_id != second.decisions[0].occurrence_id
+
+
+def test_pinned_an_absorbed_yes_that_ends_no_later_than_the_rejected_interval_is_not_kept(impl):
+    s = Stream(impl, fall())
+    [verify] = effects(s.observe("fall", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
+    s.observe("fall", "yes", at=12.0, evidence=(7.5, 9.0))                 # nothing newer: not an absorbed entry
+    assert effects(s.verify_reply(verify, "no", at=13.0), impl.RequestVerify) == []
+
+
 def test_a_state_condition_promotes_nothing(impl):
     s = Stream(impl, door(verify="fresh", candidate_deadline_s=30.0))
     [verify] = effects(s.observe("door", "yes", at=10.0, evidence=(8.0, 9.0)), impl.RequestVerify)
