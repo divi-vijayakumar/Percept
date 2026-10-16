@@ -125,7 +125,7 @@ def test_slow_consumer_gets_latest_and_capture_is_not_blocked():
     async def run():
         seen = []
         async for frame in src.frames():
-            seen.append(frame.seq)
+            seen.append((frame.stream_epoch, frame.seq))   # the fake ends and the source reconnects: seq restarts
             assert len(src._handoff.items) <= 1
             await asyncio.sleep(0.02)
             if done.is_set() and len(seen) > 1:
