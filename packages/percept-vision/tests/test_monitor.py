@@ -2723,7 +2723,7 @@ def test_a_stale_look_after_a_closed_candidate_is_a_blind_interval_not_a_decisio
     assert owed == {} and after < observed
 
 
-def test_a_look_after_a_closed_candidate_whose_anchor_left_the_pre_roll_falls_back_and_says_so(tmp_path):
+def test_a_closed_candidate_whose_absorbed_entry_left_the_pre_roll_is_reported_not_looked_at(tmp_path):
     from percept.clips import PreRoll
     cond = Condition("fall", "a person falls", kind="event", trigger=Never(), candidate_deadline_s=60,
                      rearm_s=30, clip_s=1.0, clip_frames=2)
@@ -2738,7 +2738,6 @@ def test_a_look_after_a_closed_candidate_whose_anchor_left_the_pre_roll_falls_ba
             pump_on = True
 
             async def pump():
-                i = 0
                 while pump_on:
                     src.push(image(0))
                     await asyncio.sleep(0.1)
@@ -2752,12 +2751,56 @@ def test_a_look_after_a_closed_candidate_whose_anchor_left_the_pre_roll_falls_ba
             await _until(lambda: judge.started["detect"] == 2)
             await asyncio.sleep(3.0)                         # longer than the 2 s pre-roll
             judge.gate.set()
-            await _until(lambda: judge.started["detect"] >= 3)
+            await _until(lambda: judge.started["verify"] == 2 or m.coverage("cam")["blind_intervals"])
+            await asyncio.sleep(0.5)
+            cov = m.coverage("cam")
             pump_on = False
             await pumping
             src.close()
-            await asyncio.wait_for(collect(watch), 10)
+            got = await asyncio.wait_for(collect(watch), 10)
+            return got, cov
 
-    run(main(), timeout=40)
-    records = [r for r in percept.trace.read(trace) if r["kind"] == "relook"]
-    assert len(records) == 1 and records[0]["anchored"] is False and records[0]["after"] < records[0]["observed_at"]
+    got, cov = run(main(), timeout=40)
+    assert _kinds(got) == [] and judge.started["detect"] == 2          # no useless unanchored look, no decision
+    [gap] = [b for b in cov["blind_intervals"] if b.kind == "relook_dropped"]
+    assert gap.detail == "absorbed entry left the pre-roll" and gap.condition_id == "fall"
+    assert gap.t_start_wall < gap.t_end_wall
+    [record] = [r for r in percept.trace.read(trace) if r["kind"] == "relook"]
+    assert record["anchored"] is False and record["after"] < record["observed_at"]
+
+
+async def _owed_relook(how):
+    """White-box: a relook is owed over (100, 105) and its work is queued; ``how`` decides how it ends."""
+    judge = Gated(answers({"detect": [Y], "verify": [N]}))
+    async with percept.Monitor(judge, [RELOOK_FALL], store=mem(), max_requests_per_min=1000) as m:
+        src = PushSource("cam")
+        m.watch(src, fps=None)
+        if how != "ended":
+            await push_frames(src, 4)
+        await m.ready("cam")
+        stream = m._streams["cam"]
+        stream.relooks[("fall", "scene")] = (100.0, 105.0)
+        t_trigger = None
+        if how == "queued_and_aged":      # its anchor left the pre-roll while the look waited its turn
+            t_trigger = stream.latest.t_wall - stream.ring.seconds - 1.0
+        elif how == "deadline":
+            t_trigger = stream.latest.t_wall
+        stream.enqueue("fall", "scene", rt.EVENT, t_trigger=t_trigger, floor=100.0, trigger="relook")
+        if how == "deadline":              # it waited past its 3 s for a slot or for evidence
+            stream.pending[("fall", "scene")].deadline = m._mono() - 1.0
+        if how == "ended":
+            stream.eof = True
+        stream.dispatch(m._mono())
+        return m.coverage("cam"), judge.started["detect"], dict(stream.relooks)
+
+
+@pytest.mark.parametrize("how, detail", [
+    ("deadline", "the look was dropped (deadline)"),
+    ("ended", "the look was dropped (ended)"),
+    ("queued_and_aged", "absorbed entry left the pre-roll"),
+])
+def test_a_look_after_a_closed_candidate_that_never_runs_is_a_blind_interval(how, detail):
+    cov, detects, owed = run(_owed_relook(how))
+    [gap] = [b for b in cov["blind_intervals"] if b.kind == "relook_dropped"]
+    assert (gap.t_start_wall, gap.t_end_wall, gap.detail, gap.condition_id) == (100.0, 105.0, detail, "fall")
+    assert detects == 0 and owed == {}

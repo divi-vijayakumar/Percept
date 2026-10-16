@@ -99,6 +99,7 @@ EVENT, STATE, HEARTBEAT = (attention.PRIORITY[k] for k in (attention.EVENT, atte
 VERIFY, RECHECK = 1, 5      # priorities, highest first: VERIFY, EVENT, STATE, HEARTBEAT, RECHECK
 _LOOK_PRIORITY = attention.PRIORITY
 _PRIORITY_NAMES = {VERIFY: "verify", EVENT: "event", STATE: "state", HEARTBEAT: "heartbeat", RECHECK: "recheck"}
+RELOOK_AGED_OUT = "absorbed entry left the pre-roll"
 DEADLINES = {EVENT: 3.0, STATE: 10.0}   # seconds a detection may wait before dropped_budget
 BUDGET_WINDOW_S = 60.0
 COST_WINDOW_S = 3600.0
@@ -578,6 +579,10 @@ class _Stream:
         if w.trigger == "relook":
             self.relook_lost(w.condition_id, w.subject, f"the look was dropped ({reason})")
 
+    def aged_out(self, t: float) -> bool:
+        """``t`` is older than the pre-roll holds, measured from the newest frame."""
+        return self.latest is not None and t < self.latest.t_wall - self.ring.seconds
+
     def relook_lost(self, cid: str, subject: str, why: str) -> None:
         """The look asked for after a closed candidate did not review the absorbed entry: say so as a
         ``relook_dropped`` blind interval over the evidence it should have covered. No decision."""
@@ -699,6 +704,9 @@ class _Stream:
             if w.deadline is not None and now > w.deadline:
                 del self.pending[key]
                 self.drop(w, "verification" if w.held else "budget" if w.blocked else "deadline", now)
+            elif w.trigger == "relook" and w.t_trigger is not None and self.aged_out(w.t_trigger):
+                del self.pending[key]               # the absorbed entry left the pre-roll while the look waited
+                self.relook_lost(w.condition_id, w.subject, RELOOK_AGED_OUT)
             elif self.eof and self.current() is None and w.images is None and w.frame is None:
                 del self.pending[key]               # the stream ended: no frame will come
                 self.starve(w)
@@ -982,8 +990,8 @@ class _Stream:
                 self.relooks.pop(owed, None)
             else:
                 why = next((f"the look's answer was {e.fate} ({e.detail or e.event})" for e in r.effects
-                            if type(e) is decide.Trace and e.fate in ("stale", "failed", "judged_weak")),
-                           "the look was not judged")
+                            if type(e) is decide.Trace and e.fate not in (None, "judged")),
+                           "the look's answer carried no judged fate")
                 self.relook_lost(*owed, why)
         loop = asyncio.get_running_loop()
         for e in r.effects:
@@ -1022,14 +1030,17 @@ class _Stream:
             elif t is decide.RequestRelook:
                 # An ordinary event detect (the budget, its 3 s deadline and single flight apply), anchored on
                 # the absorbed entry and starting after the closed candidate. When the anchor has left the
-                # pre-roll it falls back to the newest frame, as an unanchored look does; the trace says so.
-                held_from = self.latest.t_wall - self.ring.seconds if self.latest is not None else e.observed_at
-                anchored = e.observed_at >= held_from
+                # pre-roll no look is made (the newest frames cannot show the entry): the span is reported
+                # as a ``relook_dropped`` blind interval instead.
+                anchored = not self.aged_out(e.observed_at)
                 self.relooks[(e.condition_id, e.subject)] = (e.after, e.observed_at)
                 m._rec("relook", self.id, condition_id=e.condition_id, subject=e.subject,
                        occurrence_id=e.occurrence_id, observed_at=e.observed_at, after=e.after, anchored=anchored)
-                self.enqueue(e.condition_id, e.subject, EVENT, t_trigger=e.observed_at if anchored else None,
-                             floor=e.after, trigger="relook")
+                if anchored:
+                    self.enqueue(e.condition_id, e.subject, EVENT, t_trigger=e.observed_at, floor=e.after,
+                                 trigger="relook")
+                else:
+                    self.relook_lost(e.condition_id, e.subject, RELOOK_AGED_OUT)
             elif t is decide.EmitHealth:
                 m._report(e.health)
             elif t is decide.StoreCounterExample:

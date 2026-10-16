@@ -13,6 +13,11 @@ Notable changes to Percept.
   anchored on the absorbed entry (so a verification slower than `clip_s` does not push the clip past
   it) and starts after the closed candidate. A look that is dropped, fails or is stale is reported as
   a new `relook_dropped` blind interval (no decision), and the trace has a `relook` record.
+- `BlindKind` gains `relook_dropped`: consumers that match blind-interval kinds exhaustively must
+  handle it.
+- Recovery is guaranteed only while the verification completes within the pre-roll (8 s by default).
+  Beyond that, no look is made and the unreviewed span is reported as a `relook_dropped` blind
+  interval (detail "absorbed entry left the pre-roll"), not lost silently.
 - Snapshots: a key carries an `absorbed_until` field only while a verifying candidate holds an absorbed
   entry. `SNAPSHOT_FORMAT` stays 1. A 1.0.0 reader loads every such snapshot except one taken in that
   moment, which it rejects as malformed: do not downgrade from 1.0.1 to 1.0.0 with persisted state.

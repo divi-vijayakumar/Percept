@@ -259,11 +259,14 @@ The effect carries `observed_at` (the evidence end of the absorbed yes) and `aft
 candidate's evidence end). At most one look is asked for per closed candidate; the runtime queues it
 as an ordinary event detect (trigger label `relook`) under the stream's budget, anchored at
 `observed_at` like a poke's `observed_at`, so its clip covers the absorbed entry however long the
-verification took, and starting after `after`, so it does not show the rejected candidate again. If
-`observed_at` has left the pre-roll, the look falls back to the newest frame and the trace record
-`relook` has `anchored: false`. If the look is dropped (budget, deadline, shutdown), fails, or is
-stale (its evidence ends at the floor, as on a stalled stream), the runtime records a
-`relook_dropped` blind interval over `after`..`observed_at`; it never emits a decision for that.
+verification took, and starting after `after`, so it does not show the rejected candidate again.
+Recovery is guaranteed only while the verification completes within the pre-roll (8 s by default):
+if `observed_at` has left the pre-roll, at the time the effect is handled or while the look waits,
+no look is made (the newest frames cannot show the entry), and the trace record `relook` has
+`anchored: false`. Likewise if the look is dropped (budget, deadline, shutdown), fails, or is stale
+(its evidence ends at the floor, as on a stalled stream). In every such case the runtime records a
+`relook_dropped` blind interval over `after`..`observed_at` with the reason in `detail`; it never
+emits a decision for that.
 
 A verified candidate, a close by an application control, state conditions, and a restart ask for no
 look. On a restart the absorbed look's frames died with the process, so the candidate ends
