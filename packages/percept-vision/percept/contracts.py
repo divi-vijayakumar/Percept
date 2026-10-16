@@ -37,7 +37,7 @@ Fate = Literal[
     "dropped_for_verification",  # waited past its deadline while attempts were kept for verification
 ]
 BlindKind = Literal["link_down", "degraded_video", "scene_reset", "budget_exhausted", "judge_down", "paused",
-                    "relook_dropped"]
+                    "evidence_unavailable"]
 HealthKind = Literal[
     "judge_unavailable",
     "degraded",

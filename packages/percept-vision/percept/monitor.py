@@ -269,12 +269,6 @@ class _Work:
     clip: Optional[tuple] = None                # an event clip's (held_s, clip_s, frames, clip_frames)
     frames: tuple = ()                          # an original-interval verification's frames
     trigger: Optional[str] = None               # label of what made it due (see _trigger_label)
-    recover: Optional[decide.RequestRelook] = None   # judges the absorbed detection itself, never a fresh clip
-
-    @property
-    def slot(self) -> tuple:
-        """Where it waits in ``pending``: a recovery never shares a slot with an ordinary look."""
-        return (self.condition_id, self.subject) + (("recover",) if self.recover is not None else ())
 
 
 class _Stream:
@@ -299,7 +293,7 @@ class _Stream:
         self.qstate = self.sstate = None
         self.tstates: dict[Any, Any] = {}       # trigger key (see Monitor._trigger_key) -> its state
         self.degraded = False
-        self.pending: dict[tuple, _Work] = {}
+        self.pending: dict[tuple[str, str], _Work] = {}
         self.verifies: dict[tuple[str, str], _Work] = {}
         self.detect_task: Optional[asyncio.Task] = None
         self.verify_task: Optional[asyncio.Task] = None
@@ -322,10 +316,8 @@ class _Stream:
         self.tcounts: deque[tuple[int, Counter]] = deque(maxlen=COVERAGE_BUCKETS)  # (cid, label, count)
         self.totals: Counter = Counter()
         self.totals_by_trigger: Counter = Counter()     # (trigger label, count) -> n
-        self.relooks: dict[tuple[str, str], tuple[float, float]] = {}   # (cid, subject) -> evidence span a relook owes
-        self.relook_flight: dict[str, tuple[str, str]] = {}   # request id of a recovery in flight -> its key
-        # (cid, subject) -> (request id, frames) of the one detect absorbed by a verifying candidate: kept
-        # until the candidate closes (the frames go to its recovery) or the key moves on.
+        # (cid, subject) -> (request id, frames) of the one detect a verifying candidate absorbed: kept until the
+        # candidate closes (its successor verifies exactly these frames) or the key moves on.
         self.absorbed: dict[tuple[str, str], tuple[str, tuple]] = {}
         self.judge_failures = 0
         self.budget_blocked = False
@@ -582,42 +574,15 @@ class _Stream:
         self.m._rec("drop", self.id, condition_id=w.condition_id, subject=w.subject, reason=reason,
                     purpose="verify" if w.verify is not None else "detect", priority=_PRIORITY_NAMES[w.priority],
                     t_trigger=w.t_trigger, waited_s=max(0.0, now - w.created))
-        if w.recover is not None:
-            self.relook_lost(w.condition_id, w.subject, reason)
 
-    def relook_lost(self, cid: str, subject: str, why: str) -> None:
-        """The recovery of an absorbed detection did not review it: say so as a ``relook_dropped`` blind
-        interval over its evidence interval, with the reason (``evidence_unavailable``, ``budget``,
-        ``verification``, ``deadline``, ``ended``, ``stale``, ``failed``, ...) as the detail. No decision."""
-        span = self.relooks.pop((cid, subject), None)
-        if span is None:
-            return
-        start, end = span
-        self.m._rec("blind", self.id, blind_kind="relook_dropped", state="close", detail=why, condition_id=cid)
+    def gap(self, cid: str, subject: str, interval: tuple[float, float], why: str) -> None:
+        """An absorbed detection's evidence cannot be verified: report its interval as an ``evidence_unavailable``
+        blind interval, with the reason as the detail. Nothing is judged and no decision is emitted."""
+        self.m._rec("blind", self.id, blind_kind="evidence_unavailable", state="close", detail=why, condition_id=cid)
         if len(self.blind) == self.blind.maxlen:
             self.blind_dropped += 1
-        self.blind.append(BlindInterval("relook_dropped", self.id, start, max(start, end), why, cid))
-
-    def recovery_evidence(self, w: _Work, cond: Condition) -> Optional[tuple]:
-        """The frames of the absorbed detection itself: the ones its request judged when they are still
-        kept, else the pre-roll's frames of exactly its interval. Never anything else: when they are
-        gone, or the epoch differs, nothing is judged and the interval is reported unreviewed."""
-        e = w.recover
-        frames = w.frames
-        if e.stream_epoch == self.epoch and not frames:
-            held = self.frames_of(e.interval, e.stream_epoch)
-            frames = _spread(held, cond.clip_window[1]) if held else ()
-        if (e.stream_epoch != self.epoch or not frames or abs(frames[0].t_wall - e.interval[0]) > 1e-6
-                or abs(frames[-1].t_wall - e.interval[1]) > 1e-6):
-            if self.pending.get(w.slot) is w:
-                del self.pending[w.slot]
-            self.starve(w)
-            self.relook_lost(w.condition_id, w.subject, "evidence_unavailable")
-            return None
-        h, w_ = frames[0].image.shape[:2]
-        box = crop_box(cond.zones, w_, h)
-        images = tuple(f.image[box[1]:box[3], box[0]:box[2]] for f in frames)
-        return frames, images, (frames[0].t_wall, frames[-1].t_wall), (tuple((f.stream_epoch, f.seq) for f in frames), box)
+        self.blind.append(BlindInterval("evidence_unavailable", self.id, interval[0], max(interval[0], interval[1]),
+                                        why, cid))
 
     def starve(self, w: _Work) -> None:
         if not w.starved:
@@ -662,8 +627,6 @@ class _Stream:
         w.clip = None
         if cond is None:
             return None
-        if w.recover is not None:
-            return self.recovery_evidence(w, cond)
         if w.images is not None:
             t = w.t_trigger if w.t_trigger is not None else self.m._wall()
             return (), w.images, (t, t), ("given", id(w.images))
@@ -729,7 +692,7 @@ class _Stream:
             if w.deadline is not None and now > w.deadline:
                 del self.pending[key]
                 self.drop(w, "verification" if w.held else "budget" if w.blocked else "deadline", now)
-            elif self.eof and self.current() is None and w.images is None and w.frame is None and w.recover is None:
+            elif self.eof and self.current() is None and w.images is None and w.frame is None:
                 del self.pending[key]               # the stream ended: no frame will come
                 self.starve(w)
                 self.drop(w, "ended", now)
@@ -745,6 +708,8 @@ class _Stream:
                 if why == "gone":
                     w.gone = True
                     self.health("verify_deferred", "the original evidence left the pre-roll", w.condition_id)
+                    if w.verify.absorbed:      # never judge other frames: say the entry went unreviewed
+                        self.gap(w.condition_id, w.subject, w.verify.interval, "original evidence left the pre-roll")
                     continue
                 if why == "budget":
                     refused = True
@@ -796,8 +761,6 @@ class _Stream:
         for w in order[order.index(top) + 1:]:
             if len(group) >= cap:
                 break
-            if any(g.condition_id == w.condition_id and g.subject == w.subject for g in group):
-                continue            # an ordinary look and a recovery for one key are never one request
             ev = self.evidence(w)
             if ev is not None and ev[3] == top_ev[3]:
                 group.append(w)
@@ -867,7 +830,7 @@ class _Stream:
             m._slots += 1
         for w in works:
             if w.verify is None:
-                del self.pending[w.slot]
+                del self.pending[(w.condition_id, w.subject)]
                 if _short(w.clip):          # judged on less of its window than asked: counted, never hidden
                     self.fate(w.condition_id, "evidence_short")
             if not w.admitted:     # a verification retried is still one look
@@ -876,9 +839,6 @@ class _Stream:
         refs = tuple(EvidenceRef(self.id, self.epoch_map.get(f.stream_epoch, epoch), f.seq, f.t_wall) for f in frames)
         self.remember(self.req_refs, request.request_id, refs, 256)
         self.remember(self.req_frames, request.request_id, frames, KEEP_REQUEST_FRAMES)
-        for w in works:
-            if w.recover is not None:
-                self.relook_flight[request.request_id] = (w.condition_id, w.subject)
         if purpose == "detect" and works[0].clip is not None:
             self.remember(self.req_window, request.request_id, works[0].clip, 256)
         flight = _Flight(request, works, reserve, cost, m._mono())
@@ -1006,25 +966,12 @@ class _Stream:
                 self.traced_versions = versions
                 m._rec("conditions", self.id, conditions=[encode_condition(c) for c in m._conds.values()])
             m._rec("decide_input", self.id, input=encode_input(inp), now=now, versions=versions)
-        owed = None             # the key whose recovery this observation answers
-        if isinstance(inp, decide.Observed) and inp.observation.purpose == "detect":
-            ob = inp.observation
-            owed = (ob.condition_id, ob.subject)
-            owed = owed if self.relook_flight.get(ob.request_id.split("/")[0]) == owed else None
         r = decide.step(self.state, inp, now, m._conds)
         self.state = r.state
-        if owed is not None:
-            self.relook_flight.pop(inp.observation.request_id.split("/")[0], None)
-            if any(type(e) is decide.Trace and e.fate == "judged" for e in r.effects):
-                self.relooks.pop(owed, None)
-            else:
-                why = next((f"{e.fate}:{e.detail or e.event}" for e in r.effects
-                            if type(e) is decide.Trace and e.fate not in (None, "judged")), "not_judged")
-                self.relook_lost(*owed, why)
-        elif isinstance(inp, decide.Observed) and inp.observation.purpose == "detect":
-            ob = inp.observation      # keep the one detect a verifying candidate absorbed (frames included)
+        if isinstance(inp, decide.Observed) and inp.observation.purpose == "detect":
+            ob = inp.observation      # keep the one detect a verifying candidate absorbed, frames included
             k = self.state.keys.get((ob.condition_id, ob.subject))
-            if k is not None and k.absorbed_request_id == ob.request_id:
+            if k is not None and k.absorbed is not None and k.absorbed.request_id == ob.request_id:
                 self.absorbed[(ob.condition_id, ob.subject)] = (
                     ob.request_id, self.req_frames.get(ob.request_id.split("/")[0], ()))
         loop = asyncio.get_running_loop()
@@ -1049,7 +996,11 @@ class _Stream:
                 w = _Work(VERIFY, e.condition_id, e.subject, self.m._mono(), verify=e, trigger="verify")
                 self.tcount(e.condition_id, "verify", "due")
                 if e.mode == "original":    # pinned now: frames are ephemeral
-                    w.frames = self.original(e)
+                    kept = self.absorbed.pop((e.condition_id, e.subject), (None, ()))[1] if e.absorbed else ()
+                    exact = bool(kept) and (kept[0].t_wall, kept[-1].t_wall) == tuple(e.interval)
+                    w.frames = kept if exact else self.original(e)     # the absorbed request's own frames first
+                    if e.absorbed and w.frames and (w.frames[0].t_wall, w.frames[-1].t_wall) != tuple(e.interval):
+                        w.frames = ()           # not exactly the absorbed evidence: report the gap, judge nothing
                 self.verifies[(e.condition_id, e.subject)] = w
             elif t is decide.CancelVerify:
                 w = self.verifies.get((e.condition_id, e.subject))
@@ -1061,15 +1012,15 @@ class _Stream:
                         self.verify_task.cancel()
             elif t is decide.RequestRecheck:
                 self.enqueue(e.condition_id, e.subject, RECHECK, trigger="recheck")
-            elif t is decide.RequestRelook:
-                self.recover(e)
             elif t is decide.EmitHealth:
                 m._report(e.health)
             elif t is decide.StoreCounterExample:
                 self.spawn(self.store_counter(e))
+            elif t is decide.EvidenceGap:
+                self.gap(e.condition_id, e.subject, e.interval, f"evidence from another {e.cause}")
         for key, (rid, _) in list(self.absorbed.items()):      # released once the candidate closes or moves on
             k = self.state.keys.get(key)
-            if k is None or k.absorbed_request_id != rid:
+            if k is None or k.absorbed is None or k.absorbed.request_id != rid:
                 del self.absorbed[key]
         for d in r.decisions:
             fields = decision_record(d)
@@ -1081,30 +1032,6 @@ class _Stream:
             self.dirty = False
         else:
             self.dirty = True
-
-    def recover(self, e: decide.RequestRelook) -> None:
-        """Queue the recovery of an absorbed detection: an ordinary event detect for the budget, its 3 s
-        deadline and single flight, but in a slot of its own, judging exactly the absorbed evidence."""
-        m = self.m
-        key = (e.condition_id, e.subject)
-        _, frames = self.absorbed.pop(key, (e.request_id, ()))
-        m._rec("relook", self.id, condition_id=e.condition_id, subject=e.subject, occurrence_id=e.occurrence_id,
-               request_id=e.request_id, interval=list(e.interval), stream_epoch=e.stream_epoch,
-               frames_kept=len(frames))
-        if e.condition_id not in m._conds:
-            return
-        old = self.pending.pop(key + ("recover",), None)
-        if old is not None:
-            self.relook_lost(*key, "superseded")
-        self.relooks[key] = tuple(e.interval)
-        if e.condition_id in m._paused:
-            self.relook_lost(*key, "paused")
-            return
-        now = m._mono()
-        self.tcount(e.condition_id, "relook", "due")
-        self.pending[key + ("recover",)] = _Work(EVENT, e.condition_id, e.subject, now, now + DEADLINES[EVENT],
-                                                 trigger="relook", frames=frames, recover=e)
-        self.wake.set()
 
     def flush_snapshot(self) -> None:
         if self.dirty and self.state is not None:

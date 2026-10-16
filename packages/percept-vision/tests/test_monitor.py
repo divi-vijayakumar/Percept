@@ -2543,14 +2543,12 @@ def test_ready_from_another_thread_raises_like_other_methods():
 
 # --------------------------------------------------------------------------- an entry absorbed while a candidate verifies
 #
-# Entry 1 opens a candidate whose verification is held; entry 2's detect yes is absorbed; the person then
-# LEAVES while frames keep advancing; the verification returns and closes entry 1 without a met. The
-# recovery must judge the absorbed detection itself: the judge below says yes only to evidence that is
-# exactly the absorbed request's, and no to every current frame.
+# Entry 1 opens a candidate whose verification is held; entry 2's detect yes is absorbed; the entrant then
+# LEAVES while frames keep advancing (every later detect says no); the verification returns and closes entry 1
+# without a met. The absorbed yes is promoted to a successor candidate that is verified on exactly the
+# absorbed evidence: no second detect is made, and the verifier says yes only to that very interval.
 
 
-RELOOK_FALL = Condition("fall", "a person falls", kind="event", trigger=Never(), candidate_deadline_s=60,
-                        rearm_s=30, clip_s=1.0, clip_frames=3)
 UNKNOWN = ("unknown", 0.0, "cannot tell")
 
 
@@ -2567,27 +2565,38 @@ def _kinds(got):
 
 
 def _gaps(cov):
-    return [b for b in cov["blind_intervals"] if b.kind == "relook_dropped"]
+    return [b for b in cov["blind_intervals"] if b.kind == "evidence_unavailable"]
 
 
-async def _leaving(verify_replies, *, hold_s=0.8, pre_roll_s=8.0, deadline_s=60.0, hook=None,
-                   wait_for_relook=True, max_requests_per_min=1000, settle_s=0.8):
-    """Returns (decisions, judge, coverage, absorbed evidence, stream). ``hook(m, stream, src)`` runs after
-    the absorbed detect and before the verification is released."""
+async def _leaving(first_verify, *, hold_s=0.8, pre_roll_s=8.0, deadline_s=60.0, hook=None, settle_s=1.0,
+                   max_requests_per_min=1000, successor_verify=Y):
+    """Returns (decisions, judge, coverage, absorbed evidence, stream, health). ``first_verify`` answers the first
+    candidate's verification; the successor's is ``successor_verify`` when its evidence is exactly the absorbed
+    interval, else a no. ``hook(m, stream, src)`` runs after the absorbed detect, before the verification returns."""
     from percept.clips import PreRoll
     cond = Condition("fall", "a person falls", kind="event", trigger=Never(), candidate_deadline_s=deadline_s,
                      rearm_s=30, clip_s=1.0, clip_frames=3)
     seen: list = []
+    verifies: list = []
 
     def detect(request):
         seen.append(request.evidence_t)
-        # the first two looks are entry 1 and entry 2; afterwards the person has left: only the absorbed
-        # detection's own frames still show the entry
-        yes = len(seen) <= 2 or request.evidence_t == seen[1]
+        yes = len(seen) <= 2                      # entries 1 and 2; afterwards the entrant has left
         return {i.condition.id: Y if yes else N for i in request.items}
 
-    judge = Gated(answers({"detect": detect, "verify": verify_replies}))
+    def verify(request):
+        verifies.append(request.evidence_t)
+        # the successor's evidence is exactly the absorbed interval; the first candidate's is its own
+        reply = successor_verify if request.evidence_t == seen[1] else first_verify
+        if request.evidence_t != seen[1] and len(verifies) > 1 and first_verify is not N and first_verify is not Y:
+            reply = N                                   # a failed first attempt is retried once, then a no
+        if isinstance(reply, BaseException):
+            return reply
+        return {i.condition.id: reply for i in request.items}
+
+    judge = Gated(answers({"detect": detect, "verify": verify}))
     judge.gate = asyncio.Event()
+    health: list = []
     async with percept.Monitor(judge, [cond], store=mem(), max_requests_per_min=max_requests_per_min) as m:
         src = PushSource("cam", preroll=PreRoll(seconds=pre_roll_s, fps=40.0))
         watch = m.watch(src, fps=None)
@@ -2598,6 +2607,11 @@ async def _leaving(verify_replies, *, hold_s=0.8, pre_roll_s=8.0, deadline_s=60.
                 src.push(image(0))
                 await asyncio.sleep(0.05)
 
+        async def listen():
+            async for h in m.health():
+                health.append(h)
+
+        listener = asyncio.create_task(listen())
         pumping = asyncio.create_task(pump())
         await asyncio.sleep(0.6)
         m.poke("cam", "fall", reason="entry 1")
@@ -2609,218 +2623,149 @@ async def _leaving(verify_replies, *, hold_s=0.8, pre_roll_s=8.0, deadline_s=60.
         stream = m._streams["cam"]
         if hook is not None:
             await hook(m, stream, src)
-        await asyncio.sleep(hold_s)                       # the person is gone and the frames keep coming
+        await asyncio.sleep(hold_s)                       # the entrant is gone and the frames keep coming
         judge.gate.set()
-        if wait_for_relook:
-            await _until(lambda: judge.started["detect"] >= 3 or _gaps(m.coverage("cam")), tries=800)
         await asyncio.sleep(settle_s)
         cov = m.coverage("cam")
         pump_on = False
         await pumping
         src.close()
         got = await asyncio.wait_for(collect(watch), 10)
-        return got, judge, cov, seen[1], stream
+        listener.cancel()
+        return got, judge, cov, seen[1], stream, health
 
 
-def _recovery(judge, absorbed):
-    """The request that judged the absorbed detection again, and the absorbed one: same evidence, same JPEGs."""
+def _successor_request(judge, absorbed):
+    """The successor's verification and the absorbed detect: the same evidence, the same JPEGs, nothing newer."""
     detects = [s for s in judge.sent if s[3].purpose == "detect"]
-    rec = detects[2][3]
-    assert rec.evidence_t[0] <= absorbed[0] and rec.evidence_t[1] >= absorbed[1]     # contains the entry ...
-    assert rec.evidence_t == absorbed                                                # ... and nothing newer
-    assert detects[2][1] == detects[1][1]                                            # the very frames
+    verifies = [s for s in judge.sent if s[3].purpose == "verify"]
+    assert len(detects) == 2                                                # no second detect, ever
+    rec = verifies[-1][3]
+    assert rec.evidence_t[0] <= absorbed[0] and rec.evidence_t[1] >= absorbed[1]       # contains the entry ...
+    assert rec.evidence_t == absorbed                                       # ... and no frame newer than it
+    assert verifies[-1][1] == detects[1][1]                                 # the very frames that said yes
     return rec
 
 
-@pytest.mark.parametrize("name, verify_replies, kinds", [
-    ("rejected", [N, Y], [("met", None)]),
-    ("unknown", [UNKNOWN, Y], [("uncertain", "unverified"), ("met", None)]),
+@pytest.mark.parametrize("first_verify, kinds", [
+    (N, [("met", None)]),
+    (UNKNOWN, [("uncertain", "unverified"), ("met", None)]),
 ])
-def test_the_absorbed_entry_is_recovered_on_its_own_frames_after_the_person_leaves(name, verify_replies, kinds):
-    got, judge, cov, absorbed, _ = run(_leaving(verify_replies), timeout=40)
+def test_the_absorbed_entry_is_verified_on_its_own_frames_after_the_entrant_leaves(first_verify, kinds):
+    got, judge, cov, absorbed, stream, _ = run(_leaving(first_verify), timeout=40)
     assert _kinds(got) == kinds
-    _recovery(judge, absorbed)
+    _successor_request(judge, absorbed)
     met = got[-1].decision
     assert met.type == "met" and met.t_observed == absorbed[1]
-    assert len({d.decision.occurrence_id for d in got}) == len(got)               # each its own occurrence
-    assert cov["triggers"]["fall"]["relook"]["due"] == 1 and not _gaps(cov)
+    assert len({d.decision.occurrence_id for d in got}) == len(got)         # each its own occurrence
+    assert not _gaps(cov) and stream.absorbed == {}                         # released once promoted
 
 
-def test_the_absorbed_entry_is_recovered_when_the_verification_times_out():
-    got, judge, cov, absorbed, _ = run(_leaving([Y], hold_s=2.6, deadline_s=2.0), timeout=40)
+def test_the_absorbed_entry_is_verified_when_the_first_verification_times_out():
+    got, judge, cov, absorbed, _, _ = run(_leaving(Y, hold_s=2.6, deadline_s=2.0, settle_s=1.5), timeout=40)
     assert _kinds(got) == [("uncertain", "timeout"), ("met", None)]
-    _recovery(judge, absorbed)
-    assert cov["triggers"]["fall"]["relook"]["due"] == 1
+    _successor_request(judge, absorbed)
 
 
-def test_the_retained_frames_recover_the_entry_even_when_the_verification_outlasts_the_pre_roll():
-    got, judge, cov, absorbed, _ = run(_leaving([N, Y], hold_s=3.0, pre_roll_s=2.0), timeout=40)
+def test_the_saved_frames_verify_the_entry_even_when_the_first_verification_outlasts_the_pre_roll():
+    got, judge, cov, absorbed, _, _ = run(_leaving(N, hold_s=3.0, pre_roll_s=2.0), timeout=40)
     assert _kinds(got) == [("met", None)] and not _gaps(cov)
-    _recovery(judge, absorbed)
+    _successor_request(judge, absorbed)
 
 
-def test_without_the_retained_frames_the_exact_interval_is_looked_up_in_the_pre_roll():
-    async def drop_retained(m, stream, src):
-        assert stream.absorbed and len(stream.absorbed) == 1       # at most one absorbed request per key
+def test_without_the_saved_frames_exactly_the_interval_is_taken_from_the_pre_roll():
+    async def drop_saved(m, stream, src):
+        assert len(stream.absorbed) == 1                           # at most one absorbed request per key
         stream.absorbed.clear()
+        stream.req_frames.clear()
 
-    got, judge, cov, absorbed, _ = run(_leaving([N, Y], hook=drop_retained), timeout=40)
+    got, judge, cov, absorbed, _, _ = run(_leaving(N, hook=drop_saved), timeout=40)
     assert _kinds(got) == [("met", None)] and not _gaps(cov)
-    rec = [s for s in judge.sent if s[3].purpose == "detect"][2][3]
-    assert rec.evidence_t == absorbed                              # exactly the interval, no newer frame
+    assert [s for s in judge.sent if s[3].purpose == "verify"][-1][3].evidence_t == absorbed
 
 
 def test_without_the_frames_and_with_the_interval_gone_nothing_is_judged_and_the_gap_is_reported():
-    async def drop_retained(m, stream, src):
+    async def drop_saved(m, stream, src):
         stream.absorbed.clear()
+        stream.req_frames.clear()
 
-    got, judge, cov, absorbed, _ = run(_leaving([N, Y], hold_s=3.0, pre_roll_s=2.0, hook=drop_retained,
-                                                wait_for_relook=False), timeout=40)
-    assert _kinds(got) == [] and judge.started["detect"] == 2      # no unrelated current frame was judged
+    got, judge, cov, absorbed, _, health = run(
+        _leaving(N, hold_s=3.0, pre_roll_s=2.0, hook=drop_saved, deadline_s=5.0, settle_s=0.5), timeout=40)
+    # the successor cannot be verified: nothing else is judged, and it ends at its own deadline, uncertain
+    assert _kinds(got) == [("uncertain", "timeout")] and judge.started["detect"] == 2
+    assert judge.started["verify"] == 1                             # no verification of unrelated current frames
     [gap] = _gaps(cov)
-    assert gap.detail == "evidence_unavailable" and (gap.t_start_wall, gap.t_end_wall) == absorbed
-    assert cov["evidence_unavailable"]["fall"] == 1
+    assert (gap.t_start_wall, gap.t_end_wall, gap.condition_id) == (absorbed[0], absorbed[1], "fall")
+    assert gap.detail == "original evidence left the pre-roll"
+    assert cov["evidence_unavailable"]["fall"] >= 1
 
 
-def test_a_reconnect_during_the_verification_reports_the_gap_instead_of_judging_other_frames():
+def test_a_reconnect_during_the_first_verification_reports_the_gap_and_verifies_nothing():
     async def reconnect(m, stream, src):
         src.set_link(False, "test outage")
         await asyncio.sleep(0.2)
         src.push(image(0))                                          # the next frame brings it back, new epoch
         await _until(lambda: stream.epoch >= 1)
 
-    got, judge, cov, absorbed, _ = run(_leaving([N, Y], hook=reconnect, wait_for_relook=False), timeout=40)
-    assert _kinds(got) == [] and judge.started["detect"] == 2
+    got, judge, cov, absorbed, _, _ = run(_leaving(N, hook=reconnect), timeout=40)
+    assert _kinds(got) == [] and judge.started["detect"] == 2 and judge.started["verify"] == 1
     [gap] = _gaps(cov)
-    assert gap.detail == "evidence_unavailable" and (gap.t_start_wall, gap.t_end_wall) == absorbed
+    assert (gap.t_start_wall, gap.t_end_wall) == absorbed and gap.detail == "evidence from another epoch"
 
 
-def test_a_verified_candidate_is_not_looked_at_again_for_its_absorbed_yes():
-    got, judge, cov, _, stream = run(_leaving([Y], wait_for_relook=False), timeout=40)
+def test_a_verified_candidate_discards_the_absorbed_entry_no_duplicate_and_no_extra_request():
+    got, judge, cov, _, stream, _ = run(_leaving(Y), timeout=40)
     assert _kinds(got) == [("met", None)]
     assert [s[3].purpose for s in judge.sent] == ["detect", "detect", "verify"]
-    assert "relook" not in cov["triggers"].get("fall", {}) and not _gaps(cov)
-    assert stream.absorbed == {}                                    # released when the key closed
+    assert not _gaps(cov) and stream.absorbed == {}                 # released when the key closed
 
 
-def test_the_recovery_happens_once_and_never_loops():
-    got, judge, cov, _, _ = run(_leaving([N]), timeout=40)           # every verification says no
-    assert [s[3].purpose for s in judge.sent] == ["detect", "detect", "verify", "detect", "verify"]
-    assert cov["triggers"]["fall"]["relook"]["due"] == 1 and _kinds(got) == []
+def test_the_successor_obeys_the_request_budget_and_is_not_verified_when_there_is_none():
+    # Five attempts a minute, two reserved a request: two detects and a retried first verification leave no room,
+    # so the successor waits for budget and, like any candidate, ends at its own deadline.
+    got, judge, cov, absorbed, _, health = run(
+        _leaving(RetryableError("down"), hold_s=0.2, max_requests_per_min=5, deadline_s=6.0, settle_s=1.5),
+        timeout=40)
+    purposes = [s[3].purpose for s in judge.sent]
+    assert purposes.count("detect") == 2                                        # never a second detect
+    assert absorbed not in [s[3].evidence_t for s in judge.sent if s[3].purpose == "verify"]   # successor not verified
+    assert any(h.kind == "verify_deferred" and "budget" in h.detail for h in health)
+    assert _kinds(got) == [("uncertain", "timeout")]
 
 
-def test_the_recovery_respects_the_request_budget_and_reports_the_gap():
-    # Five attempts a minute, two reserved a request: the two detects and a retried verification leave no
-    # room, so the recovery (an event detect, 3 s to find budget) is dropped, not judged, not retried.
-    got, judge, cov, absorbed, _ = run(_leaving([RetryableError("down"), N], hold_s=0.2, max_requests_per_min=5,
-                                                wait_for_relook=False, settle_s=3.6), timeout=40)
-    assert _kinds(got) == []
-    assert [s[3].purpose for s in judge.sent] == ["detect", "detect", "verify", "verify"]       # no third detect
-    assert cov["triggers"]["fall"]["relook"] == {"due": 1, "admitted": 0, "coalesced": 0,
-                                                 "dropped_budget": 1, "dropped_for_verification": 0}
-    [gap] = _gaps(cov)
-    assert gap.detail == "budget" and (gap.t_start_wall, gap.t_end_wall) == absorbed
-    assert cov["fates"]["fall"]["dropped_budget"] >= 1
+def test_a_restart_during_the_verification_ends_it_uncertain_and_promotes_nothing():
+    store = mem()
+    cond = Condition("fall", "a person falls", kind="event", trigger=Never(), candidate_deadline_s=60)
 
-
-def test_a_pending_ordinary_look_neither_absorbs_nor_replaces_the_recovery():
-    # White-box: the recovery and an ordinary look for one key wait together; each keeps its own evidence.
-    async def main():
-        judge = Gated(answers({"detect": [N], "verify": [N]}))
-        async with percept.Monitor(judge, [RELOOK_FALL], store=mem(), max_requests_per_min=1000) as m:
-            from percept.clips import PreRoll
-            src = PushSource("cam", preroll=PreRoll(seconds=8.0, fps=100.0))
-            m.watch(src, fps=None)
-            await push_frames(src, 6)
-            await m.ready("cam")
-            stream = m._streams["cam"]
-            held = stream.ring.within((stream.latest.t_wall - 1.0, stream.latest.t_wall))
-            assert len(held) >= 3
-            frames = (held[0], held[2])
-            interval = (frames[0].t_wall, frames[-1].t_wall)
-            e = rt.decide.RequestRelook("fall", "scene", "occ", "x/fall", interval, stream.epoch)
-            stream.absorbed[("fall", "scene")] = ("x/fall", frames)
-            stream.recover(e)                                            # the recovery is waiting ...
-            recovery = stream.pending[("fall", "scene", "recover")]
-            stream.enqueue("fall", "scene", rt.EVENT, trigger="poke")    # ... an ordinary look arrives
-            ordinary = stream.pending[("fall", "scene")]
-            before = (recovery.frames, recovery.t_trigger, recovery.images)
-            stream.enqueue("fall", "scene", rt.EVENT, t_trigger=interval[1] + 5.0, trigger="poke")   # coalesces
-            assert stream.pending[("fall", "scene", "recover")] is recovery
-            assert (recovery.frames, recovery.t_trigger, recovery.images) == before
-            assert recovery.recover is e and ordinary.recover is None and ordinary is not recovery
-            assert stream.group()[0] is not None and len({id(w) for w in stream.group()}) == len(stream.group())
-            ev_recovery = stream.evidence(recovery)
-            assert ev_recovery[2] == interval and ev_recovery[0] == frames
-            ev_ordinary = stream.evidence(ordinary)
-            assert ev_ordinary[2][1] > interval[1]                       # the ordinary look sees newer frames
-            assert [w for w in stream.group() if w.recover is not None] in ([], [recovery])
-            return True
-
-    assert run(main())
-
-
-def _by_hand(frames_kept=True):
-    """White-box setup: a monitor with a pre-roll holding many frames, and a RequestRelook over three of them."""
-    async def build(m):
-        from percept.clips import PreRoll
-        src = PushSource("cam", preroll=PreRoll(seconds=8.0, fps=100.0))
+    async def before():
+        judge = Gated(answers({"detect": [Y], "verify": [N]}))
+        judge.gate = asyncio.Event()                                # the verification hangs
+        m = percept.Monitor(judge, [cond], store=store)
+        src = PushSource("cam")
         m.watch(src, fps=None)
-        await push_frames(src, 6)
-        await m.ready("cam")
-        stream = m._streams["cam"]
-        held = stream.ring.within((stream.latest.t_wall - 1.0, stream.latest.t_wall))
-        frames = (held[0], held[2])
-        e = rt.decide.RequestRelook("fall", "scene", "occ", "x/fall", (frames[0].t_wall, frames[1].t_wall), stream.epoch)
-        stream.absorbed[("fall", "scene")] = ("x/fall", frames if frames_kept else ())
-        return stream, e
-    return build
+        src.push(image())
+        await asyncio.sleep(0.05)
+        m.poke("cam", "fall", reason="entry 1")
+        await _until(lambda: judge.started["verify"] == 1)
+        await asyncio.sleep(0.1)
+        src.push(image())
+        await asyncio.sleep(0.1)
+        m.poke("cam", "fall", reason="entry 2")
+        await _until(lambda: judge.started["detect"] == 2)
+        await asyncio.sleep(0.2)                                    # absorbed, then the process goes away
+        assert m._streams["cam"].state.keys[("fall", "scene")].absorbed is not None
+        await m.aclose()
 
+    async def after():
+        judge = FakeJudge({})
+        m = percept.Monitor(judge, [cond], store=store)
+        src = PushSource("cam")
+        watch = m.watch(src, fps=None)
+        src.close()
+        got = [(d.decision.type, d.decision.cause) async for d in watch]
+        await m.aclose()
+        return got, judge.sent
 
-def test_a_recovery_that_waits_past_its_deadline_is_a_reported_gap():
-    async def main():
-        judge = Gated(answers({"detect": [Y], "verify": [N]}))
-        async with percept.Monitor(judge, [RELOOK_FALL], store=mem(), max_requests_per_min=1000) as m:
-            stream, e = await _by_hand()(m)
-            stream.recover(e)
-            stream.pending[("fall", "scene", "recover")].deadline = m._mono() - 1.0
-            stream.dispatch(m._mono())
-            return m.coverage("cam"), judge.started["detect"], e
-
-    cov, detects, e = run(main())
-    [gap] = _gaps(cov)
-    assert gap.detail == "deadline" and (gap.t_start_wall, gap.t_end_wall) == e.interval and detects == 0
-
-
-def test_a_stale_answer_to_the_recovery_is_a_reported_gap_not_a_decision():
-    async def main():
-        judge = Gated(answers({"detect": [Y], "verify": [N]}))
-        async with percept.Monitor(judge, [RELOOK_FALL], store=mem(), max_requests_per_min=1000) as m:
-            stream, e = await _by_hand()(m)
-            stream.relooks[("fall", "scene")] = e.interval
-            stream.relook_flight["rq"] = ("fall", "scene")
-            ob = percept.contracts.Observation(
-                answer="yes", confidence=0.9, reason="r", stream_id="cam", evidence_t=e.interval, judge="fake",
-                condition_id="fall", subject="scene", request_id="rq/fall", stream_epoch=stream.state.stream_epoch + 7,
-                condition_version=RELOOK_FALL.version, occurrence_gen=0, purpose="detect")     # another epoch: stale
-            stream.step(rt.decide.Observed(ob, percept.contracts.Usage()))
-            return m.coverage("cam"), dict(stream.relooks), dict(stream.relook_flight), e
-
-    cov, owed, flight, e = run(main())
-    [gap] = _gaps(cov)
-    assert gap.detail == "stale:epoch" and (gap.t_start_wall, gap.t_end_wall) == e.interval
-    assert owed == {} and flight == {}
-
-
-def test_a_paused_condition_reports_its_recovery_as_a_gap():
-    async def main():
-        judge = Gated(answers({"detect": [Y], "verify": [N]}))
-        async with percept.Monitor(judge, [RELOOK_FALL], store=mem(), max_requests_per_min=1000) as m:
-            stream, e = await _by_hand()(m)
-            m.pause("fall")
-            stream.recover(e)
-            return m.coverage("cam"), judge.started["detect"], dict(stream.pending), stream.absorbed
-
-    cov, detects, pending, absorbed = run(main())
-    [gap] = _gaps(cov)
-    assert gap.detail == "paused" and detects == 0 and ("fall", "scene", "recover") not in pending and absorbed == {}
+    run(before())
+    got, sent = run(after())
+    assert got == [("uncertain", "restart")] and not sent           # no successor, nothing verified
