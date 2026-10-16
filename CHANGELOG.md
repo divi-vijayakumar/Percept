@@ -2,11 +2,10 @@
 
 Notable changes to Percept.
 
-## 1.1.0 (unreleased)
+## 1.1.0 — 2026-10-16
 
 Minor release: the entry below adds a value to the 1.0 contract's `BlindKind` and two additions to the
-`percept.decide` effects, and changes no existing signature. The version bump itself belongs to the
-release step.
+`percept.decide` effects, and changes no existing signature.
 
 ### Fixed
 

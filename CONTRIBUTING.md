@@ -10,7 +10,7 @@ Contact: support@velvee.ai
 ```bash
 git clone https://github.com/divi-vijayakumar/Percept.git percept && cd percept
 python -m venv .venv && . .venv/bin/activate
-pip install -e "packages/percept-vision[dev]"
+pip install -e "packages/percept-vision[dev,video]"   # video: file-source tests and the plan-evaluation example
 make check      # guardrails + tests, offline, no API keys
 ```
 
