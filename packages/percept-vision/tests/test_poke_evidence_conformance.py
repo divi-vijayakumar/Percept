@@ -161,17 +161,23 @@ def test_gap2_desired_a_decision_from_poked_evidence_references_what_was_judged(
 # --------------------------------------------------------------------------- 3. keyframe
 
 
+def distinct(i: int) -> np.ndarray:
+    """Stream frames whose textures differ enough to tell which one a JPEG came from."""
+    return image(40 * i)
+
+
 def test_gap3_the_keyframe_of_a_poked_decision_is_a_stream_frame_not_the_poked_image():
-    s = run(_session(event(verify="off"), evidence=red()))
-    kf = jpeg_rgb(s.decisions[0].keyframe)
-    assert not is_red(kf[..., ::-1])                                   # a grey pre-roll frame near t_observed
-    assert abs(float(kf.mean()) - float(image(2).mean())) < 20
+    s = run(_session(event(verify="off"), evidence=red(), offset=ON_FRAME, frame=distinct))
+    kf = jpeg_rgb(s.decisions[0].keyframe).astype(np.int16)
+    assert not is_red(kf[..., ::-1].astype(np.uint8))
+    diffs = [float(np.abs(kf - distinct(i).astype(np.int16)).mean()) for i in range(N_FRAMES)]
+    assert int(np.argmin(diffs)) == 2 and diffs[2] < 10                # the pre-roll frame at t_observed
 
 
 @pytest.mark.xfail(strict=True, reason="SDK-0 gap 3: the keyframe comes from the stream pre-roll, "
                                        "not from the poked evidence that was judged")
 def test_gap3_desired_the_keyframe_of_a_poked_decision_is_the_poked_image():
-    s = run(_session(event(verify="off"), evidence=red()))
+    s = run(_session(event(verify="off"), evidence=red(), offset=ON_FRAME, frame=distinct))
     assert is_red(jpeg_rgb(s.decisions[0].keyframe)[..., ::-1])
 
 
@@ -263,6 +269,8 @@ def test_gap6_poked_evidence_is_not_cropped_to_zones_while_stream_frames_are():
 
 
 def test_gap6_exclude_zones_are_not_masked_on_stream_frames_either():
+    """Documented behavior, not a gap (docs/conditions.md:29): exclude zones only narrow what
+    change triggers watch; the judge's crop is a rectangle and may still show them."""
     s = run(_session(event(verify="off", exclude_zones=CORNER), offset=None))
     judged = s.requests("detect")[0][3].images[-1]
     assert np.array_equal(judged, image(N_FRAMES - 1))                 # excluded pixels reach the judge
@@ -271,14 +279,26 @@ def test_gap6_exclude_zones_are_not_masked_on_stream_frames_either():
 # --------------------------------------------------------------------------- 7. after the anchor
 
 
-def test_gap7_a_stale_anchor_judges_frames_up_to_the_newest_and_t_observed_is_the_newest():
-    s = run(_session(event(verify="off", clip_s=1.0, clip_frames=4), offset=0.75))
+# The window is "clip_s seconds before the trigger, the newest frame always included"
+# (contracts.py, Condition; monitor.py, _Stream.evidence). An anchor at t0 + 1.0 with clip_s=0.9
+# holds the whole window (no evidence_short); frames at t0 + 1.5 and t0 + 2.0 are newer than it.
+STALE = dict(offset=ON_FRAME)
+
+
+def stale_event() -> Condition:
+    return event(verify="off", clip_s=0.9, clip_frames=3)
+
+
+def test_gap7_a_stale_anchor_also_judges_every_frame_between_the_anchor_and_the_newest():
+    s = run(_session(stale_event(), **STALE))
+    assert s.coverage["evidence_short"] == {}                          # the whole window was held
     req = s.requests("detect")[0][3]
     newest = s.t0 + (N_FRAMES - 1) * STEP
-    assert req.evidence_t == (s.t0, newest)                            # [anchor - clip_s, newest], not [.., anchor]
+    assert req.evidence_t == (s.t0 + STEP, newest)
     d = s.decisions[0]
-    assert sum(e.t_wall > s.observed_at for e in d.evidence) >= 2       # frames after the anchor, unbounded
-    assert d.t_observed == newest                                      # observed_at does not set t_observed
+    after = [e for e in d.evidence[:-1] if e.t_wall > s.observed_at]
+    assert [e.seq for e in after] == [3]                               # not just the newest: held has no upper bound
+    assert d.t_observed == newest                                      # the evidence end, as documented
 
 
 def test_gap7_no_condition_field_bounds_a_window_after_the_anchor():
@@ -286,15 +306,16 @@ def test_gap7_no_condition_field_bounds_a_window_after_the_anchor():
     assert [f for f in Condition.__dataclass_fields__ if f.startswith("clip")] == ["clip_s", "clip_frames"]
 
 
-@pytest.mark.xfail(strict=True, reason="SDK-0 gap 7: the clip is not bounded after the anchor; with a stale "
-                                       "observed_at it runs to the newest frame")
-def test_gap7_desired_the_judged_window_ends_at_the_anchor():
-    s = run(_session(event(verify="off", clip_s=1.0, clip_frames=4), offset=0.75))
-    assert s.requests("detect")[0][3].evidence_t[1] <= s.observed_at + STEP
+@pytest.mark.xfail(strict=True, reason="SDK-0 gap 7: frames between the anchor and the newest frame are "
+                                       "judged; only the newest may be later than the anchor")
+def test_gap7_desired_only_the_newest_judged_frame_is_later_than_the_anchor():
+    s = run(_session(stale_event(), **STALE))
+    assert all(e.t_wall <= s.observed_at for e in s.decisions[0].evidence[:-1])
 
 
-@pytest.mark.xfail(strict=True, reason="SDK-0 gap 7: a poked event judged on stream frames is reported at "
-                                       "the newest frame's time, not at observed_at")
-def test_gap7_desired_t_observed_follows_observed_at():
-    s = run(_session(event(verify="off", clip_s=1.0, clip_frames=4), offset=0.75))
+@pytest.mark.xfail(strict=True, reason="SDK-0 gap 7: proposed contract change, needs a docs decision: "
+                                       "t_observed is the evidence end today (decision-semantics.md, "
+                                       "delivery.md), not observed_at")
+def test_gap7_proposed_t_observed_follows_observed_at():
+    s = run(_session(stale_event(), **STALE))
     assert abs(s.decisions[0].t_observed - s.observed_at) <= STEP
